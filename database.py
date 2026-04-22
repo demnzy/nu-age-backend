@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     BUNNY_TOKEN_SECURITY_KEY : str
     PRIVATE_STORAGE_ZONE : str
     STREAM_CDN_HOSTNAME : str
+    BUNNY_CDN_HOSTNAME : str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

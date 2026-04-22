@@ -146,3 +146,11 @@ class orgbase(BaseModel):
     logo_filename: Optional[str] = None
     theme_color: Optional[str] = None
     model_config = {'from_attributes': True}
+
+class CourseSettings(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    supervised: Optional[bool] = None
+    teacher_id: Optional[UUID] = None
+    public: Optional[bool] = None
+    category_id: Optional[UUID] = None

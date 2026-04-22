@@ -2,7 +2,7 @@ from fastapi import *
 from schemas import *
 from database import get_db,Settings
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select,func
 import models
 from services import utils, auth
 from typing import List
@@ -146,10 +146,40 @@ async def get_organisation_members(
     # 5. Execute and return the list of User objects
     return query.all()
 
-    return org.members
 @router.get('/courses')
-async def get_organisation_courses(id=Query(None), user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
-    org = db.query(models.Organisation).options(joinedload(models.Organisation.courses)).filter(models.Organisation.id == id).first()
+async def get_organisation_courses(id=Query(None), user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    # 1. Verify the organization exists
+    org = db.query(models.Organisation).filter(models.Organisation.id == id).first()
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
-    return org.courses
+
+    # 2. THE FIX: Create an isolated subquery that ONLY handles counting
+    enrollment_counts = (
+        db.query(
+            models.Enrollment.course_id,
+            func.count(models.Enrollment.student_id).label('student_count')
+        )
+        .group_by(models.Enrollment.course_id)
+        .subquery()
+    )
+
+    # 3. Main query: Fetch courses (which automatically loads categories/admins) 
+    # and join the counts subquery cleanly
+    results = (
+        db.query(
+            models.Course,
+            # Coalesce ensures we get 0 instead of Null if there are no enrollments
+            func.coalesce(enrollment_counts.c.student_count, 0).label("total_students")
+        )
+        .outerjoin(enrollment_counts, models.Course.id == enrollment_counts.c.course_id)
+        .filter(models.Course.org_id == id)
+        .all()
+    )
+
+    # 4. Attach the database-calculated count directly to the course objects
+    courses_with_counts = []
+    for course, count in results:
+        course.total_students = count
+        courses_with_counts.append(course)
+
+    return courses_with_counts

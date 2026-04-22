@@ -3,7 +3,9 @@ import logging
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-
+import os
+from dotenv import load_dotenv
+from database import Settings
 from services.bunny_service import upload_video_to_stream, upload_audio_to_bunny
 
 # Set up logging so you can see real errors in your terminal, without exposing them to users
@@ -39,32 +41,37 @@ async def upload_private_asset(
     type: str = Form(...), 
     file: UploadFile = File(...)
 ):
-    """Uploads audio/documents to Edge Storage and returns the internal path."""
+    """Uploads audio/documents to Edge Storage and returns internal paths and CDN URLs."""
     
-    # OPTIMIZATION 4: Anti-Directory Traversal. Because 'type' dictates the folder path, 
-    # we must validate it here since we are keeping it as a standard string parameter.
+    # OPTIMIZATION 4: Anti-Directory Traversal.
     if type not in ["audio", "document"]:
         raise HTTPException(status_code=400, detail="Asset type must be 'audio' or 'document'.")
 
     try:
         # OPTIMIZATION 5: Bulletproof extension extraction. 
-        # file.filename.split(".")[-1] breaks on files with no extension or multiple dots (e.g., file.tar.gz).
         ext = Path(file.filename).suffix if file.filename else ""
         if not ext:
             raise HTTPException(status_code=400, detail="File must have a valid extension.")
             
         safe_name = f"{type}_{uuid.uuid4().hex}{ext}"
-        
-        # Route to the correct folder based on type safely
         folder_path = f"courses/{course_id}/{type}s" 
         
         asset_bytes = await file.read()
         internal_path = await upload_audio_to_bunny(asset_bytes, safe_name, folder_path)
         
-        return {"type": type, "path": internal_path}
+        # Construct the CDN URLs
+        cdn_hostname = Settings().BUNNY_CDN_HOSTNAME
+        clean_path = internal_path.lstrip('/')
+        base_url = f"https://{cdn_hostname}/{clean_path}"
+        
+        return {
+            "type": type, 
+            "internal_path": internal_path,
+            "view_url": base_url,
+            "download_url": f"{base_url}?download=true"
+        }
         
     except HTTPException:
-        # Let our expected 400 errors pass through normally
         raise 
     except Exception as e:
         logger.error(f"Asset upload failed for course {course_id}: {e}", exc_info=True)

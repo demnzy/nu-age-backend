@@ -89,34 +89,41 @@ def get_all_courses(name: str = Query(None),org: UUID = Query(None),is_public: b
     courses = query.all()
     
     return courses
-#Update Course 
-@router.patch('/update', response_model= CourseBase)
-def update_course(id:int, course:CourseUpdate, db:Session = Depends(get_db), user = Depends(auth.get_current_user)):
-    if user.role != "Admin":
-        raise  HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You dont have the permission to perform this action")
-    course_in_db = db.query(models.Course).filter(models.Course.id==id).first()
-    if not course_in_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
-    if course.name:
-        course_in_db.name = course.name
-    if course.description:
-        course_in_db.description = course.description
-    if course.public:
-        course_in_db.public = course.public
-    db.commit()
-    db.refresh(course_in_db)
-    return course_in_db
 
+#Update Course 
+@router.post('/{course_id}/update_settings')
+def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+    
+    if user.role != "Admin" and user.id != course.admin_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to perform this action")
+    
+    if setting.name is not None:
+        course.name = setting.name
+    if setting.description is not None:
+        course.description = setting.description
+    if setting.public is not None:
+        course.public = setting.public
+    if setting.teacher_id is not None:
+        course.teacher_id = setting.teacher_id
+    if setting.category_id is not None:
+        course.category_id = setting.category_id    
+    if setting.supervised is not None:
+        course.supervised = setting.supervised
+    db.commit()
+    db.refresh(course)
 
 #Delete Course
-@router.delete('/delete', status_code=status.HTTP_204_NO_CONTENT)
-def delete_course(id:int,user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
+@router.delete('/{course_id}/delete', status_code=status.HTTP_204_NO_CONTENT)
+def delete_course(course_id:UUID,user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
     if user.role != "Admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have the permission to perform this operation")
-    course=db.query(models.Course).filter(models.Course.id==id).first()
+    course=db.query(models.Course).filter(models.Course.id==course_id).first()
     if user.id!= course.admin_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have the permission to perform this operation")       
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= "Course Not found")
-    db.query(models.Course).filter(models.Course.id==id).delete()
+    db.query(models.Course).filter(models.Course.id==course_id).delete()
     db.commit()
