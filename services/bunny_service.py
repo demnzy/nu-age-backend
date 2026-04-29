@@ -28,7 +28,7 @@ async def upload_bytes_to_bunny(raw_bytes: bytes, filename: str, folder_path: st
     }
 
     # 3. Push the raw bytes directly to Bunny.net
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         # We pass raw_bytes directly to the content parameter
         response = await client.put(upload_url, content=raw_bytes, headers=headers)
         

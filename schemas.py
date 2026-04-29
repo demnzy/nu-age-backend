@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_serializer, EmailStr
+from pydantic import BaseModel, field_serializer, EmailStr, Field
 from typing import Optional, List
 from enum import Enum
 from uuid import UUID
@@ -40,6 +40,7 @@ class UserReg(BaseModel):
     last_name: str
     gender: str
     role: str
+    university: Optional[str] = None
     model_config = {'from_attributes' : True}
 
 class TokenResponse(BaseModel):
@@ -151,6 +152,106 @@ class CourseSettings(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     supervised: Optional[bool] = None
-    teacher_id: Optional[UUID] = None
+    teacher_id: Optional[UUID] | str = None
     public: Optional[bool] = None
     category_id: Optional[UUID] = None
+
+# --- Flashcard Schemas ---
+class SRSState(BaseModel):
+    interval: int
+    ease_factor: float
+    repetitions: int
+
+class FlashcardResponse(BaseModel):
+    id: UUID
+    front: str
+    back: str
+    srs_state: SRSState
+    
+    class Config:
+        from_attributes = True
+
+class ReviewPayload(BaseModel):
+    card_id: UUID
+    quality: int = Field(..., ge=0, le=5, description="Quality rating: 0 (Blackout) to 5 (Perfect)")
+
+class ReviewResponse(BaseModel):
+    next_review_date: datetime
+    interval_days: int
+
+class SaveFlashcardPayload(BaseModel):
+    front: str
+    back: str
+    source_material_id: Optional[UUID] = None
+
+# --- Material Schemas ---
+class MaterialResponse(BaseModel):
+    id: UUID
+    title: str
+    source_type: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class UploadResponse(BaseModel):
+    material_id: UUID
+    message: str
+
+# --- AI & Assessment Schemas ---
+class GeneratePayload(BaseModel):
+    material_ids: List[UUID]
+    types: List[str] # Expects ["flashcards", "quiz", "exam"]
+
+class GenerateResponse(BaseModel):
+    cards: List[FlashcardResponse]
+    quiz_count: int
+    exam_count: int
+
+class QuestionResponse(BaseModel):
+    id: UUID
+    question: str
+    options: List[str]
+    answer: int
+    explanation: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class PlanConfigItem(BaseModel):
+    label: str
+    materials_limit: Optional[int]
+    generations_limit: Optional[int]
+
+class SubscriptionStatusResponse(BaseModel):
+    plan_id: str
+    label: str
+    
+    materials_used: int
+    materials_limit: Optional[int]
+    materials_remaining: Optional[int]
+    
+    generations_used: int
+    generations_limit: Optional[int]
+    generations_remaining: Optional[int]
+
+class NetworkUserResponse(BaseModel):
+    id: UUID
+    first_name: str
+    last_name: str
+    course: Optional[str] = None
+    org: Optional[str] = None
+    # avatar: Optional[str] = None  <-- Removed
+    online: bool = False
+    streak: int = 0
+    
+    class Config:
+        from_attributes = True # Allows Pydantic to read SQLAlchemy objects directly
+
+class ConnectionRequestResponse(BaseModel):
+    id: UUID
+    user: NetworkUserResponse
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True

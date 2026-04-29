@@ -2,12 +2,15 @@ from fastapi import *
 from schemas import *
 from database import get_db
 from sqlalchemy.orm import Session, joinedload
+from services.bunny_service import upload_audio_to_bunny
 from sqlalchemy import or_
+from database import Settings
 import models
 from services import utils, auth
 from typing import List
 from uuid import UUID
 import base64
+import pathlib
 import uuid
 from services.bunny_service import upload_bytes_to_bunny 
 router = APIRouter(prefix="/courses")
@@ -61,8 +64,22 @@ async def create_course(payload: CourseBase, user = Depends(auth.get_current_use
     return course
 
 #Get all courses
+from fastapi import Query, Depends
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_
+from uuid import UUID
+import models
+
 @router.get('')
-def get_all_courses(name: str = Query(None),org: UUID = Query(None),is_public: bool = Query(None),id:UUID = Query(None), user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+def get_all_courses(
+    name: str = Query(None),
+    org: UUID = Query(None),
+    is_public: bool = Query(None),
+    id: UUID = Query(None),
+    progress: int = Query(None), 
+    user = Depends(auth.get_current_user), 
+    db: Session = Depends(get_db)
+):
     query = db.query(models.Course).options(
         joinedload(models.Course.admin),
         joinedload(models.Course.category),
@@ -82,13 +99,18 @@ def get_all_courses(name: str = Query(None),org: UUID = Query(None),is_public: b
     
     if is_public is not None:
         query = query.filter(models.Course.public == is_public)
+        
     if id:
         query = query.filter(models.Course.id == id)
-        
     
-    courses = query.all()
-    
-    return courses
+    # THE FIX: Join Enrollments to check this specific user's progress
+    if progress is not None:
+        query = query.join(models.Enrollment, models.Course.id == models.Enrollment.course_id).filter(
+            models.Enrollment.student_id == user.id,
+            models.Enrollment.progress == progress
+        )
+
+    return query.all()
 
 #Update Course 
 @router.post('/{course_id}/update_settings')
@@ -107,6 +129,8 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
     if setting.public is not None:
         course.public = setting.public
     if setting.teacher_id is not None:
+        if setting.teacher_id == "none":  # Special case to remove teacher
+            course.teacher_id = None
         course.teacher_id = setting.teacher_id
     if setting.category_id is not None:
         course.category_id = setting.category_id    
@@ -114,16 +138,3 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
         course.supervised = setting.supervised
     db.commit()
     db.refresh(course)
-
-#Delete Course
-@router.delete('/{course_id}/delete', status_code=status.HTTP_204_NO_CONTENT)
-def delete_course(course_id:UUID,user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
-    if user.role != "Admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have the permission to perform this operation")
-    course=db.query(models.Course).filter(models.Course.id==course_id).first()
-    if user.id!= course.admin_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have the permission to perform this operation")       
-    if not course:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= "Course Not found")
-    db.query(models.Course).filter(models.Course.id==course_id).delete()
-    db.commit()

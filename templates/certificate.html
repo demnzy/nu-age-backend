@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificate of Completion - Blank Template</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+        @page {
+            size: A4 landscape;
+            margin: 0;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: #EDEAE4;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 32px;
+        }
+
+        /* ── Outer frame ───────────────────────────────────────────── */
+        .cert-wrap {
+            width: 1000px;
+            height: 700px;
+            position: relative;
+            background: #FDFCFA;
+            border-radius: 4px;
+            overflow: hidden;
+            box-shadow: 0 32px 80px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        /* ── Decorative corner accent bands ──────────────────────── */
+        .cert-wrap::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border: 18px solid transparent;
+            border-image: linear-gradient(135deg, #035800 0%, #37BF14 50%, #035800 100%) 1;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* ── Left brand stripe ────────────────────────────────────── */
+        .stripe {
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 8px;
+            background: linear-gradient(180deg, #035800 0%, #37BF14 50%, #035800 100%);
+            z-index: 5;
+        }
+
+        /* ── Geometric background watermark ───────────────────────── */
+        .watermark {
+            position: absolute;
+            right: -60px; bottom: -60px;
+            width: 400px; height: 400px;
+            opacity: 0.035;
+            pointer-events: none;
+        }
+
+        /* ── Top-right org / platform logo area ────────────────────── */
+        .logo-area {
+            position: absolute;
+            top: 36px; right: 48px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 4px;
+        }
+
+        .logo-area img {
+            max-height: 44px;
+            max-width: 140px;
+            object-fit: contain;
+        }
+
+        /* ── Main content ─────────────────────────────────────────── */
+        .cert-body {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 48px 80px 64px;
+            text-align: center;
+        }
+
+        /* Heading tag */
+        .cert-label {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 5px;
+            text-transform: uppercase;
+            color: #37BF14;
+            margin-bottom: 10px;
+        }
+
+        /* Main title */
+        .cert-title {
+            font-family: 'Cormorant Garamond', Georgia, serif;
+            font-size: 48px;
+            font-weight: 700;
+            color: #035800;
+            line-height: 1.1;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        /* Sub-title divider row */
+        .divider-row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin: 16px 0 20px;
+            width: 100%;
+            max-width: 560px;
+        }
+
+        .divider-line {
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #C5B89A, transparent);
+        }
+
+        .divider-ornament {
+            width: 6px; height: 6px;
+            background: #C5B89A;
+            transform: rotate(45deg);
+            flex-shrink: 0;
+        }
+
+        .presented-to {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 12px;
+            font-weight: 400;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: #888070;
+        }
+
+        /* ── Student name ─────────────────────────────────────────── */
+        .student-name {
+            font-family: 'Cormorant Garamond', Georgia, serif;
+            font-size: 52px;
+            font-weight: 600;
+            font-style: italic;
+            color: #1A1A1A;
+            line-height: 1.1;
+            margin-bottom: 6px;
+            letter-spacing: 0.3px;
+        }
+
+        /* Name underline */
+        .name-underline {
+            width: 60%;
+            height: 1.5px;
+            background: linear-gradient(90deg, transparent 0%, #C5B89A 30%, #C5B89A 70%, transparent 100%);
+            margin: 0 auto 20px;
+        }
+
+        /* Body copy */
+        .cert-body-text {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 13px;
+            font-weight: 300;
+            color: #666;
+            letter-spacing: 0.2px;
+            margin-bottom: 6px;
+        }
+
+        /* ── Course name ──────────────────────────────────────────── */
+        .course-name {
+            font-family: 'Cormorant Garamond', Georgia, serif;
+            font-size: 24px;
+            font-weight: 700;
+            color: #035800;
+            letter-spacing: 0.3px;
+            line-height: 1.3;
+            margin-bottom: 4px;
+            max-width: 620px;
+        }
+
+        /* Org line */
+        .org-line {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 12px;
+            font-weight: 500;
+            color: #888070;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+
+        .org-line span {
+            color: #37BF14;
+            font-weight: 600;
+        }
+
+        /* ── Footer: signatures ───────────────────────────────────── */
+        .cert-footer {
+            position: absolute;
+            bottom: 36px;
+            left: 72px; right: 48px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+
+        .sig-block {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            min-width: 160px;
+        }
+
+        .sig-placeholder {
+            height: 36px;
+            display: flex;
+            align-items: flex-end;
+        }
+
+        .sig-line {
+            width: 140px;
+            height: 1px;
+            background: #BCBCBC;
+        }
+
+        .sig-label {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: #999;
+            text-align: center;
+        }
+
+        .sig-value {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 11px;
+            font-weight: 500;
+            color: #444;
+            text-align: center;
+        }
+
+        /* ── Credential ID strip ──────────────────────────────────── */
+        .cert-id {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: 'DM Sans', sans-serif;
+            font-size: 9px;
+            letter-spacing: 2px;
+            color: #BCBCBC;
+            white-space: nowrap;
+        }
+
+        /* ── Seal / badge ─────────────────────────────────────────── */
+        .seal {
+            position: absolute;
+            bottom: 48px;
+            right: 64px;
+            width: 82px;
+            height: 82px;
+            opacity: 0.92;
+        }
+
+        /* Print support */
+        @media print {
+            body { background: white; padding: 0; }
+            .cert-wrap { box-shadow: none; border-radius: 0; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="cert-wrap">
+
+    <div class="stripe"></div>
+
+    <svg class="watermark" viewBox="0 0 400 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="200" cy="200" r="180" stroke="#035800" stroke-width="1"/>
+        <circle cx="200" cy="200" r="150" stroke="#035800" stroke-width="0.5"/>
+        <circle cx="200" cy="200" r="120" stroke="#035800" stroke-width="1"/>
+        <circle cx="200" cy="200" r="90"  stroke="#035800" stroke-width="0.5"/>
+        <line x1="20"  y1="200" x2="380" y2="200" stroke="#035800" stroke-width="0.5"/>
+        <line x1="200" y1="20"  x2="200" y2="380" stroke="#035800" stroke-width="0.5"/>
+        <line x1="73"  y1="73"  x2="327" y2="327" stroke="#035800" stroke-width="0.5"/>
+        <line x1="327" y1="73"  x2="73"  y2="327" stroke="#035800" stroke-width="0.5"/>
+        <polygon points="200,40 360,140 360,260 200,360 40,260 40,140" stroke="#035800" stroke-width="0.8" fill="none"/>
+        <polygon points="200,80 320,155 320,245 200,320 80,245 80,155" stroke="#035800" stroke-width="0.5" fill="none"/>
+    </svg>
+
+    <div class="logo-area">
+        <img src="https://nu-age-cdn.b-cdn.net/logos/Nu%20logo%20only.jpeg" alt="Logo">
+    </div>
+
+    <svg class="seal" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <linearGradient id="sealGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#035800"/>
+                <stop offset="100%" stop-color="#37BF14"/>
+            </linearGradient>
+        </defs>
+        <polygon points="50,4 56,38 88,20 68,48 100,50 68,52 88,80 56,62 50,96 44,62 12,80 32,52 0,50 32,48 12,20 44,38" fill="url(#sealGrad)" opacity="0.15"/>
+        <polygon points="50,14 54.5,40 76,26 62,47 88,50 62,53 76,74 54.5,60 50,86 45.5,60 24,74 38,53 12,50 38,47 24,26 45.5,40" fill="url(#sealGrad)" opacity="0.22"/>
+        <circle cx="50" cy="50" r="28" fill="none" stroke="url(#sealGrad)" stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="24" fill="none" stroke="url(#sealGrad)" stroke-width="0.5"/>
+        <text x="50" y="48" text-anchor="middle" font-family="'DM Sans', sans-serif" font-size="6" font-weight="600" fill="#035800" letter-spacing="1">CERTIFIED</text>
+        <text x="50" y="57" text-anchor="middle" font-family="'DM Sans', sans-serif" font-size="5.5" fill="#37BF14" letter-spacing="0.8">COMPLETION</text>
+    </svg>
+
+    <div class="cert-body">
+
+        <div class="cert-label">Certificate of Completion</div>
+
+        <div class="cert-title">This Certifies That</div>
+
+        <div class="divider-row">
+            <div class="divider-line"></div>
+            <div class="divider-ornament"></div>
+            <div class="presented-to">has successfully completed</div>
+            <div class="divider-ornament"></div>
+            <div class="divider-line"></div>
+        </div>
+
+        <div class="student-name">&nbsp;</div>
+        <div class="name-underline"></div>
+
+        <div class="cert-body-text">all requirements and assessments for the course</div>
+
+        <div class="course-name">&nbsp;</div>
+
+        <div class="org-line">&nbsp;</div>
+
+    </div>
+
+    <div class="cert-footer">
+
+        <div class="sig-block">
+            <div class="sig-placeholder"><div class="sig-line"></div></div>
+            <div class="sig-value">&nbsp;</div>
+            <div class="sig-label">Date of Completion</div>
+        </div>
+
+        <div class="sig-block">
+            <div class="sig-placeholder"><div class="sig-line"></div></div>
+            <div class="sig-value">Oluwatobiloba Daniel Davies</div>
+            <div class="sig-label">Authorised Signature</div>
+        </div>
+
+    </div>
+
+    <div class="cert-id">
+        CREDENTIAL ID &nbsp;·&nbsp;
+    </div>
+
+</div>
+
+</body>
+</html>

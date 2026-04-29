@@ -7,6 +7,13 @@ from sqlalchemy.orm import Session
 import models
 from services import utils, auth
 from typing import List
+from datetime import datetime, timezone, timedelta
+
+
+class UserDirectorySchema(BaseModel):
+    id: UUID
+    name: str
+    email: str
 
 router = APIRouter(prefix=('/users'))
 
@@ -24,28 +31,45 @@ async def register_user(user:UserReg, db: Session = Depends(get_db)):
     db.refresh(user1)
     return user1
 
-# user login
+# user logic
+
 @router.post('/auth/login', response_model=TokenResponse)
-def user_login(user:OAuth2PasswordRequestForm= Depends(), db: Session = Depends(get_db)):
-    user_in_db_email= db.query(models.User).filter(models.User.email== user.username).first() 
-    user_in_db_username= db.query(models.User).filter(models.User.username== user.username).first() 
-    print(user.password)
-    if not user_in_db_email and not user_in_db_username:
+def user_login(user: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # 1. Find the user by either email OR username
+    actual_user = (
+        db.query(models.User).filter(models.User.email == user.username).first() or 
+        db.query(models.User).filter(models.User.username == user.username).first()
+    )
+    
+    if not actual_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    elif user_in_db_email:
-        email = user_in_db_email.email
-        db_password = user_in_db_email.password
-        if utils.verify_password(user.password,db_password):
-            token = auth.create_access_token({"email": user_in_db_email.email})
-            return token
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="incorrect password")
-    elif user_in_db_username:
-        email = user_in_db_username.email
-        db_password = user_in_db_username.password
-        if utils.verify_password(user.password,db_password):
-            token = auth.create_access_token({"email": user_in_db_username.email})
-            return token
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="incorrect password")
+        
+    # 2. Verify Password
+    if not utils.verify_password(user.password, actual_user.password):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Incorrect password")
+
+    # 3. --- STREAK LOGIC ---
+    # Get today's date in UTC to prevent timezone bugs
+    today = datetime.now(timezone.utc).date()
+    
+    if actual_user.last_login_date == today:
+        # They already logged in today. Do nothing to the streak.
+        pass 
+    elif actual_user.last_login_date == today - timedelta(days=1):
+        # They logged in yesterday. Increment streak!
+        actual_user.streak += 1
+    else:
+        # They missed a day, or this is their very first login. Reset to 1.
+        actual_user.streak = 1
+
+    # Update the last login date to today
+    actual_user.last_login_date = today
+    db.commit()
+    # -----------------------
+
+    # 4. Generate Token
+    token = auth.create_access_token({"email": actual_user.email})
+    return token
     
 # Admin get all users
 @router.get('', response_model= List[UserBase])
@@ -114,7 +138,29 @@ def update_profile(
 def delete_user(user= Depends(auth.get_current_user), db: Session = Depends(get_db)): 
     db.delete(user)
     db.commit()
+
+
+@router.get("/directory", response_model=List[UserDirectorySchema])
+def get_user_directory(
+    db: Session = Depends(get_db), 
+    current_user = Depends(auth.get_current_user)
+):
+    """
+    Returns a list of all registered users. 
+    Used for initiating chats and manual testing.
+    """
+    users = db.query(models.User).all()
     
+    # Format the data for the frontend
+    return [
+        {
+            "id": user.id, 
+            "name": f"{user.first_name} {user.last_name}",
+            "email": user.email
+        } 
+        for user in users
+    ]
+
 @router.delete('/delete', status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(email:str, user= Depends(auth.get_current_user), db: Session = Depends(get_db)): 
     if user.role != "Admin":

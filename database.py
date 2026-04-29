@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     PRIVATE_STORAGE_ZONE : str
     STREAM_CDN_HOSTNAME : str
     BUNNY_CDN_HOSTNAME : str
+    OPENAI_API_KEY : str
+    GROQ_API_KEY : str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

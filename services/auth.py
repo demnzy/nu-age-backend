@@ -59,3 +59,26 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception 
         
     return user
+# Add this to the bottom of auth.py
+
+def verify_ws_token(token: str, db: Session):
+    """
+    Specialized token verifier for WebSockets.
+    Instead of raising an HTTP 401 Exception (which crashes WebSockets),
+    this safely returns None so the endpoint can close the connection cleanly.
+    """
+    try:
+        # Decode the token using the exact same logic as your HTTP routes
+        payload = jwt.decode(token, key=key, algorithms=[ALGORITHM])
+        user_email = payload.get("email") 
+        
+        if not user_email:
+            return None
+            
+        # Fetch the user from the database
+        user = db.query(models.User).filter(models.User.email == user_email).first()
+        return user
+        
+    except JWTError:
+        # Token is expired, forged, or completely invalid
+        return None
