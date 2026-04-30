@@ -138,3 +138,28 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
         course.supervised = setting.supervised
     db.commit()
     db.refresh(course)
+
+
+
+@router.delete("/{course_id}/delete", status_code=status.HTTP_200_OK)
+def delete_course(course_id: int, db: Session = Depends(get_db)):
+    
+    # 1. Find the course in your Neon database
+    course_query = db.query(models.Course).filter(models.Course.id== course_id)
+    course = course_query.first()
+
+    # 2. Check if the course actually exists
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Course with ID {course_id} not found."
+        )
+
+    # (Optional) Check permissions here: ensure the user requesting the delete is the owner/admin!
+
+    # 3. Delete and commit to the database
+    course_query.delete(synchronize_session=False)
+    db.commit()
+
+    # Returning a message is helpful for your Flet frontend to confirm success
+    return {"status": "success", "message": f"Course {course_id} has been deleted."}
