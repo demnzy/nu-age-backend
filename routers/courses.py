@@ -142,7 +142,7 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
 
 
 @router.delete("/{course_id}/delete", status_code=status.HTTP_200_OK)
-def delete_course(course_id: int, db: Session = Depends(get_db)):
+def delete_course(course_id: UUID, db: Session = Depends(get_db)):
     
     # 1. Find the course in your Neon database
     course_query = db.query(models.Course).filter(models.Course.id== course_id)
