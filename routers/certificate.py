@@ -50,7 +50,7 @@ async def generate_and_upload_certificate(
     # 3. THE PDF STAMPING PIPELINE
     # ==========================================
     try:
-        template_path = "templates/blank_certificate.pdf"
+        template_path = "templates/Course_certificate.pdf"
         doc = fitz.open(template_path)
         page = doc[0] 
         

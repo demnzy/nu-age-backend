@@ -490,3 +490,36 @@ def delete_channel(
     db.commit()
 
     return {"message": "Chat completely deleted", "channel_id": str(channel_id)}
+
+
+@router.delete("/{chat_id}/leave")
+def leave_group_chat(chat_id: UUID, db: Session = Depends(get_db), current_user = Depends(auth.get_current_user)):
+    """Removes the current user from a group chat."""
+    
+    # 1. Find the junction row connecting the user to this specific chat
+    participant_record = db.query(models.ChatParticipant).filter(
+        models.ChatParticipant.chat_id == chat_id,
+        models.ChatParticipant.user_id == current_user.id
+    ).first()
+    
+    if not participant_record:
+        raise HTTPException(status_code=404, detail="You are not a member of this chat.")
+        
+    # 2. Sever the connection (The user has now officially left)
+    db.delete(participant_record)
+    db.commit()
+    
+    # 3. --- THE SAFEGUARD: Clean up ghost chats ---
+    # Check if anyone is left in the chat. If the count is 0, nuke the empty room.
+    remaining_members = db.query(models.ChatParticipant).filter(
+        models.ChatParticipant.chat_id == chat_id
+    ).count()
+    
+    if remaining_members == 0:
+        empty_chat = db.query(models.Chat).filter(models.Chat.id == chat_id).first()
+        if empty_chat:
+            db.delete(empty_chat)
+            db.commit()
+            return {"status": "success", "message": "Left chat. Chat was empty and has been deleted."}
+            
+    return {"status": "success", "message": "Successfully left the group chat."}

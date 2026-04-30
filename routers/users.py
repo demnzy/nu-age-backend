@@ -80,10 +80,10 @@ def get_all_users(name: str | None = Query(None, description="search a user by n
     return users
     #raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='You do not have permission to access this information')
 
-# Get one user by username
-@router.get('', response_model=UserBase)
-def get_one_user(username: str, db:Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.username==username).first()
+# Get one user by identifier
+@router.get('/one', response_model=UserProfile)
+def get_one_user(identifier: str | UUID | None= Query(None, description = "get a user by username or id"), db:Session = Depends(get_db)):
+    user = db.query(models.User).filter(or_(models.User.username==identifier, models.User.id==identifier)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= "User not found")
     return user
@@ -140,26 +140,40 @@ def delete_user(user= Depends(auth.get_current_user), db: Session = Depends(get_
     db.commit()
 
 
+from sqlalchemy import or_, and_
+
 @router.get("/directory", response_model=List[UserDirectorySchema])
 def get_user_directory(
     db: Session = Depends(get_db), 
     current_user = Depends(auth.get_current_user)
 ):
     """
-    Returns a list of all registered users. 
-    Used for initiating chats and manual testing.
+    Returns a list of the user's accepted friends. 
+    Formatted as (id, name, email) to preserve existing frontend UI components.
     """
-    users = db.query(models.User).all()
+    # 1. Fetch only the accepted connections for the current user
+    connections = db.query(models.Connection).filter(
+        models.Connection.status == "accepted",
+        or_(
+            models.Connection.requester_id == current_user.id,
+            models.Connection.addressee_id == current_user.id
+        )
+    ).all()
     
-    # Format the data for the frontend
-    return [
-        {
-            "id": user.id, 
-            "name": f"{user.first_name} {user.last_name}",
-            "email": user.email
-        } 
-        for user in users
-    ]
+    friends_list = []
+    
+    # 2. Extract the friend and format it to match the old Directory Schema
+    for conn in connections:
+        # If the current user sent the request, the friend is the addressee. Otherwise, they are the requester.
+        friend_user = conn.addressee if conn.requester_id == current_user.id else conn.requester
+        
+        friends_list.append({
+            "id": friend_user.id, 
+            "name": f"{friend_user.first_name} {friend_user.last_name}",
+            "email": friend_user.email
+        })
+        
+    return friends_list
 
 @router.delete('/delete', status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(email:str, user= Depends(auth.get_current_user), db: Session = Depends(get_db)): 

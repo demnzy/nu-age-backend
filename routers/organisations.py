@@ -183,3 +183,49 @@ async def get_organisation_courses(id=Query(None), user=Depends(auth.get_current
         courses_with_counts.append(course)
 
     return courses_with_counts
+
+@router.post("/{org_id}/join")
+def join_organization(
+    org_id: UUID, 
+    user_id: UUID= Query(None, description = "user_id"),
+    db: Session = Depends(get_db), 
+    
+):
+    """Adds the current user to a specific organization."""
+    
+    # 1. Verify the Organization actually exists
+    org = db.query(models.Organisation).filter(models.Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Organization not found."
+        )
+
+    # 2. Prevent Duplicate Memberships
+    existing_membership = db.query(models.OrganisationMember).filter(
+        models.OrganisationMember.organisation_id == org_id,
+        models.OrganisationMember.user_id == user_id
+    ).first()
+    
+    if existing_membership:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, 
+            detail="You are already a member of this organization."
+        )
+
+    # 3. Create the Membership
+    # Note: If your OrganisationMember model requires additional fields 
+    # (like role="student" or joined_at), add them here!
+    new_member = models.OrganisationMember(
+        organisation_id=org_id,
+        user_id=user_id,
+        role= "student"
+    )
+    
+    db.add(new_member)
+    db.commit()
+    
+    return {
+        "status": "success", 
+        "message": f"Successfully joined {org.name}."
+    }

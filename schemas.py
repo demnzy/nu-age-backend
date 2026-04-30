@@ -30,6 +30,19 @@ class UserBase(BaseModel):
     last_name: str
     gender: str
     role: str
+    streak: Optional[int] = 0
+    university: Optional[str] = ""
+    model_config = {'from_attributes' : True}
+
+class UserProfile(BaseModel):
+    email: EmailStr
+    username : str
+    first_name : str
+    last_name: str
+    gender: str
+    role: str
+    streak: Optional[int] = 0
+    university: Optional[str] = ""
     model_config = {'from_attributes' : True}
     
 class UserReg(BaseModel):
@@ -239,9 +252,8 @@ class NetworkUserResponse(BaseModel):
     id: UUID
     first_name: str
     last_name: str
-    course: Optional[str] = None
+    university: Optional[str] = None
     org: Optional[str] = None
-    # avatar: Optional[str] = None  <-- Removed
     online: bool = False
     streak: int = 0
     
@@ -253,5 +265,21 @@ class ConnectionRequestResponse(BaseModel):
     user: NetworkUserResponse
     created_at: datetime
     
+    class Config:
+        from_attributes = True
+class EnrollmentStatsResponse(BaseModel):
+    course_id: UUID
+    course_title: str
+    enrolled_at: datetime
+    completed_at: datetime
+    time_spent_seconds: int
+    time_spent_formatted: str  # e.g., "12h 30m"
+    certificate_download_url: Optional[str] = None
+    
+    # Leaderboard / Gamification stats
+    leaderboard_rank: int
+    total_completers: int
+    faster_than_percentile: float # e.g., 85.5 (meaning faster than 85.5% of people)
+
     class Config:
         from_attributes = True
