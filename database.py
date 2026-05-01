@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     
 Url= Settings().DB_URL
 print(Url)
-engine = create_engine(Url)
+engine = create_engine(
+    Url,
+    pool_pre_ping=True,      # <-- THE MAGIC FIX: Checks connection health before querying
+    pool_recycle=300,        # <-- Forces SQLAlchemy to refresh connections every 5 minutes
+    pool_size=5,             # Keep the pool small so you don't exhaust Neon's limits
+    max_overflow=10)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 def get_db():
