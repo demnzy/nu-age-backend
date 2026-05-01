@@ -147,7 +147,11 @@ async def get_organisation_members(
     return query.all()
 
 @router.get('/courses')
-async def get_organisation_courses(id=Query(None), user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
+async def get_organisation_courses(
+    id: UUID = Query(...),  # Change from Query(None) to Query(...) with UUID type
+    user=Depends(auth.get_current_user), 
+    db: Session = Depends(get_db)
+):
     # 1. Verify the organization exists
     org = db.query(models.Organisation).filter(models.Organisation.id == id).first()
     if not org:
@@ -187,7 +191,7 @@ async def get_organisation_courses(id=Query(None), user=Depends(auth.get_current
 @router.post("/{org_id}/join")
 def join_organization(
     org_id: UUID, 
-    user_id: UUID= Query(None, description = "user_id"),
+    user_id: UUID= Query(...),
     db: Session = Depends(get_db), 
     
 ):
