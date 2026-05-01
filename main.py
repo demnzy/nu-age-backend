@@ -56,7 +56,34 @@ app.add_middleware(
 
 import sys
 from fastapi.routing import APIRoute
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from database import get_db # Ensure this matches your import path
 
+@app.get("/health", tags=["System"])
+async def health_check(db: Session = Depends(get_db)):
+    """
+    A lightweight endpoint to keep the server awake and verify database connectivity.
+    """
+    try:
+        # The ultimate lightweight query: ask PostgreSQL to literally just return the number 1
+        db.execute(text("SELECT 1"))
+        
+        return {
+            "status": "active",
+            "backend": "online",
+            "database": "connected"
+        }
+        
+    except Exception as e:
+        # If the database is unreachable, we fail loudly with a 503 Service Unavailable
+        print(f"Health Check Failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Backend is running, but database connection failed."
+        )
+    
 @app.on_event("startup")
 def print_routes():
     print("\n" + "="*50)

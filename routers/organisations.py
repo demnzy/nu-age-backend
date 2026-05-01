@@ -60,10 +60,17 @@ async def create_org(payload: orgbase, user= Depends(auth.get_current_user), db:
     
 @router.get('/me')
 async def get_user_organisation(user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
-    org = db.query(models.Organisation).filter(models.Organisation.owner_id == user.id).first()
-    
-    if org:
-        # 1. Calculate your stats
+    try:
+        org = db.query(models.Organisation).filter(models.Organisation.owner_id == user.id).first()
+        
+        # Exact Error: 404 if the user hasn't created an organization yet
+        if not org:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="User has not created an organization."
+            )
+
+        # 1. Calculate your stats (Implementation unchanged)
         member_count = db.query(models.OrganisationMember).filter(
             models.OrganisationMember.organisation_id == org.id
         ).count()
@@ -86,27 +93,44 @@ async def get_user_organisation(user= Depends(auth.get_current_user), db:Session
             models.User.role == Roles.STUDENT 
         ).count()
 
-        # 2. Extract the base organization data
+        # 2. Extract the base organization data (Implementation unchanged)
         org_data = {column.name: getattr(org, column.name) for column in org.__table__.columns}
 
-        # 3. Inject the stats
+        # 3. Inject the stats (Implementation unchanged)
         org_data["members"] = member_count
         org_data["courses"] = course_count
         org_data["staff"] = staff_count
         org_data["students"] = student_count
 
-        # 4. Extract Plan data using the relationship
+        # 4. Extract Plan data using the relationship (Implementation unchanged)
         if org.plan:
             org_data["plan"] = {column.name: getattr(org.plan, column.name) for column in org.plan.__table__.columns}
         else:
             org_data["plan"] = None
 
-        
         return org_data
-        
-    else:
-        print("User has not created an organization.")
-        return None
+
+    # --- ROBUST ERROR HANDLING ---
+
+    except HTTPException:
+        # If it's our 404 from above, let it pass through normally
+        raise
+
+    except SQLAlchemyError as db_error:
+        # Exact Error: 500 if the database connection drops or a query fails
+        print(f"Database Error in /me: {str(db_error)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred while fetching organization data."
+        )
+
+    except Exception as e:
+        # Exact Error: 500 Catch-all for any Python/dict comprehension crashes
+        print(f"Unexpected Error in /me: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred while processing your request."
+        )
 
 # Make sure your models file is imported properly
 
