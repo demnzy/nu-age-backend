@@ -60,21 +60,25 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode.
+    # 1. Get the URL from the environment
+    db_url = "postgresql://postgres:2862008@16.16.159.44:5432/postgres"
+    
+    # 2. Fix the postgres/postgresql dialect mismatch automatically
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-    In this scenario we need to create an Engine
-    and associate a connection with the context.
-
-    """
+    # 3. Use the URL directly instead of reading from alembic.ini
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        url=db_url,  # <--- This overrides the .ini file
     )
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection, 
+            target_metadata=target_metadata
         )
 
         with context.begin_transaction():

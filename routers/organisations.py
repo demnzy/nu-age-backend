@@ -65,10 +65,7 @@ async def get_user_organisation(user= Depends(auth.get_current_user), db:Session
         
         # Exact Error: 404 if the user hasn't created an organization yet
         if not org:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, 
-                detail="User has not created an organization."
-            )
+            return None
 
         # 1. Calculate your stats (Implementation unchanged)
         member_count = db.query(models.OrganisationMember).filter(

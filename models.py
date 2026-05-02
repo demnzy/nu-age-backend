@@ -102,7 +102,7 @@ class Course(Base):
     image_url= Column(String, nullable=True)
     teacher_id = Column(UUID(as_uuid=True), ForeignKey(User.id, ondelete="SET NULL"), nullable=True)
     supervised = Column(Boolean, default=False)
-    chat_id = Column(UUID(as_uuid=True), ForeignKey("channels.id", ondelete="SET NULL"), nullable=True)
+    chat_id = Column(UUID(as_uuid=True), ForeignKey("channels.id", ondelete="SET NULL", use_alter=True,), nullable=True)
     
     category = relationship("Category", back_populates= "courses", lazy="joined")
     modules = relationship("Module", back_populates="course", order_by="Module.order_index")
@@ -110,7 +110,7 @@ class Course(Base):
     admin = relationship("User", foreign_keys=[admin_id], back_populates="created_courses", lazy="joined")
     organisation = relationship("Organisation", back_populates="courses")
     teacher = relationship("User", foreign_keys=[teacher_id], back_populates="teaches")
-    
+     
 class Enrollment(Base):
     __tablename__ = 'enrollments'
     student_id = Column(UUID(as_uuid=True),ForeignKey(User.id, ondelete = "CASCADE"), primary_key=True)
