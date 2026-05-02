@@ -47,8 +47,8 @@ async def create_course(
     try:
         new_channel = models.Channel(
             name=f"{course.name} Group",
-            organisation_id=course.org_id,
-            is_private=False
+            org_id=course.org_id,
+            is_announcement_only=False
         )
         db.add(new_channel)
         db.commit()
