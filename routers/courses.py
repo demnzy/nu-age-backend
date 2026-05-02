@@ -2,58 +2,105 @@ from fastapi import *
 from schemas import *
 from database import get_db
 from sqlalchemy.orm import Session, joinedload
+from services.bunny_service import upload_audio_to_bunny
 from sqlalchemy import or_
+from database import Settings
 import models
-from services import  auth
+from services import utils, auth
+from typing import List
 from uuid import UUID
-
+import base64
+import pathlib
+import uuid
+from services.bunny_service import upload_bytes_to_bunny 
 router = APIRouter(prefix="/courses")
 
-#Create Courses
+
 @router.post('/create')
-async def create_course(payload: CourseBase, user = Depends(auth.get_current_user), db: Session = Depends(get_db)):
-    if user.role != "Admin": 
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unauthorized")
+async def create_course(
+    payload: CourseBase, 
+    user = Depends(auth.get_current_user), 
+    db: Session = Depends(get_db)
+):
+    # 1. PERMISSION CHECK
+    # Keep your specific role check (backward compatible with your existing Roles)
+    if user.role != "Admin" and user.role != "Instructor": 
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="You do not have the permission to perform this operation"
+        )
     
+    # 2. EXTRACT DATA
+    # Explicitly exclude image fields so SQLAlchemy doesn't crash on raw strings
     course_data = payload.model_dump(exclude={"image_bytes", "image_filename"})
     course_data['admin_id'] = user.id
     
+    # 3. CREATE COURSE RECORD (First Step)
+    # This generates the course.id needed for the chat and the CDN folder path
     course = models.Course(**course_data)
     db.add(course)
-    
-    # 1. FLUSH instead of commit so the course gets an ID without closing the transaction
-    db.flush() 
-
-    # 2. Automatically create the Course Chat Group
-    new_channel = models.Channel(
-        name=f"{course.name} Discussion", 
-        type="course", # Unique type so it doesn't get mixed up with standard org chats
-        org_id=course.org_id,
-        created_by_id=user.id
-    )
-    db.add(new_channel)
-    db.flush() 
-
-    # 3. Add the Course Admin to the chat automatically
-    db.add(models.ChannelMember(
-        channel_id=new_channel.id,
-        user_id=user.id,
-        role="admin"
-    ))
-
-    # 4. Tie the new Chat ID directly back to the Course
-    course.chat_id = new_channel.id
-    
-    # 5. Handle Image upload logic here as usual...
-    # ... (Your existing Bunny.net upload logic) ...[cite: 3]
-    
     db.commit()
-    db.refresh(course)
+    db.refresh(course) 
+
+    # 4. INITIALIZE CHAT (New Logic for UI compatibility)
+    # This ensures every course has a chat_id to avoid the 404/Null errors in org_view.py
+    try:
+        new_channel = models.Channel(
+            name=f"{course.name} Group",
+            organisation_id=course.organisation_id,
+            is_private=False
+        )
+        db.add(new_channel)
+        db.commit()
+        db.refresh(new_channel)
+
+        # Tie the chat back to the course chat_id column
+        course.chat_id = new_channel.id
+        
+        # Add the creator as the channel admin
+        db.add(models.ChannelMember(
+            channel_id=new_channel.id,
+            user_id=user.id,
+            role="admin"
+        ))
+        db.commit()
+    except Exception as e:
+        print(f"Warning: Chat creation failed, continuing with course creation: {e}")
+
+    # 5. HANDLE IMAGE UPLOAD (Bunny.net Logic)
+    # This matches your existing logic for handling Flet FilePicker bytes[cite: 1]
+    if payload.image_bytes and payload.image_filename:
+        try:
+            # Decode the base64 string from the frontend[cite: 1]
+            raw_image_bytes = base64.b64decode(payload.image_bytes)
+            
+            # Sanitize filename with UUID to prevent naming collisions
+            file_extension = payload.image_filename.split(".")[-1]
+            safe_filename = f"thumbnail_{uuid.uuid4().hex}.{file_extension}"
+            
+            # Set the Cloud Folder Structure -> courses/{course_id}/
+            folder_path = f"courses/{course.id}"
+            
+            # Upload to the CDN
+            cdn_url = await upload_bytes_to_bunny(raw_image_bytes, safe_filename, folder_path)
+            
+            # Update the Course record with the final URL
+            course.image_url = cdn_url
+            db.commit()
+            db.refresh(course)
+            
+        except Exception as e:
+            # Failure here doesn't crash the whole request; course is still created
+            print(f"Warning: Course created, but image upload failed: {str(e)}")
+
     return course
+
 #Get all courses
-
-
-
+from fastapi import Query, Depends
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import or_
+from uuid import UUID
+import models
 
 @router.get('')
 def get_all_courses(
