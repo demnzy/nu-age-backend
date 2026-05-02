@@ -44,10 +44,14 @@ async def create_course(
 
     # 4. INITIALIZE CHAT (New Logic for UI compatibility)
     # This ensures every course has a chat_id to avoid the 404/Null errors in org_view.py
+    # 4. INITIALIZE CHAT
     try:
         new_channel = models.Channel(
             name=f"{course.name} Group",
-            org_id=course.org_id,
+            type="course",          
+            course_id=course.id,   
+            created_by_id=user.id,  
+            org_id=course_data.get('organisation_id') or course_data.get('org_id'), # Safely grab org ID without crashing
             is_announcement_only=False
         )
         db.add(new_channel)
@@ -61,10 +65,11 @@ async def create_course(
         db.add(models.ChannelMember(
             channel_id=new_channel.id,
             user_id=user.id,
-            role="admin"
+            role="admin"  # or whatever your role enum is
         ))
         db.commit()
     except Exception as e:
+        db.rollback()
         print(f"Warning: Chat creation failed, continuing with course creation: {e}")
 
     # 5. HANDLE IMAGE UPLOAD (Bunny.net Logic)
