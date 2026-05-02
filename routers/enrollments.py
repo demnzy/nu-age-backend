@@ -41,35 +41,58 @@ def enrol(id: UUID, enrollment: EnrollmentBase = None, user=Depends(auth.get_cur
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
         
+    # 1. Determine target student and verify permissions
     if not course.public:
         # Private enrollment (Admin adding a specific student)
         if user.id != course.admin_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot enrol in this course yet")
             
-        target_student = enrollment.student_id if enrollment else user.id
-        is_enrolled = db.query(models.Enrollment).filter(
-            models.Enrollment.course_id == id, 
-            models.Enrollment.student_id == target_student
-        ).first()
-        
-        if is_enrolled:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Student is already enrolled in this course")
-            
-        enrol_record = models.Enrollment(student_id=target_student, course_id=id)
-        
+        target_student_id = enrollment.student_id if enrollment else user.id
     else:
         # Self (public) enrollment
-        is_enrolled = db.query(models.Enrollment).filter(
-            models.Enrollment.course_id == id, 
-            models.Enrollment.student_id == user.id
-        ).first()
+        target_student_id = user.id
+
+    # 2. Check for existing enrollment
+    is_enrolled = db.query(models.Enrollment).filter(
+        models.Enrollment.course_id == id, 
+        models.Enrollment.student_id == target_student_id
+    ).first()
+    
+    if is_enrolled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Student is already enrolled in this course")
         
-        if is_enrolled:
-             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You are already enrolled in this course")
-             
-        enrol_record = models.Enrollment(student_id=user.id, course_id=id)
-        
+    # 3. Create Enrollment Record
+    enrol_record = models.Enrollment(student_id=target_student_id, course_id=id)
     db.add(enrol_record)
+    db.flush() # Secure the enrollment ID without closing the transaction
+
+    # 4. CHAT INTEGRATION: Auto-add to the course group chat
+    if getattr(course, "chat_id", None):
+        existing_member = db.query(models.ChannelMember).filter_by(
+            channel_id=course.chat_id, user_id=target_student_id
+        ).first()
+
+        if not existing_member:
+            # Add to the chat room
+            db.add(models.ChannelMember(
+                channel_id=course.chat_id,
+                user_id=target_student_id,
+                role="member"
+            ))
+
+            # Fetch the user to get their actual name
+            target_user_obj = db.query(models.User).filter_by(id=target_student_id).first()
+            if target_user_obj:
+                # Generate the System Message
+                sys_msg = models.Message(
+                    channel_id=course.chat_id,
+                    sender_id=target_student_id, # Or use a dedicated system UUID if you have one
+                    content=f"{target_user_obj.first_name} {target_user_obj.last_name} joined the course!",
+                    type="system" 
+                )
+                db.add(sys_msg)
+
+    # 5. Finalize transaction
     db.commit()
     db.refresh(enrol_record)
     return enrol_record
@@ -193,22 +216,63 @@ def get_org_students_for_course(course_id: UUID, user=Depends(auth.get_current_u
 
 @router.post("/courses/{course_id}/enrollments/bulk-enroll")
 def bulk_enroll_students(course_id: UUID, payload: EnrollmentActionPayload, user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
-    """Bulk enrolls multiple students from the Flet UI."""
+    """Bulk enrolls multiple students from the Flet UI and adds them to the course chat."""
     course = db.query(models.Course).filter(models.Course.id == course_id).first()
-    if not course or user.id != (course.admin_id or course.teacher_id):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # 1. Permission Check
+    if not course or user.id not in [course.admin_id, course.teacher_id]:
+        raise HTTPException(status_code=403, detail="Not authorized to bulk enroll students")
 
     if not payload.student_ids:
         return {"message": "No students provided."}
         
+    enrolled_count = 0
+    added_names = []
+        
+    # 2. Process each student
     for s_id in payload.student_ids:
+        # Check if they are already enrolled
         exists = db.query(models.Enrollment).filter_by(student_id=s_id, course_id=course_id).first()
         if not exists:
+            # Enroll them
             new_enrollment = models.Enrollment(student_id=s_id, course_id=course_id)
             db.add(new_enrollment)
+            enrolled_count += 1
             
+            # 3. CHAT INTEGRATION: Auto-add to group chat
+            if getattr(course, "chat_id", None):
+                chat_member_exists = db.query(models.ChannelMember).filter_by(
+                    channel_id=course.chat_id, user_id=s_id
+                ).first()
+                
+                if not chat_member_exists:
+                    db.add(models.ChannelMember(
+                        channel_id=course.chat_id, 
+                        user_id=s_id, 
+                        role="member"
+                    ))
+                    
+                    # Fetch user to grab their name for the summary system message
+                    student_user = db.query(models.User).filter_by(id=s_id).first()
+                    if student_user:
+                        added_names.append(f"{student_user.first_name} {student_user.last_name}")
+
+    # 4. Create ONE aggregated System Message to prevent spamming the chat
+    if added_names and getattr(course, "chat_id", None):
+        names_string = ", ".join(added_names)
+        sys_content = f"{user.first_name} added {names_string} to the course!"
+        
+        sys_msg = models.Message(
+            channel_id=course.chat_id,
+            sender_id=user.id, 
+            content=sys_content,
+            type="system"
+        )
+        db.add(sys_msg)
+
+    # 5. Finalize transaction
     db.commit()
-    return {"success": True, "message": f"Enrolled {len(payload.student_ids)} students."}
+    return {"success": True, "message": f"Successfully enrolled {enrolled_count} students."}
 
 @router.post("/courses/{course_id}/enrollments/bulk-unenroll")
 def bulk_unenroll_students(course_id: UUID, payload: EnrollmentActionPayload, user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
