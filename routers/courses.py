@@ -47,7 +47,7 @@ async def create_course(
     try:
         new_channel = models.Channel(
             name=f"{course.name} Group",
-            organisation_id=course.organisation_id,
+            organisation_id=course.org_id,
             is_private=False
         )
         db.add(new_channel)
