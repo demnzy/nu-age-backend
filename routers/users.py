@@ -22,6 +22,8 @@ router = APIRouter(prefix=('/users'))
 async def register_user(user:UserReg, db: Session = Depends(get_db)):
     user.password = utils.hash_password(user.password)
     user1 = models.User(**user.model_dump())
+    if user1.role == "Teacher":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You can't Signup as an instructor!")
     if db.query(models.User).filter(models.User.username==user.username).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists, choose another one")
     if db.query(models.User).filter(models.User.email==user.email).first():
