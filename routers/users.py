@@ -27,7 +27,7 @@ def send_background_otp(email: str, code: str):
         "from": "Tobi from Nu Age <support@nu-age.name.ng>",
         "to": [email],
         "subject": "Verify your Nu Age Account",
-        "html": f"Welcome to Nu-age! Your OTP code is:<strong>{code}</strong>. Please note this expires in 15 minutes.",
+        "html": f"Thank you for signing up! Your OTP code is:<strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
     }
     try:
         resend.Emails.send(params)
@@ -110,7 +110,7 @@ def send_general_welcome_email(email: str, first_name: str = "there"):
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-      <title>Welcome to Nu-age</title>
+      <title>Welcome to Nu Age</title>
       <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body, table, td, a {{ -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }}
@@ -272,7 +272,7 @@ def send_general_welcome_email(email: str, first_name: str = "there"):
 
             <p class="body-text">Hi {first_name},</p>
             <p class="body-text">Your account is officially set up and ready to go.</p>
-            <p class="body-text">Nu Age is built to give you access to high-quality, practical learning without burning through your data..</p>
+            <p class="body-text">Nu Age is built to give you access to high-quality, practical learning without burning through your data. Learners of all ages, shapes, and sizes are welcome! </p>
 
             <p class="body-text">If you ever get stuck or have questions, just reply directly to this email.</p>
             <p class="body-text">Let's get to work.</p>
