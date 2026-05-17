@@ -96,7 +96,15 @@ async def verify_email(payload: VerifyEmailSchema, db: Session = Depends(get_db)
     if not otp_record or otp_record.code != payload.code:
         raise HTTPException(status_code=400, detail="Invalid verification code.")
 
-    if datetime.now(timezone.utc).replace(tzinfo=None) > otp_record.expires_at:
+    # 3. Check if it is expired
+    now_utc = datetime.now(timezone.utc)
+    expires_at = otp_record.expires_at
+
+    # Safely force the database time to be timezone-aware if it isn't already
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if now_utc > expires_at:
         raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
 
     # 2. Find the user and unlock the account
