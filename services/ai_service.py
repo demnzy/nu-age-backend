@@ -240,3 +240,4 @@ Tag each question with a difficulty level:
         db.commit()
         db.close()
         print("[DEBUG] Database session closed and materials unlocked.")
+

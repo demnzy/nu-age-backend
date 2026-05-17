@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     BUNNY_CDN_HOSTNAME : str
     OPENAI_API_KEY : str
     GROQ_API_KEY : str
+    RESEND_API_KEY: str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

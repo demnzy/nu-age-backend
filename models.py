@@ -33,12 +33,20 @@ class User(Base):
     university = Column(String, nullable=True)
     streak = Column(Integer, default=0, nullable=True)
     last_login_date = Column(Date, nullable=True)
+    is_verified = Column(Boolean, default=False)
      
     organisations = relationship("Organisation", secondary="OrganisationMembers", back_populates="members")
     courses= relationship("Course", secondary= "enrollments", back_populates="Students")
     created_courses = relationship("Course", back_populates="admin", foreign_keys="[Course.admin_id]")
     teaches = relationship("Course", back_populates="teacher", foreign_keys="[Course.teacher_id]")
     
+class SignupOTP(Base):
+    __tablename__ = "signup_otps"
+    email = Column(String, nullable=False, unique=True, primary_key=True)
+    code = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 class Organisation(Base):
     __tablename__ = "Organisations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
