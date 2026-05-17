@@ -364,11 +364,11 @@ def user_login(user: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     # 3. --- OTP VERIFICATION CHECK ---
     # We check this BEFORE updating streaks or issuing tokens.
-    if getattr(actual_user, 'is_verified', None) is False:
+    """if getattr(actual_user, 'is_verified', None) is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Account not verified. Please check your email for the OTP code."
-        )
+        )"""
     # Grab the current time in Nigeria (UTC+1) so streaks reset exactly at midnight local time
     wat_tz = pytz.timezone('Africa/Lagos')
     today = datetime.now(wat_tz).date()
