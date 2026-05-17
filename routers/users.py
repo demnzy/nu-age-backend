@@ -27,7 +27,7 @@ def send_background_otp(email: str, code: str):
         "from": "Tobi from Nu Age <support@nu-age.name.ng>",
         "to": [email],
         "subject": "Verify your Nu Age Account",
-        "html": f"Thank you for signing up! Your OTP code is:<strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
+        "html": f"Thank you for signing up! Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
     }
     try:
         resend.Emails.send(params)
@@ -304,6 +304,7 @@ def send_general_welcome_email(email: str, first_name: str = "there"):
     
     try:
         resend.Emails.send(params)
+        print("I sent!")
     except Exception as e:
         print(f"Failed to send welcome email to {email}: {e}")
 
