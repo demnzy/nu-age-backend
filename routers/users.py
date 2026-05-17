@@ -24,10 +24,10 @@ def send_background_otp(email: str, code: str):
     settings = Settings()
     resend.api_key = settings.RESEND_API_KEY
     params: resend.Emails.SendParams = {
-        "from": "Tobi <support@nu-age.name.ng>",
+        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
         "to": [email],
-        "subject": "Verify your Nu-age Account",
-        "html": f"<strong>Welcome to Nu-age! Your OTP code is: {code}. Please note this expires in 15 minutes.</strong>",
+        "subject": "Verify your Nu Age Account",
+        "html": f"Welcome to Nu-age! Your OTP code is:<strong>{code}</strong>. Please note this expires in 15 minutes.",
     }
     try:
         resend.Emails.send(params)
@@ -42,27 +42,38 @@ async def register_user(
 ):
     if user.role == "Teacher":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You can't Signup as an instructor!")
-    
-    if db.query(models.User).filter(models.User.username == user.username).first():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists, choose another one")
-
     # Check for existing email safely
+    # 1. Check if the username is taken by ANYONE ELSE
+    existing_username = db.query(models.User).filter(models.User.username == user.username).first()
+    
+    if existing_username:
+        # If the username exists, but the email is different, it belongs to someone else. Block it.
+        # If the email is the same, we ignore the error because it's their own ghost account.
+        if existing_username.email != user.email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail="Username already exists, choose another one"
+            )
+
+    # 2. Check the email status
     existing_user = db.query(models.User).filter(models.User.email == user.email).first()
+    
     if existing_user:
-        # If they exist and ARE verified, block them.
         if getattr(existing_user, 'is_verified', False): 
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is associated with another account")
-        # If they exist but ARE NOT verified, we will overwrite their data and resend the code below
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail="Email is associated with another verified account"
+            )
         else:
+            # It's their own unverified ghost account. Overwrite it.
             user_to_save = existing_user
             user_to_save.password = utils.hash_password(user.password)
             user_to_save.username = user.username
-            # Update any other fields as necessary
+            # Update any other fields (first_name, last_name, etc.) here
     else:
-        # Brand new user
+        # 3. Brand new user (Email doesn't exist, and username is free)
         user.password = utils.hash_password(user.password)
         user_to_save = models.User(**user.model_dump())
-        # Make sure they default to unverified
         user_to_save.is_verified = False 
         db.add(user_to_save)
     
@@ -88,8 +99,216 @@ async def register_user(
 
     return user_to_save
 
+def send_general_welcome_email(email: str, first_name: str = "there"):
+    settings = Settings()
+    resend.api_key = settings.RESEND_API_KEY
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+      <title>Welcome to Nu-age</title>
+      <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body, table, td, a {{ -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }}
+        table, td {{ mso-table-lspace: 0pt; mso-table-rspace: 0pt; }}
+        img {{ -ms-interpolation-mode: bicubic; border: 0; outline: none; text-decoration: none; }}
+        body {{ background-color: #F2F7F1; font-family: Georgia, 'Times New Roman', serif; }}
+
+        .email-wrapper {{ background-color: #F2F7F1; padding: 40px 16px; }}
+
+        .email-card {{
+          background-color: #ffffff;
+          max-width: 620px;
+          margin: 0 auto;
+          border-radius: 12px;
+          overflow: hidden;
+          box-shadow: 0 4px 28px rgba(55,191,19,0.10), 0 1px 6px rgba(0,0,0,0.06);
+        }}
+
+        /* BANNER */
+        .banner {{
+          width: 100%;
+          height: 140px;
+          overflow: hidden;
+          display: block;
+        }}
+        .banner img {{
+          width: 100%;
+          max-width: 620px;
+          height: 140px;
+          object-fit: cover;
+          object-position: center center;
+          display: block;
+        }}
+
+        /* HEADER STRIP */
+        .header-strip {{
+          background-color: #37BF13;
+          padding: 14px 40px;
+          text-align: center;
+        }}
+        .header-strip p {{
+          color: #ffffff;
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          letter-spacing: 3px;
+          text-transform: uppercase;
+          opacity: 0.92;
+        }}
+
+        /* BODY */
+        .email-body {{ padding: 40px 44px 36px; }}
+
+        .greeting {{
+          font-family: Georgia, serif;
+          font-size: 24px;
+          font-weight: normal;
+          color: #111A0F;
+          margin-bottom: 6px;
+          line-height: 1.3;
+        }}
+        .greeting span {{ color: #37BF13; }}
+
+        .divider {{
+          width: 48px;
+          height: 3px;
+          background-color: #37BF13;
+          margin: 16px 0 24px;
+          border-radius: 2px;
+        }}
+
+        .body-text {{
+          font-family: Georgia, serif;
+          font-size: 15px;
+          color: #374151;
+          line-height: 1.8;
+          margin-bottom: 16px;
+        }}
+
+        /* MAIN BUTTON */
+        .btn-wrap {{ text-align: center; margin: 32px 0; }}
+        .btn-primary {{
+          display: inline-block;
+          background-color: #37BF13;
+          color: #ffffff !important;
+          text-decoration: none;
+          font-family: Georgia, serif;
+          font-size: 16px;
+          font-weight: bold;
+          padding: 14px 36px;
+          border-radius: 8px;
+          letter-spacing: 0.5px;
+          box-shadow: 0 4px 12px rgba(55,191,19,0.2);
+        }}
+
+        /* SIGNATURE */
+        .signature {{
+          margin-top: 32px;
+          padding-top: 24px;
+          border-top: 1px solid #E3EEE1;
+        }}
+        .signature .sign-name {{
+          font-family: Georgia, serif;
+          font-size: 16px;
+          color: #111A0F;
+          font-weight: bold;
+        }}
+        .signature .sign-role {{
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          color: #37BF13;
+          margin-top: 4px;
+        }}
+
+        /* FOOTER */
+        .email-footer {{
+          background-color: #111A0F;
+          padding: 20px 44px;
+          text-align: center;
+        }}
+        .email-footer p {{
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          color: #5A7A56;
+          letter-spacing: 1px;
+          line-height: 1.7;
+        }}
+        .email-footer a {{
+          color: #37BF13;
+          text-decoration: none;
+        }}
+
+        /* MOBILE */
+        @media only screen and (max-width: 480px) {{
+          .email-body {{ padding: 28px 24px 24px; }}
+          .email-footer {{ padding: 16px 24px; }}
+          .header-strip {{ padding: 12px 24px; }}
+          .greeting {{ font-size: 20px; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="email-wrapper">
+        <div class="email-card">
+
+          <div class="banner">
+            <img src="https://nu-age-cdn.b-cdn.net/logos/Nu%20logo%20only.jpeg" alt="Nu-age Banner" />
+          </div>
+
+          <div class="header-strip">
+            <p>Account Verified &nbsp;&bull;&nbsp; Registration Complete</p>
+          </div>
+
+          <div class="email-body">
+
+            <h1 class="greeting">Welcome to <span>Nu-age!</span></h1>
+            <div class="divider"></div>
+
+            <p class="body-text">Hi {first_name},</p>
+            <p class="body-text">Your account is officially set up and ready to go.</p>
+            <p class="body-text">Nu Age is built to give you access to high-quality, practical learning without burning through your data..</p>
+
+            <p class="body-text">If you ever get stuck or have questions, just reply directly to this email.</p>
+            <p class="body-text">Let's get to work.</p>
+
+            <div class="signature">
+              <div class="sign-name">Tobi</div>
+              <div class="sign-role">The Nu Age Team</div>
+            </div>
+
+          </div>
+
+          <div class="email-footer">
+            <p>© 2026 Nu Age &nbsp;&bull;&nbsp; You received this because you created an account.<br>
+            Questions? <a href="#">Reply directly to this email.</a></p>
+          </div>
+
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    params: resend.Emails.SendParams = {
+        "from": " Tobi from Nu Age <support@nu-age.name.ng>",
+        "to": [email],
+        "subject": "Welcome to Nu Age 🚀",
+        "html": html_content,
+    }
+    
+    try:
+        resend.Emails.send(params)
+    except Exception as e:
+        print(f"Failed to send welcome email to {email}: {e}")
+
 @router.post("/auth/verify-email")
-async def verify_email(payload: VerifyEmailSchema, db: Session = Depends(get_db)):
+async def verify_email( payload: VerifyEmailSchema,background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     # 1. Look up the OTP
     otp_record = db.query(models.SignupOTP).filter(models.SignupOTP.email == payload.email).first()
     
@@ -120,7 +339,7 @@ async def verify_email(payload: VerifyEmailSchema, db: Session = Depends(get_db)
 
     # 4. Generate the JWT Token so they are instantly logged into the dashboard
     # access_token = create_access_token(data={"sub": user.email})
-    
+    background_tasks.add_task(send_general_welcome_email, user.email, user.first_name)
     return {
         "message": "Email verified successfully!", 
         # "access_token": access_token, 
