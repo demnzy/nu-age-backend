@@ -3,7 +3,6 @@ from firebase_admin import credentials, messaging
 from sqlalchemy.orm import Session
 import models
 import base64
-import os
 import json
 from database import Settings
 
