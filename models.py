@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from database import Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -39,7 +41,16 @@ class User(Base):
     courses= relationship("Course", secondary= "enrollments", back_populates="Students")
     created_courses = relationship("Course", back_populates="admin", foreign_keys="[Course.admin_id]")
     teaches = relationship("Course", back_populates="teacher", foreign_keys="[Course.teacher_id]")
-    
+    device_tokens = relationship("DeviceToken", backref="user", cascade="all, delete")
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String, unique=True, index=True, nullable=False)
+    device_type = Column(String) # e.g., 'android', 'ios', 'desktop'
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class SignupOTP(Base):
     __tablename__ = "signup_otps"
     email = Column(String, nullable=False, unique=True, primary_key=True)
