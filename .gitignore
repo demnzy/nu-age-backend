@@ -6,7 +6,7 @@ __pycache__/
 # (Ideally, use environment variables, but if you hardcoded the DB URL, ignore this file)
 alembic.ini
 .env
-
+services\nu-age-firebase-adminsdk-fbsvc-540228e785.json
 # 3. Ignore the DBML/SQL dumps we just generated (Optional, but keeps repo clean)
 *.dbml
 *.sql

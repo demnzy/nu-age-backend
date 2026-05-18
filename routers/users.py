@@ -34,6 +34,67 @@ def send_background_otp(email: str, code: str):
     except Exception as e:
         print(f"Failed to send email to {email}: {e}")
 
+
+class DeviceTokenSchema(BaseModel):
+    token: str
+    device_type: str = "web" # default
+
+@router.post("/users/device-token")
+async def register_device_token(
+    payload: DeviceTokenSchema, 
+    current_user= Depends(auth.get_current_user), 
+    db: Session = Depends(get_db)
+):
+    # Check if this exact token already exists
+    existing_token = db.query(models.DeviceToken).filter(models.DeviceToken.token == payload.token).first()
+    
+    if existing_token:
+        # If it exists but belongs to someone else (e.g., a friend logged into their account on this phone), reassign it.
+        if existing_token.user_id != current_user.id:
+            existing_token.user_id = current_user.id
+            db.commit()
+        return {"message": "Token registered."}
+    
+    # Create new token record
+    new_token = models.DeviceToken(
+        user_id=current_user.id,
+        token=payload.token,
+        device_type=payload.device_type
+    )
+    db.add(new_token)
+    db.commit()
+    
+    return {"message": "Device token saved successfully."}
+
+from services.notifications import send_push_notification
+
+@router.get("/test-firebase")
+async def test_firebase_connection():
+    # We are intentionally passing a fake token to see how Google responds
+    fake_token = "this_is_a_fake_device_token_12345"
+    
+    # Construct the message manually just for this test
+    from firebase_admin import messaging
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(
+            title="Test from Nu-age",
+            body="If you see this, the code is running.",
+        ),
+        tokens=[fake_token],
+    )
+
+    try:
+        response = messaging.send_each_for_multicast(message)
+        
+        # We want to see what Google says about our fake token
+        for resp in response.responses:
+            if not resp.success:
+                print(f"FIREBASE RESPONSE: {resp.exception.code}")
+                
+        return {"status": "Test executed. Check your terminal logs."}
+    except Exception as e:
+        return {"error": str(e)}
+    
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(
     user: UserReg, 

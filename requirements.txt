@@ -175,3 +175,9 @@ zopfli==0.4.1
 fastapi[standard]==0.135.3
 resend==2.30.1
 pytz==2026.2
+firebase-admin
+cachecontrol
+google-api-core
+google-cloud-firestore
+google-cloud-storage
+pyjwt
