@@ -147,7 +147,7 @@ async def verify_password(
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    otp_record = db.query(models.SignupOTP).filter(models.SignupOTP.email == email).first()
+    otp_record = db.query(models.PasswordResetOTP).filter(models.PasswordResetOTP.email == email).first()
     
     if not otp_record or otp_record.code != otp:
         raise HTTPException(status_code=400, detail="Invalid verification code.")
