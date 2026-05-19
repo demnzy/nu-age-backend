@@ -34,6 +34,19 @@ def send_background_otp(email: str, code: str):
     except Exception as e:
         print(f"Failed to send email to {email}: {e}")
 
+def send_password_reset_otp(email: str, code: str):
+    settings = Settings()
+    resend.api_key = settings.RESEND_API_KEY
+    params: resend.Emails.SendParams = {
+        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
+        "to": [email],
+        "subject": "Reset your Nu Age Password",
+        "html": f"You have requested to reset your Nu Age password. Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
+    }
+    try:
+        resend.Emails.send(params)
+    except Exception as e:
+        print(f"Failed to send email to {email}: {e}")
 
 class DeviceTokenSchema(BaseModel):
     token: str
@@ -95,6 +108,69 @@ async def test_firebase_connection():
     except Exception as e:
         return {"error": str(e)}
     
+@router.post('/auth/reset-password')
+async def reset_password(
+    email: str,
+    background_tasks: BackgroundTasks, # Inject background tasks here
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Generate the OTP
+    code = str(random.randint(100000, 999999))
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    # Save OTP to the database
+    otp_record = db.query(models.PasswordResetOTP).filter(models.PasswordResetOTP.email == email).first()
+    if otp_record:
+        otp_record.code = code
+        otp_record.expires_at = expires
+    else:
+        db.add(models.PasswordResetOTP(email=email, code=code, expires_at=expires))
+
+    db.commit()
+
+    # Send the password reset OTP via email
+    background_tasks.add_task(send_password_reset_otp, email, code)
+
+    return {"message": "Password reset OTP sent."}
+
+@router.post('/auth/verify-password')
+async def verify_password(
+    email: str,
+    new_password: str,
+    otp: str,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    otp_record = db.query(models.SignupOTP).filter(models.SignupOTP.email == email).first()
+    
+    if not otp_record or otp_record.code != otp:
+        raise HTTPException(status_code=400, detail="Invalid verification code.")
+
+    # 3. Check if it is expired
+    now_utc = datetime.now(timezone.utc)
+    expires_at = otp_record.expires_at
+
+    # Safely force the database time to be timezone-aware if it isn't already
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if now_utc > expires_at:
+        raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
+
+    # 3. Destroy the OTP so it can't be reused
+    db.delete(otp_record)
+    user.password = utils.hash_password(new_password)
+    db.commit()
+    db.refresh(user)
+
+    return {"message": "Password reset OTP sent."}
+
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(
     user: UserReg, 
@@ -425,11 +501,11 @@ def user_login(user: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     # 3. --- OTP VERIFICATION CHECK ---
     # We check this BEFORE updating streaks or issuing tokens.
-    """if getattr(actual_user, 'is_verified', None) is False:
+    if getattr(actual_user, 'is_verified', None) is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Account not verified. Please check your email for the OTP code."
-        )"""
+        )
     # Grab the current time in Nigeria (UTC+1) so streaks reset exactly at midnight local time
     wat_tz = pytz.timezone('Africa/Lagos')
     today = datetime.now(wat_tz).date()
