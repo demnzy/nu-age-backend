@@ -58,6 +58,13 @@ class SignupOTP(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+class PasswordResetOTP(Base):
+    __tablename__ = "password_reset_otps"
+    email = Column(String, nullable=False, unique=True, primary_key=True)
+    code = Column(String, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 class Organisation(Base):
     __tablename__ = "Organisations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
