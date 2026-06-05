@@ -288,3 +288,11 @@ class EnrollmentStatsResponse(BaseModel):
 class VerifyEmailSchema(BaseModel):
     email: str
     code: str
+
+class InviteCreateRequest(BaseModel):
+    target_email: EmailStr
+    organisation_id: UUID
+    role: str = "Student" # Default to student
+
+class JoinProcessRequest(BaseModel):
+    token: UUID

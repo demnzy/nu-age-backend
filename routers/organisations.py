@@ -1,4 +1,8 @@
+from datetime import timedelta
+
 from fastapi import *
+from pytz import timezone
+import resend
 from schemas import *
 from database import get_db,Settings
 from sqlalchemy.orm import Session, joinedload
@@ -112,14 +116,6 @@ async def get_user_organisation(user= Depends(auth.get_current_user), db:Session
     except HTTPException:
         # If it's our 404 from above, let it pass through normally
         raise
-
-    except SQLAlchemyError as db_error:
-        # Exact Error: 500 if the database connection drops or a query fails
-        print(f"Database Error in /me: {str(db_error)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="A database error occurred while fetching organization data."
-        )
 
     except Exception as e:
         # Exact Error: 500 Catch-all for any Python/dict comprehension crashes
@@ -254,3 +250,377 @@ def join_organization(
         "status": "success", 
         "message": f"Successfully joined {org.name}."
     }
+@router.post("/organisations/invite")
+async def send_organisation_invite(
+    request: InviteCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user= Depends(auth.get_current_user) # Assuming you have an auth dependency
+):
+    # 1. Verify the org exists and the current_user is the owner/admin
+    org = db.query(Organisation).filter(Organisation.id == request.organisation_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+        
+    # (Optional) Verify current_user has permission to invite people to this org here
+    
+    # 2. Create the Invitation record
+    new_invite =    models.Invitations(
+        target_email=request.target_email,
+        organisation_id=request.organisation_id,
+        uses_left=1, # Single-use for a direct email
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7), # Expires in 7 days
+        created_by=current_user.id
+    )
+    
+    db.add(new_invite)
+    db.commit()
+    db.refresh(new_invite)
+    
+    # 3. Construct the link to your Flet frontend
+    frontend_link = f"https://learn.nu-age.name.ng/accept-invite?token={new_invite.id}"
+    
+    # 4. Trigger background email sending (replace with your actual email logic)
+    background_tasks.add_task(send_organisation_invite_email, request.target_email, frontend_link, org.name, request.role)
+    
+    return {"message": "Invite sent successfully", "token": new_invite.id}
+
+def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
+    settings = Settings()
+    resend.api_key = settings.RESEND_API_KEY
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+      <title>You've been invited to {org_name}</title>
+      <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body, table, td, a {{ -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }}
+        table, td {{ mso-table-lspace: 0pt; mso-table-rspace: 0pt; }}
+        img {{ -ms-interpolation-mode: bicubic; border: 0; outline: none; text-decoration: none; }}
+        body {{ background-color: #F2F7F1; font-family: Georgia, 'Times New Roman', serif; }}
+
+        .email-wrapper {{ background-color: #F2F7F1; padding: 40px 16px; }}
+
+        .email-card {{
+          background-color: #ffffff;
+          max-width: 620px;
+          margin: 0 auto;
+          border-radius: 12px;
+          overflow: hidden;
+          box-shadow: 0 4px 28px rgba(55,191,19,0.10), 0 1px 6px rgba(0,0,0,0.06);
+        }}
+
+        /* BANNER */
+        .banner {{
+          width: 100%;
+          height: 140px;
+          overflow: hidden;
+          display: block;
+        }}
+        .banner img {{
+          width: 100%;
+          max-width: 620px;
+          height: 140px;
+          object-fit: cover;
+          object-position: center center;
+          display: block;
+        }}
+
+        /* HEADER STRIP */
+        .header-strip {{
+          background-color: #37BF13;
+          padding: 14px 40px;
+          text-align: center;
+        }}
+        .header-strip p {{
+          color: #ffffff;
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          letter-spacing: 3px;
+          text-transform: uppercase;
+          opacity: 0.92;
+        }}
+
+        /* BODY */
+        .email-body {{ padding: 40px 44px 36px; }}
+
+        .greeting {{
+          font-family: Georgia, serif;
+          font-size: 24px;
+          font-weight: normal;
+          color: #111A0F;
+          margin-bottom: 6px;
+          line-height: 1.3;
+        }}
+        .greeting span {{ color: #37BF13; }}
+
+        .divider {{
+          width: 48px;
+          height: 3px;
+          background-color: #37BF13;
+          margin: 16px 0 24px;
+          border-radius: 2px;
+        }}
+
+        .body-text {{
+          font-family: Georgia, serif;
+          font-size: 15px;
+          color: #374151;
+          line-height: 1.8;
+          margin-bottom: 16px;
+        }}
+
+        /* MAIN BUTTON */
+        .btn-wrap {{ text-align: center; margin: 32px 0; }}
+        .btn-primary {{
+          display: inline-block;
+          background-color: #37BF13;
+          color: #ffffff !important;
+          text-decoration: none;
+          font-family: Georgia, serif;
+          font-size: 16px;
+          font-weight: bold;
+          padding: 14px 36px;
+          border-radius: 8px;
+          letter-spacing: 0.5px;
+          box-shadow: 0 4px 12px rgba(55,191,19,0.2);
+        }}
+
+        /* SIGNATURE */
+        .signature {{
+          margin-top: 32px;
+          padding-top: 24px;
+          border-top: 1px solid #E3EEE1;
+        }}
+        .signature .sign-name {{
+          font-family: Georgia, serif;
+          font-size: 16px;
+          color: #111A0F;
+          font-weight: bold;
+        }}
+        .signature .sign-role {{
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          color: #37BF13;
+          margin-top: 4px;
+        }}
+
+        /* FOOTER */
+        .email-footer {{
+          background-color: #111A0F;
+          padding: 20px 44px;
+          text-align: center;
+        }}
+        .email-footer p {{
+          font-family: 'Courier New', Courier, monospace;
+          font-size: 11px;
+          color: #5A7A56;
+          letter-spacing: 1px;
+          line-height: 1.7;
+        }}
+        .email-footer a {{
+          color: #37BF13;
+          text-decoration: none;
+        }}
+
+        /* MOBILE */
+        @media only screen and (max-width: 480px) {{
+          .email-body {{ padding: 28px 24px 24px; }}
+          .email-footer {{ padding: 16px 24px; }}
+          .header-strip {{ padding: 12px 24px; }}
+          .greeting {{ font-size: 20px; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="email-wrapper">
+        <div class="email-card">
+
+          <div class="banner">
+            <img src="https://nu-age-cdn.b-cdn.net/logos/Nu%20logo%20only.jpeg" alt="Nu-age Banner" />
+          </div>
+
+          <div class="header-strip">
+            <p>Action Required &nbsp;&bull;&nbsp; Organization Invite</p>
+          </div>
+
+          <div class="email-body">
+
+            <h1 class="greeting">You've been invited!</h1>
+            <div class="divider"></div>
+
+            <p class="body-text">Hi there,</p>
+            <p class="body-text">You have been invited to join <strong>{org_name}</strong> on Nu Age as a <strong>{role}</strong>.</p>
+            <p class="body-text">Nu Age is built to give you access to high-quality, practical learning without burning through your data. Click the button below to accept your invitation and set up your account.</p>
+
+            <div class="btn-wrap">
+              <a href="{invite_link}" class="btn-primary">Accept Invitation</a>
+            </div>
+            
+            <p class="body-text" style="font-size: 13px; color: #6b7280; margin-top: -10px;">
+              If the button doesn't work, copy and paste this link into your browser:<br>
+              <span style="word-break: break-all; color: #37BF13;">{invite_link}</span>
+            </p>
+
+            <div class="signature">
+              <div class="sign-name">Tobi</div>
+              <div class="sign-role">The Nu Age Team</div>
+            </div>
+
+          </div>
+
+          <div class="email-footer">
+            <p>© 2026 Nu Age &nbsp;&bull;&nbsp; You received this because you were invited to join {org_name}.<br>
+            Questions? <a href="#">Reply directly to this email.</a></p>
+          </div>
+
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+    params: resend.Emails.SendParams = {
+        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
+        "to": [email],
+        "subject": f"You're invited to join {org_name} on Nu Age 🚀",
+        "html": html_content,
+    }
+    
+    try:
+        resend.Emails.send(params)
+        print(f"Invite sent to {email} for {org_name}!")
+    except Exception as e:
+        print(f"Failed to send invite email to {email}: {e}")
+
+class JoinProcessRequest(BaseModel):
+    token: UUID
+
+@router.post("/process-invite")
+async def process_invitation_join(
+    request: JoinProcessRequest,
+    db: Session = Depends(get_db)
+):
+    # 1. Fetch and validate the token
+    invite = db.query(models.Invitations).filter(models.Invitations.id == request.token).first()
+    
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invalid invitation token.")
+        
+    if invite.uses_left <= 0:
+        raise HTTPException(status_code=400, detail="This invitation has already been used.")
+        
+    if invite.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="This invitation has expired.")
+
+    # 2. Check if the targeted email is already registered
+    user = db.query(models.User).filter(models.User.email == invite.target_email).first()
+    
+    # --- SCENARIO B: User is NOT on the platform ---
+    if not user:
+        return {
+            "status": "needs_signup",
+            "email": invite.target_email,
+            "org_id": invite.organisation_id,
+            "message": "User not found. Route to signup."
+        }
+        
+    # --- SCENARIO A: User IS on the platform ---
+    existing_member = db.query(models.OrganisationMember).filter(
+        models.OrganisationMember.user_id == user.id,
+        models.OrganisationMember.organisation_id == invite.organisation_id
+    ).first()
+    
+    if existing_member:
+        return {"status": "already_member", "message": "User is already in this organisation."}
+        
+    try:
+        # Create the junction table entry
+        new_member = models.OrganisationMember(
+            user_id=user.id,
+            organisation_id=invite.organisation_id,
+            role="student" 
+        )
+        db.add(new_member)
+        
+        # Burn the invite token
+        invite.uses_left -= 1
+        
+        db.commit()
+        
+        return {
+            "status": "success", 
+            "message": "User successfully added to the organisation."
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to join organisation.")
+@router.get("/{org_id}/invitations/pending")
+async def get_pending_invitations(
+    org_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    # 1. Verify the organization exists (and optionally check if current_user is an admin)
+    org = db.query(models.Organisation).filter(models.Organisation.id == org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+
+    # 2. Query for active invitations
+    now = datetime.now(timezone.utc)
+    pending_invites = db.query(models.Invitations).filter(
+        models.Invitations.organisation_id == org_id,
+        models.Invitations.uses_left > 0,
+        models.Invitations.expires_at > now
+    ).all()
+
+    # 3. Format the response to match your exact UI requirements
+    result = []
+    for inv in pending_invites:
+        # Check if the role attribute exists, otherwise default to "STUDENT"
+        role_value = getattr(inv, 'role', 'STUDENT').upper()
+        
+        result.append({
+            "id": str(inv.id),
+            # If target_email is null (like for a bulk WhatsApp link), return a fallback string
+            "email": inv.target_email if inv.target_email else "Bulk Group Link",
+            "role": role_value,
+            "sent_at": inv.created_at.isoformat() if inv.created_at else now.isoformat()
+        })
+
+    return result
+
+
+@router.delete("/invitations/{invite_id}/revoke")
+async def revoke_invitation(
+    invite_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    # 1. Find the invitation
+    invite = db.query(models.Invitations).filter(models.Invitations.id == invite_id).first()
+    
+    if not invite:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Invitation not found or already revoked."
+        )
+        
+    # Optional Security: Ensure the current user actually owns the org this invite belongs to!
+    # org = db.query(models.Organisation).filter(models.Organisation.id == invite.organisation_id).first()
+    # if org.owner_id != current_user.id:
+    #     raise HTTPException(status_code=403, detail="Not authorized to revoke this invite.")
+
+    # 2. Nuke it from the database
+    db.delete(invite)
+    db.commit()
+    
+    return {"status": "success", "message": "Invitation successfully revoked."}

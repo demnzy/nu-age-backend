@@ -104,6 +104,16 @@ class OrganisationMember(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey(User.id, ondelete="CASCADE"), primary_key=True)
     organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="CASCADE"), primary_key=True)
     role  = Column(String, nullable=False, default="student")
+
+class Invitations(Base):
+    __tablename__ = "invitations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    target_email = Column(String, nullable=True, unique=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="CASCADE"), nullable=False)
+    uses_left = Column(Integer, default=1, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 #courses and categories
 
 class Category(Base):
