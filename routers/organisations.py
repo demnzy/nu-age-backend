@@ -269,7 +269,7 @@ async def send_organisation_invite(
         target_email=request.target_email,
         organisation_id=request.organisation_id,
         uses_left=1, # Single-use for a direct email
-        expires_at=datetime.now(timezone.utc) + timedelta(days=7), # Expires in 7 days
+        expires_at=datetime.now(timezone('UTC')) + timedelta(days=7), # Expires in 7 days
         created_by=current_user.id
     )
     
