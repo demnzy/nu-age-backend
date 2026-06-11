@@ -250,7 +250,7 @@ def join_organization(
         "status": "success", 
         "message": f"Successfully joined {org.name}."
     }
-@router.post("/organisations/invite")
+@router.post("/invite")
 async def send_organisation_invite(
     request: InviteCreateRequest,
     background_tasks: BackgroundTasks,
