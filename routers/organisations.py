@@ -575,7 +575,7 @@ async def get_pending_invitations(
         raise HTTPException(status_code=404, detail="Organisation not found")
 
     # 2. Query for active invitations
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone('UTC'))
     pending_invites = db.query(models.Invitations).filter(
         models.Invitations.organisation_id == org_id,
         models.Invitations.uses_left > 0,
