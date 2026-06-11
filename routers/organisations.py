@@ -289,6 +289,7 @@ async def send_organisation_invite(
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
     settings = Settings()
     resend.api_key = settings.RESEND_API_KEY
+    print(invite_link)
     
     html_content = f"""
     <!DOCTYPE html>
@@ -518,7 +519,7 @@ async def process_invitation_join(
     if invite.uses_left <= 0:
         raise HTTPException(status_code=400, detail="This invitation has already been used.")
         
-    if invite.expires_at < datetime.now(timezone.utc):
+    if invite.expires_at < datetime.now(timezone('UTC')):
         raise HTTPException(status_code=400, detail="This invitation has expired.")
 
     # 2. Check if the targeted email is already registered
