@@ -258,7 +258,7 @@ async def send_organisation_invite(
     current_user= Depends(auth.get_current_user) # Assuming you have an auth dependency
 ):
     # 1. Verify the org exists and the current_user is the owner/admin
-    org = db.query(Organisation).filter(Organisation.id == request.organisation_id).first()
+    org = db.query(models.Organisation).filter(models.Organisation.id == request.organisation_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organisation not found")
         
