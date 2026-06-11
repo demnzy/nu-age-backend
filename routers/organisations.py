@@ -626,3 +626,22 @@ async def revoke_invitation(
     db.commit()
     
     return {"status": "success", "message": "Invitation successfully revoked."}
+
+@router.get('/joined')
+async def get_joined_organisations(
+    user = Depends(auth.get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a list of all organizations the current user is a member of,
+    excluding any organizations they own.
+    """
+    joined_orgs = db.query(models.Organisation).join(
+        models.OrganisationMember,
+        models.Organisation.id == models.OrganisationMember.organisation_id
+    ).filter(
+        models.OrganisationMember.user_id == user.id,
+        models.Organisation.owner_id != user.id # Strictly exclude orgs they own
+    ).all()
+    
+    return joined_orgs
