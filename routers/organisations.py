@@ -278,12 +278,13 @@ async def send_organisation_invite(
     db.refresh(new_invite)
     
     # 3. Construct the link to your Flet frontend
-    frontend_link = f"https://learn.nu-age.name.ng/accept-invite?token={new_invite.id}"
+    frontend_link = f"https://learn.nu-age.name.ng/accept-invite/{new_invite.id}"
     
     # 4. Trigger background email sending (replace with your actual email logic)
     background_tasks.add_task(send_organisation_invite_email, request.target_email, frontend_link, org.name, request.role)
     
     return {"message": "Invite sent successfully", "token": new_invite.id}
+
 
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
     settings = Settings()
