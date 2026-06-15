@@ -1,8 +1,10 @@
+from __future__ import annotations
 from pydantic import BaseModel, field_serializer, EmailStr, Field, Literal, Annotated
 from typing import Optional, List, Union
 from enum import Enum
 from uuid import UUID
 from datetime import datetime
+
 
 class Roles(str,Enum):
     STUDENT = "Student"
@@ -296,7 +298,6 @@ class InviteCreateRequest(BaseModel):
 
 class JoinProcessRequest(BaseModel):
     token: UUID
-from __future__ import annotations
 
 from typing import Annotated, List, Literal, Union
 
