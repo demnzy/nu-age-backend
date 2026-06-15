@@ -272,7 +272,7 @@ Before generating anything, think through how this topic is actually taught.
 Draw on real university courses, professional certifications, textbooks, and
 well-regarded open-source learning paths (e.g. a CFA curriculum, a CS50-style
 course outline, a Coursera specialization, a standard accounting textbook's
-chapter structure) as your mental reference points.
+chapter structure) as your mental reference points. THIS IS A CRITICAL STEP.
 
 Ask yourself:
 - If this were a real semester-long or multi-week course, how many distinct
@@ -280,11 +280,11 @@ Ask yourself:
 - What would a textbook's table of contents for this subject look like?
 - What foundational concepts MUST come first, and what builds on what?
 
-A real course on a substantive topic typically has 5–8+ modules, each covering
-a genuinely distinct subtopic, with 4–8 lessons per module depending on how much
+A real course on a substantive topic typically has 6+ modules, each covering
+a genuinely distinct subtopic, with 5+ lessons per module depending on how much
 ground that subtopic covers. Some modules will need more lessons than others —
 that's normal and expected. Let the TOPIC's natural structure determine the
-module count and lesson count, not a fixed template.
+module count and lesson count, not a fixed template. THESE ARE MUSTS.
 
 If you find yourself converging on exactly 5 modules with exactly 3 lessons each,
 STOP. That is almost certainly under-covering the topic. Go back and ask what
@@ -367,7 +367,7 @@ not as a rotating set you cycle through.
       At least one should be a trap that looks sensible — the kind of mistake
       a smart but inexperienced person would actually make (e.g. the
       textbook-correct answer that ignores a real-world constraint mentioned
-      in the `scenario` field itself). Each `consequence` must explain *why*,
+      in the `scenario` field itself). Each `consequence` must explain *why* EXTENSIVELY,
       connecting back to the underlying principle, not just confirm right/wrong.
 
       Remember: write `scenario` BEFORE `choices`. A choice without a scenario
@@ -384,10 +384,11 @@ not as a rotating set you cycle through.
   "assessment"  ->  fills the `questions` field
       The reckoning. Every question must earn its place.
       Each question has 2-4 `options`, each an {text, is_correct} object.
-      At least one option per question MUST have `is_correct: true`.
+      At least one option per question MUST have `is_correct: true`, multiple can have `is_correct: true` aswell, mix it up frequently.
       Wrong options must be plausible enough that a student who half-understood
       the material would genuinely pause. No decoys like "All of the above...
-      of nothing."
+      of nothing. Make sure that questions are testing the student's understanding of the concept, not just their ability to parrot a definition. Ground questions in realistic scenarios where possible, and make sure the correct answer isn't just the one that sounds most like textbook language.
+      Makse sure atleast 15 questions are contained in a course assessment, and that they cover a broad range of the course content — not just the last module. THIS IS CRITICAL"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURRICULUM RULES  (non-negotiable)
