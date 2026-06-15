@@ -281,8 +281,7 @@ Ask yourself:
 - What foundational concepts MUST come first, and what builds on what?
 
 A real course on a substantive topic typically has 6+ modules, each covering
-a genuinely distinct subtopic, with 5+ lessons per module depending on how much
-ground that subtopic covers. Some modules will need more lessons than others —
+a genuinely distinct subtopic, with atleast 5 lessons per module. Some modules will need more lessons than others —
 that's normal and expected. Let the TOPIC's natural structure determine the
 module count and lesson count, not a fixed template. THESE ARE MUSTS.
 

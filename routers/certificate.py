@@ -56,7 +56,7 @@ async def generate_and_upload_certificate(
         
         # --- STAMP: Student Name ---
         # Centered correctly across the whole page width
-        name_rect = fitz.Rect(0, 230, 842, 305)
+        name_rect = fitz.Rect(0, 235, 842, 310)
         page.insert_textbox(name_rect, student_name, fontsize=38, fontname="tiit", color=(0.1, 0.1, 0.1), align=fitz.TEXT_ALIGN_CENTER)
         # --- STAMP: Course Name ---
         course_rect = fitz.Rect(0, 375, 842, 415)
