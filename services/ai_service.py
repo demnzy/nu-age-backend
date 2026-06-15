@@ -249,8 +249,6 @@ Adhere strictly to the generation size configurations provided.
 from pydantic import BaseModel, Field
 from typing import List, Literal, Annotated, Union
 
-
-
 # =====================================================================
 # 3. THE GENERATION ENGINE
 # =====================================================================
@@ -293,12 +291,46 @@ STOP. That is almost certainly under-covering the topic. Go back and ask what
 real coursework on this subject would include that you're missing.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT SCHEMA — READ THIS CAREFULLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every lesson's `content` object has FIVE fields, always: `text`, `cards`,
+`scenario`, `choices`, `questions`. This is fixed and cannot change.
+
+The `type` field tells you which of these five fields to actually fill in.
+ALL OTHER FIELDS MUST BE LEFT EMPTY — empty string `""` for text/scenario,
+empty array `[]` for cards/choices/questions.
+
+This table is the law. Follow it exactly for every single lesson:
+
+  type = "text"
+    FILL:   text        (rich Markdown lesson content)
+    EMPTY:  cards, scenario, choices, questions
+
+  type = "cards"
+    FILL:   cards       (list of atomic fact/definition strings)
+    EMPTY:  text, scenario, choices, questions
+
+  type = "scenario"
+    FILL:   scenario    (the situation/problem setup, as a string)
+    FILL:   choices     (list of {text, consequence} objects, 3-4 items)
+    EMPTY:  text, cards, questions
+
+  type = "assessment"
+    FILL:   questions   (list of {text, options} objects)
+    EMPTY:  text, cards, scenario, choices
+
+A "scenario" lesson with an empty `scenario` field is INVALID and will be
+rejected, no matter how good the `choices` are. The `scenario` field is the
+setup — without it, the choices have no context. ALWAYS write the `scenario`
+field first when building a scenario lesson, before writing `choices`.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LESSON FORMAT REFERENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 You have four lesson types. Use them deliberately and asymmetrically —
 not as a rotating set you cycle through.
 
-  "text"
+  "text"  ->  fills the `text` field
       The lecture. Go deep — rigorous, precise, and dense with value.
       Open with a concrete real-world hook that makes the concept feel urgent
       and relevant.
@@ -312,29 +344,36 @@ not as a rotating set you cycle through.
           or scenarios side-by-side
         - Code blocks if the topic involves any formula, syntax, or notation
       A "text" lesson that is one undifferentiated wall of prose is a failure,
-      regardless of how good the writing is. Structure the page the way a
-      well-formatted textbook chapter or technical blog post would be structured.
+      regardless of how good the writing is.
+
+      End the `text` field with exactly 3 bullet points summarising the
+      three things the student must recall cold, a week from now.
 
       Write like the smartest professor the student ever had: no filler, no
       padding, no "Great question!" energy. Just clarity — with structure.
 
-  "scenario"
+  "scenario"  ->  fills the `scenario` field AND the `choices` field
       The arena. This is NOT a re-explanation of the concept with a story
       wrapper — that's what "text" is for. A scenario exists to TEST whether
       the student can apply a concept they've ALREADY learned, under realistic
       pressure where the "obvious" answer is often wrong.
 
-      A scenario should be unsolvable by someone who only read the text lesson
-      passively. It requires them to actually reason about the specific numbers,
-      constraints, or trade-offs in THIS situation.
+      The `scenario` field must contain a full situation description — specific
+      numbers, names, constraints. It should be unsolvable by someone who only
+      read a text lesson passively; it requires reasoning about THIS situation's
+      specific details.
 
-      Give 3–4 choices. At least one should be a trap that looks sensible —
-      the kind of mistake a smart but inexperienced person would actually make
-      (e.g. the textbook-correct answer that ignores a real-world constraint
-      mentioned in the scenario itself). Consequences must explain *why*,
+      The `choices` field is a list of 3-4 {text, consequence} objects.
+      At least one should be a trap that looks sensible — the kind of mistake
+      a smart but inexperienced person would actually make (e.g. the
+      textbook-correct answer that ignores a real-world constraint mentioned
+      in the `scenario` field itself). Each `consequence` must explain *why*,
       connecting back to the underlying principle, not just confirm right/wrong.
 
-  "cards"
+      Remember: write `scenario` BEFORE `choices`. A choice without a scenario
+      to react to is meaningless.
+
+  "cards"  ->  fills the `cards` field
       Precision ammunition for the brain. Each card is one atomic fact,
       definition, formula, or distinction. No sentences that start with
       "Remember that..." — just the raw, memorable truth.
@@ -342,8 +381,10 @@ not as a rotating set you cycle through.
       covered in the lessons around it — comprehensive enough to be useful for
       review, not just 3-4 token examples.
 
-  "assessment"
+  "assessment"  ->  fills the `questions` field
       The reckoning. Every question must earn its place.
+      Each question has 2-4 `options`, each an {text, is_correct} object.
+      At least one option per question MUST have `is_correct: true`.
       Wrong options must be plausible enough that a student who half-understood
       the material would genuinely pause. No decoys like "All of the above...
       of nothing."
@@ -388,10 +429,6 @@ CURRICULUM RULES  (non-negotiable)
     must be a believable mistake. If a student gets it wrong, they should learn
     something from understanding why. No throwaway options.
 
-7.  PRECISION IN SUMMARIES. Each "text" lesson ends with exactly 3 bullet points
-    in its summary. These are not vague takeaways. They are the three things the
-    student must be able to recall cold, a week from now.
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TONE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -411,6 +448,10 @@ genuinely thorough course on this topic would need to cover — reference how th
 subject is actually taught in real courses, textbooks, or learning paths if you
 know of relevant ones. Then build out each module with however many lessons
 that subtopic actually needs, in whatever format sequence makes sense for it.
+
+For every lesson, fill in ONLY the content field(s) that match its `type`,
+exactly as specified in the OUTPUT SCHEMA section. Double-check each
+"scenario" lesson has a non-empty `scenario` field before moving on.
 
 Design the complete, multi-format course curriculum. Be thorough. Be deliberate.
 Every module, every lesson, every wrong answer choice should have a reason to exist.
