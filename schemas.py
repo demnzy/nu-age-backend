@@ -1,5 +1,5 @@
-from pydantic import BaseModel, field_serializer, EmailStr, Field
-from typing import Optional, List
+from pydantic import BaseModel, field_serializer, EmailStr, Field, Literal, Annotated
+from typing import Optional, List, Union
 from enum import Enum
 from uuid import UUID
 from datetime import datetime
@@ -296,3 +296,163 @@ class InviteCreateRequest(BaseModel):
 
 class JoinProcessRequest(BaseModel):
     token: UUID
+from __future__ import annotations
+
+from typing import Annotated, List, Literal, Union
+
+from pydantic import BaseModel, Field, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Course Structure  (planning / outline phase)
+# ---------------------------------------------------------------------------
+
+class AILessonContent(BaseModel):
+    hook: str = Field(
+        description="A relatable, real-world context-aware scenario to introduce the concept."
+    )
+    core_explanation: str = Field(
+        description="The main academic body of the lesson, clear and enterprise-grade."
+    )
+    practical_example: str = Field(
+        description="A step-by-step practical application of the concept."
+    )
+    # Changed to List[str] so exactly 3 bullets can be enforced at runtime
+    summary: List[str] = Field(
+        min_length=3,
+        max_length=3,
+        description="Exactly 3 bullet-point strings recapping the lesson.",
+    )
+
+
+class AILesson(BaseModel):
+    title: str
+    content: AILessonContent
+
+
+class AICourseModule(BaseModel):  # renamed to avoid collision with AIModule below
+    title: str
+    lessons: List[AILesson]
+
+
+class AICourseStructure(BaseModel):
+    course_name: str
+    description: str
+    objectives: List[str] = Field(
+        min_length=1,
+        description="At least one learning objective is required.",
+    )
+    modules: List[AICourseModule] = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# Lesson content types  (delivery / draft phase)
+# ---------------------------------------------------------------------------
+
+class TextContent(BaseModel):
+    text: str = Field(
+        description=(
+            "Rich Markdown text containing a relatable Nigerian hook, "
+            "rigorous explanation, and a summary."
+        )
+    )
+
+
+class FlashcardsContent(BaseModel):
+    cards: List[str] = Field(
+        min_length=1,
+        description="A list of standalone facts or concepts the student must memorise.",
+    )
+
+
+class ScenarioChoice(BaseModel):
+    text: str = Field(description="The option the user can select (e.g. 'Restart the server').")
+    consequence: str = Field(
+        description="The outcome of this choice, explaining why it was right or wrong."
+    )
+
+
+class ScenarioContent(BaseModel):
+    scenario: str = Field(description="A real-world prompt or problem setup.")
+    choices: List[ScenarioChoice] = Field(
+        min_length=2,  # enforced at runtime
+        description="Must contain at least 2 choices. Wrong choices must be plausible mistakes.",
+    )
+
+
+class AssessmentOption(BaseModel):
+    text: str
+    is_correct: bool
+
+
+class AssessmentQuestion(BaseModel):
+    text: str
+    options: List[AssessmentOption] = Field(
+        min_length=2,
+        max_length=4,
+        description="2–4 options; at least one must be marked correct.",
+    )
+
+    @model_validator(mode="after")
+    def must_have_correct_answer(self) -> "AssessmentQuestion":
+        if not any(opt.is_correct for opt in self.options):
+            raise ValueError("At least one option must be marked is_correct=True.")
+        return self
+
+
+class AssessmentContent(BaseModel):
+    questions: List[AssessmentQuestion] = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# Discriminated-union lesson types
+# ---------------------------------------------------------------------------
+
+class TextLesson(BaseModel):
+    title: str
+    type: Literal["text"]
+    content: TextContent
+
+
+class FlashcardLesson(BaseModel):
+    title: str
+    type: Literal["cards"]
+    content: FlashcardsContent
+
+
+class ScenarioLesson(BaseModel):
+    title: str
+    type: Literal["scenario"]
+    content: ScenarioContent
+
+
+class AssessmentLesson(BaseModel):
+    title: str
+    type: Literal["assessment"]
+    content: AssessmentContent
+
+
+# The AI must choose ONE of these exact formats for every lesson it generates
+AILessonUnion = Annotated[
+    Union[TextLesson, FlashcardLesson, ScenarioLesson, AssessmentLesson],
+    Field(discriminator="type"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Top-level draft model
+# ---------------------------------------------------------------------------
+
+class AIModule(BaseModel):
+    title: str
+    lessons: List[AILessonUnion] = Field(min_length=1)
+
+
+class AICourseDraft(BaseModel):
+    course_name: str
+    description: str
+    objectives: List[str] = Field(
+        min_length=1,
+        description="At least one learning objective is required.",
+    )
+    modules: List[AIModule] = Field(min_length=1)

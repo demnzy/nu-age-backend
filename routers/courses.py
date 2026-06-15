@@ -200,3 +200,39 @@ def delete_course(course_id: UUID, db: Session = Depends(get_db)):
 
     # Returning a message is helpful for your Flet frontend to confirm success
     return {"status": "success", "message": f"Course {course_id} has been deleted."}
+
+
+class AIDraftRequest(BaseModel):
+    topic: str
+    context: str
+
+@router.post('/generate-draft')
+async def generate_course_draft(
+    payload: AIDraftRequest,
+    user = Depends(auth.get_current_user)
+):
+    # 1. Security Check
+    # Ensure only authorized roles can trigger expensive AI generations
+    if user.role not in ["ADMIN", "TEACHER", "INSTRUCTOR", "Admin"]: 
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="You do not have permission to generate courses."
+        )
+
+    # Local import to prevent circular dependency issues
+    from services.ai_service import draft_course_curriculum
+    
+    try:
+        # 2. Trigger the Generation
+        draft_data = await draft_course_curriculum(topic=payload.topic, context=payload.context)
+        
+        # 3. Return the payload to populate the frontend builder
+        return {"status": "success", "data": draft_data}
+        
+    except Exception as e:
+        print(f"[CRITICAL ERROR] AI Generation Failed: {str(e)}")
+        # If OpenAI fails the validation constraints (e.g. didn't provide 3 bullets), it throws here
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Failed to generate the course draft. The AI structure may have been invalid."
+        )
