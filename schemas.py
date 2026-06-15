@@ -308,137 +308,82 @@ from pydantic import BaseModel, Field, model_validator
 # Course Structure  (planning / outline phase)
 # ---------------------------------------------------------------------------
 
-class AILessonContent(BaseModel):
-    hook: str = Field(
-        description="A relatable, real-world context-aware scenario to introduce the concept."
-    )
-    core_explanation: str = Field(
-        description="The main academic body of the lesson, clear and enterprise-grade."
-    )
-    practical_example: str = Field(
-        description="A step-by-step practical application of the concept."
-    )
-    # Changed to List[str] so exactly 3 bullets can be enforced at runtime
-    summary: List[str] = Field(
-        min_length=3,
-        max_length=3,
-        description="Exactly 3 bullet-point strings recapping the lesson.",
-    )
-
-
-class AILesson(BaseModel):
-    title: str
-    content: AILessonContent
-
-
-class AICourseModule(BaseModel):  # renamed to avoid collision with AIModule below
-    title: str
-    lessons: List[AILesson]
-
-
-class AICourseStructure(BaseModel):
-    course_name: str
-    description: str
-    objectives: List[str] = Field(
-        min_length=1,
-        description="At least one learning objective is required.",
-    )
-    modules: List[AICourseModule] = Field(min_length=1)
-
-
 # ---------------------------------------------------------------------------
-# Lesson content types  (delivery / draft phase)
+# Base Sub-components
 # ---------------------------------------------------------------------------
-
-class TextContent(BaseModel):
-    text: str = Field(
-        description=(
-            "Rich Markdown text containing a relatable Nigerian hook, "
-            "rigorous explanation, and a summary."
-        )
-    )
-
-
-class FlashcardsContent(BaseModel):
-    cards: List[str] = Field(
-        min_length=1,
-        description="A list of standalone facts or concepts the student must memorise.",
-    )
-
 
 class ScenarioChoice(BaseModel):
     text: str = Field(description="The option the user can select (e.g. 'Restart the server').")
-    consequence: str = Field(
-        description="The outcome of this choice, explaining why it was right or wrong."
-    )
-
-
-class ScenarioContent(BaseModel):
-    scenario: str = Field(description="A real-world prompt or problem setup.")
-    choices: List[ScenarioChoice] = Field(
-        min_length=2,  # enforced at runtime
-        description="Must contain at least 2 choices. Wrong choices must be plausible mistakes.",
-    )
-
+    consequence: str = Field(description="The outcome of this choice, explaining why it was right or wrong.")
 
 class AssessmentOption(BaseModel):
     text: str
     is_correct: bool
 
-
 class AssessmentQuestion(BaseModel):
     text: str
     options: List[AssessmentOption] = Field(
-        min_length=2,
-        max_length=4,
-        description="2–4 options; at least one must be marked correct.",
+        description="2–4 options; at least one must be marked correct."
     )
 
     @model_validator(mode="after")
     def must_have_correct_answer(self) -> "AssessmentQuestion":
-        if not any(opt.is_correct for opt in self.options):
+        # Only validate if options exist (prevents crashing on non-assessment lessons)
+        if self.options and not any(opt.is_correct for opt in self.options):
             raise ValueError("At least one option must be marked is_correct=True.")
         return self
 
-
-class AssessmentContent(BaseModel):
-    questions: List[AssessmentQuestion] = Field(min_length=1)
-
-
 # ---------------------------------------------------------------------------
-# Discriminated-union lesson types
+# Unified Content Schema (The Workaround)
 # ---------------------------------------------------------------------------
 
-class TextLesson(BaseModel):
+class AILessonContent(BaseModel):
+    # The AI must populate ALL these fields, but we instruct it to leave unused ones empty based on the lesson type.
+    text: str = Field(
+        description="Rich Markdown text containing a relatable hook, rigorous explanation, and summary. ONLY populate if type is 'text', otherwise leave as empty string."
+    )
+    cards: List[str] = Field(
+        description="A list of standalone facts. ONLY populate if type is 'cards', otherwise leave as empty array."
+    )
+    scenario: str = Field(
+        description="A real-world prompt. ONLY populate if type is 'scenario', otherwise leave as empty string."
+    )
+    choices: List[ScenarioChoice] = Field(
+        description="Must contain at least 2 choices. ONLY populate if type is 'scenario', otherwise leave as empty array."
+    )
+    questions: List[AssessmentQuestion] = Field(
+        description="Multiple choice questions. ONLY populate if type is 'assessment', otherwise leave as empty array."
+    )
+
+class AILesson(BaseModel):
     title: str
-    type: Literal["text"]
-    content: TextContent
+    type: Literal["text", "cards", "scenario", "assessment"] = Field(
+        description="The format of the lesson."
+    )
+    content: AILessonContent
 
-
-class FlashcardLesson(BaseModel):
-    title: str
-    type: Literal["cards"]
-    content: FlashcardsContent
-
-
-class ScenarioLesson(BaseModel):
-    title: str
-    type: Literal["scenario"]
-    content: ScenarioContent
-
-
-class AssessmentLesson(BaseModel):
-    title: str
-    type: Literal["assessment"]
-    content: AssessmentContent
-
-
-# The AI must choose ONE of these exact formats for every lesson it generates
-AILessonUnion = Annotated[
-    Union[TextLesson, FlashcardLesson, ScenarioLesson, AssessmentLesson],
-    Field(discriminator="type"),
-]
-
+    # We restore your strict length checks here since we can't use min_length in the Field definitions anymore
+    @model_validator(mode="after")
+    def validate_content_matches_type(self) -> "AILesson":
+        t = self.type
+        c = self.content
+        
+        if t == "text" and not c.text.strip():
+            raise ValueError("Text lessons must contain a 'text' body.")
+            
+        if t == "cards" and len(c.cards) < 1:
+            raise ValueError("Flashcard lessons must contain at least 1 card.")
+            
+        if t == "scenario":
+            if not c.scenario.strip():
+                raise ValueError("Scenario lessons require a 'scenario' setup.")
+            if len(c.choices) < 2:
+                raise ValueError("Scenario lessons require at least 2 'choices'.")
+                
+        if t == "assessment" and len(c.questions) < 1:
+            raise ValueError("Assessment lessons must contain at least 1 question.")
+            
+        return self
 
 # ---------------------------------------------------------------------------
 # Top-level draft model
@@ -446,8 +391,7 @@ AILessonUnion = Annotated[
 
 class AIModule(BaseModel):
     title: str
-    lessons: List[AILessonUnion] = Field(min_length=1)
-
+    lessons: List[AILesson] = Field(min_length=1)
 
 class AICourseDraft(BaseModel):
     course_name: str
