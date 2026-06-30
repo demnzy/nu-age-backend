@@ -26,7 +26,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL
-print(Url)
 engine = create_engine(
     Url,
     pool_pre_ping=True,      # <-- THE MAGIC FIX: Checks connection health before querying

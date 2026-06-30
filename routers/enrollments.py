@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, select, and_, delete
 from typing import List
 from uuid import UUID
+import uuid
 from schemas import *
 
 # Adjust these imports to match your project structure
@@ -215,6 +216,8 @@ def get_org_students_for_course(course_id: UUID, user=Depends(auth.get_current_u
     ]
 
 @router.post("/courses/{course_id}/enrollments/bulk-enroll")
+
+@router.post("/{course_id}/bulk-enroll") # (Adjust route decorator to match yours)
 def bulk_enroll_students(course_id: UUID, payload: EnrollmentActionPayload, user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
     """Bulk enrolls multiple students from the Flet UI and adds them to the course chat."""
     course = db.query(models.Course).filter(models.Course.id == course_id).first()
@@ -231,40 +234,47 @@ def bulk_enroll_students(course_id: UUID, payload: EnrollmentActionPayload, user
         
     # 2. Process each student
     for s_id in payload.student_ids:
+        # THE FIX: Cast the IDs to true UUID objects right here
+        s_uuid = uuid.UUID(str(s_id))
+        c_uuid = uuid.UUID(str(course_id))
+
         # Check if they are already enrolled
-        exists = db.query(models.Enrollment).filter_by(student_id=s_id, course_id=course_id).first()
+        exists = db.query(models.Enrollment).filter_by(student_id=s_uuid, course_id=c_uuid).first()
         if not exists:
-            # Enroll them
-            new_enrollment = models.Enrollment(student_id=s_id, course_id=course_id)
+            # Enroll them using the casted UUIDs
+            new_enrollment = models.Enrollment(student_id=s_uuid, course_id=c_uuid)
             db.add(new_enrollment)
             enrolled_count += 1
             
             # 3. CHAT INTEGRATION: Auto-add to group chat
             if getattr(course, "chat_id", None):
+                chat_uuid = uuid.UUID(str(course.chat_id))
+                
                 chat_member_exists = db.query(models.ChannelMember).filter_by(
-                    channel_id=course.chat_id, user_id=s_id
+                    channel_id=chat_uuid, user_id=s_uuid
                 ).first()
                 
                 if not chat_member_exists:
                     db.add(models.ChannelMember(
-                        channel_id=course.chat_id, 
-                        user_id=s_id, 
+                        channel_id=chat_uuid, 
+                        user_id=s_uuid, 
                         role="member"
                     ))
                     
                     # Fetch user to grab their name for the summary system message
-                    student_user = db.query(models.User).filter_by(id=s_id).first()
+                    student_user = db.query(models.User).filter_by(id=s_uuid).first()
                     if student_user:
                         added_names.append(f"{student_user.first_name} {student_user.last_name}")
 
     # 4. Create ONE aggregated System Message to prevent spamming the chat
     if added_names and getattr(course, "chat_id", None):
+        chat_uuid = uuid.UUID(str(course.chat_id))
         names_string = ", ".join(added_names)
         sys_content = f"{user.first_name} added {names_string} to the course!"
         
         sys_msg = models.Message(
-            channel_id=course.chat_id,
-            sender_id=user.id, 
+            channel_id=chat_uuid,
+            sender_id=uuid.UUID(str(user.id)), # Cast the user ID here too!
             content=sys_content,
             type="system"
         )

@@ -1,4 +1,5 @@
 from datetime import timedelta
+from http.client import HTTPException
 
 from fastapi import *
 from pytz import timezone
@@ -233,14 +234,19 @@ def join_organization(
             status_code=status.HTTP_409_CONFLICT, 
             detail="You are already a member of this organization."
         )
-
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="User not found."
+        )
     # 3. Create the Membership
     # Note: If your OrganisationMember model requires additional fields 
     # (like role="student" or joined_at), add them here!
     new_member = models.OrganisationMember(
         organisation_id=org_id,
         user_id=user_id,
-        role= "student"
+        role= user.role if user.role in ["student", "teacher"] else "student"  # Default to student if role is unexpected
     )
     
     db.add(new_member)
