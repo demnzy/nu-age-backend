@@ -246,7 +246,7 @@ def join_organization(
     new_member = models.OrganisationMember(
         organisation_id=org_id,
         user_id=user_id,
-        role= user.role if user.role in ["student", "teacher"] else "student"  # Default to student if role is unexpected
+        role= str(user.role).lower() if user.role in ["student", "teacher"] else "student"  # Default to student if role is unexpected
     )
     
     db.add(new_member)
