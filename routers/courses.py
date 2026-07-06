@@ -13,8 +13,7 @@ import base64
 import pathlib
 import uuid
 from services.bunny_service import upload_bytes_to_bunny 
-from sqlalchemy import extract
-
+from sqlalchemy import func, extract
 router = APIRouter(prefix="/courses")
 
 
@@ -261,7 +260,7 @@ def get_enrolled_students(
             "first_name": user.first_name,
             "last_name": user.last_name,
             "email": user.email,
-            "progress": float(enrollment.progress) # Ensure it's a float between 0.0 and 1.0
+            "progress": enrollment.progress# Ensure it's a float between 0.0 and 1.0
         })
 
     return {"students": students}
@@ -272,18 +271,16 @@ def get_completion_stats(
     db: Session = Depends(get_db), 
     current_user = Depends(auth.get_current_user)
 ):
-    # 1. Get total students enrolled
     total_enrolled = db.query(models.Enrollment).filter(
         models.Enrollment.course_id == course_id
     ).count()
 
-    # 2. Get students who reached 100% (1.0)
+    # FIX: Check for 99.9 or 100.0 instead of 1.0
     completed_count = db.query(models.Enrollment).filter(
         models.Enrollment.course_id == course_id,
-        models.Enrollment.progress >= 1.0
+        models.Enrollment.progress >= 99.9 
     ).count()
 
-    # 3. Calculate rate safely
     completion_rate = (completed_count / total_enrolled) if total_enrolled > 0 else 0.0
 
     return {
@@ -291,7 +288,6 @@ def get_completion_stats(
         "completed_count": completed_count,
         "total_enrolled": total_enrolled
     }
-
 @router.get("/{course_id}/certificates")
 def get_certificates_issued(
     course_id: UUID, 
