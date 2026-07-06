@@ -236,3 +236,30 @@ async def generate_course_draft(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail="Failed to generate the course draft. The AI structure may have been invalid."
         )
+    
+@router.get("/{course_id}/enrollments/org-students")
+def get_enrolled_students(
+    course_id: UUID, 
+    db: Session = Depends(get_db), 
+    current_user = Depends(auth.get_current_user)
+):
+    # 1. Join User and Enrollment tables
+    results = (
+        db.query(models.User, models.Enrollment)
+        .join(models.Enrollment, models.User.id == models.Enrollment.student_id)
+        .filter(models.Enrollment.course_id == course_id)
+        .all()
+    )
+
+    # 2. Map to the expected frontend shape
+    students = []
+    for user, enrollment in results:
+        students.append({
+            "id": str(user.id),
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "progress": float(enrollment.progress) # Ensure it's a float between 0.0 and 1.0
+        })
+
+    return {"students": students}

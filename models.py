@@ -108,7 +108,7 @@ class OrganisationMember(Base):
 class Invitations(Base):
     __tablename__ = "invitations"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    target_email = Column(String, nullable=True, unique=True)
+    target_email = Column(String, nullable=True)
     organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="CASCADE"), nullable=False)
     uses_left = Column(Integer, default=1, nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
