@@ -523,3 +523,44 @@ def leave_group_chat(chat_id: UUID, db: Session = Depends(get_db), current_user 
             return {"status": "success", "message": "Left chat. Chat was empty and has been deleted."}
             
     return {"status": "success", "message": "Successfully left the group chat."}
+
+@router.post("/chat/dms/{target_user_id}")
+def start_direct_message(
+    target_user_id: UUID, 
+    db: Session = Depends(get_db), 
+    current_user = Depends(auth.get_current_user)
+):
+    if current_user.id == target_user_id:
+        raise HTTPException(status_code=400, detail="Cannot DM yourself.")
+
+    # 1. Find all Direct channels the current user is part of
+    my_direct_channels = (
+        db.query(models.ChannelMember.channel_id)
+        .join(models.Channel)
+        .filter(
+            models.Channel.type == "direct",
+            models.ChannelMember.user_id == current_user.id
+        ).subquery()
+    )
+
+    # 2. Check if the target user is in any of those exact channels
+    existing_dm = db.query(models.ChannelMember).filter(
+        models.ChannelMember.channel_id.in_(my_direct_channels),
+        models.ChannelMember.user_id == target_user_id
+    ).first()
+
+    if existing_dm:
+        return {"channel_id": str(existing_dm.channel_id)}
+
+    # 3. If no DM exists, create a new one safely
+    new_channel = models.Channel(type="direct")
+    db.add(new_channel)
+    db.flush() # Flush to generate the new_channel.id
+
+    # Add both users to the new DM channel
+    db.add(models.ChannelMember(channel_id=new_channel.id, user_id=current_user.id, role="member"))
+    db.add(models.ChannelMember(channel_id=new_channel.id, user_id=target_user_id, role="member"))
+    
+    db.commit()
+    
+    return {"channel_id": str(new_channel.id)}
