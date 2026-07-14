@@ -397,3 +397,16 @@ class AICourseDraft(BaseModel):
         description="At least one learning objective is required.",
     )
     modules: List[AIModule] = Field(min_length=1)
+
+class MemberResponse(BaseModel):
+    id: UUID
+    email: EmailStr
+    username : str
+    password : str
+    first_name : str
+    last_name: str
+    gender: str
+    role: str
+    streak: Optional[int] = 0
+    university: Optional[str] = ""
+    model_config = {'from_attributes' : True}

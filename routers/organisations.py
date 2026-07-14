@@ -128,7 +128,7 @@ async def get_user_organisation(user= Depends(auth.get_current_user), db:Session
 
 # Make sure your models file is imported properly
 
-@router.get('/members')
+@router.get('/members', response_model= List[MemberResponse])
 async def get_organisation_members(
     id: str = Query(...), 
     students: bool = Query(False, description="Filter to show students"),
