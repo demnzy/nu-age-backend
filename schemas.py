@@ -232,7 +232,10 @@ class QuestionResponse(BaseModel):
     
     class Config:
         from_attributes = True
-
+class ExamResponse(BaseModel):
+    questions: List[QuestionResponse]
+    duration_seconds: int
+    
 class PlanConfigItem(BaseModel):
     label: str
     materials_limit: Optional[int]

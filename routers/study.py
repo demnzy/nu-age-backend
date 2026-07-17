@@ -20,14 +20,15 @@ router = APIRouter(prefix="/study", tags=["Self Study"])
 # ==========================================
 
 @router.get("/cards/due", response_model=List[schemas.FlashcardResponse])
-def get_due_cards(db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
-    """Fetches flashcards that are due for review today or earlier."""
-    now = datetime.now(timezone.utc)
-    
-    due_cards = db.query(models.Flashcard).filter(
+def get_due_cards(material_ids: Optional[str] = None, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
+    query = db.query(models.Flashcard).filter(
         models.Flashcard.user_id == user.id,
-        models.Flashcard.next_review_date <= now
-    ).all()
+        models.Flashcard.next_review_date <= datetime.now()
+    )
+    if material_ids:
+        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",")]
+        query = query.filter(models.Flashcard.material_id.in_(ids_list))
+    due_cards = query.all()
     
     response = []
     for card in due_cards:
@@ -208,18 +209,41 @@ def get_quiz_questions(material_ids: Optional[str] = None, db: Session = Depends
     
     return [{"id": q.id, "question": q.question_text, "options": q.options, "answer": q.answer_index, "explanation": q.explanation} for q in questions]
 
-@router.get("/exam/questions", response_model=List[schemas.QuestionResponse])
-def get_exam_questions(material_ids: Optional[str] = None, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
-    """Pulls 50 random questions for a full exam simulation."""
+@router.get("/exam/questions", response_model=schemas.ExamResponse)
+def get_exam_questions(
+    material_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    """Pulls up to 50 random questions for a full exam simulation,
+    scoped to the given materials, with a duration computed server-side."""
     query = db.query(models.Question).filter(models.Question.user_id == user.id)
-    
+
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",")]
         query = query.filter(models.Question.material_id.in_(ids_list))
-        
+
     questions = query.order_by(func.random()).limit(50).all()
-    
-    return [{"id": q.id, "question": q.question_text, "options": q.options, "answer": q.answer_index, "explanation": q.explanation} for q in questions]
+
+    question_payload = [
+        {
+            "id": q.id,
+            "question": q.question_text,
+            "options": q.options,
+            "answer": q.answer_index,
+            "explanation": q.explanation,
+        }
+        for q in questions
+    ]
+
+    # 90 sec/question, 5 min floor — same policy the frontend used to apply
+    # client-side; now it's authoritative and server-controlled instead.
+    duration_seconds = max(len(question_payload) * 60, 300)
+
+    return {
+        "questions": question_payload,
+        "duration_seconds": duration_seconds,
+    }
 
 # ==========================================
 # 4. AI GENERATION STUB

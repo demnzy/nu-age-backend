@@ -651,3 +651,26 @@ async def get_joined_organisations(
     ).all()
     
     return joined_orgs
+@router.delete("{org_id}/member/{id}/remove")
+async def remove_member(
+    org_id,
+    id: UUID,
+    user: Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    #validate user is admin of org
+    admin = db.query(models.Organisation).filter(models.Organisation.owner_id==user.id).first()
+    if not admin: 
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Not admin, cannot perform action"
+        )
+    #check if member exists in orgms
+    member=db.query(models.OrganisationMember).filter(models.OrganisationMember.organisation_id==org_id, models.OrganisationMember.user_id==id)
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="User does not belong to this organisation"
+        )
+    member.delete()
+    db.commit()
