@@ -655,7 +655,7 @@ async def get_joined_organisations(
 async def remove_member(
     org_id,
     id: UUID,
-    user: Depends(auth.get_current_user),
+    user=Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     #validate user is admin of org
