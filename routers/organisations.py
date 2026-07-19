@@ -633,6 +633,8 @@ async def revoke_invitation(
     
     return {"status": "success", "message": "Invitation successfully revoked."}
 
+from sqlalchemy import func
+
 @router.get('/joined')
 async def get_joined_organisations(
     user = Depends(auth.get_current_user), 
@@ -647,10 +649,80 @@ async def get_joined_organisations(
         models.Organisation.id == models.OrganisationMember.organisation_id
     ).filter(
         models.OrganisationMember.user_id == user.id,
-        models.Organisation.owner_id != user.id # Strictly exclude orgs they own
+        models.Organisation.owner_id != user.id  # Strictly exclude orgs they own
     ).all()
+
+    if not joined_orgs:
+        return []
+
+    org_ids = [org.id for org in joined_orgs]
+
+    # --- Aggregate member counts for all orgs in one query ---
+    member_counts = dict(
+        db.query(
+            models.OrganisationMember.organisation_id,
+            func.count(models.OrganisationMember.id)
+        )
+        .filter(models.OrganisationMember.organisation_id.in_(org_ids))
+        .group_by(models.OrganisationMember.organisation_id)
+        .all()
+    )
+
+    # --- Aggregate course counts for all orgs in one query ---
+    course_counts = dict(
+        db.query(
+            models.Course.org_id,
+            func.count(models.Course.id)
+        )
+        .filter(models.Course.org_id.in_(org_ids))
+        .group_by(models.Course.org_id)
+        .all()
+    )
+
+    # --- Aggregate staff (TEACHER) counts for all orgs in one query ---
+    staff_counts = dict(
+        db.query(
+            models.OrganisationMember.organisation_id,
+            func.count(models.User.id)
+        )
+        .join(models.User, models.User.id == models.OrganisationMember.user_id)
+        .filter(
+            models.OrganisationMember.organisation_id.in_(org_ids),
+            models.User.role == Roles.TEACHER
+        )
+        .group_by(models.OrganisationMember.organisation_id)
+        .all()
+    )
+
+    # --- Aggregate student counts for all orgs in one query ---
+    student_counts = dict(
+        db.query(
+            models.OrganisationMember.organisation_id,
+            func.count(models.User.id)
+        )
+        .join(models.User, models.User.id == models.OrganisationMember.user_id)
+        .filter(
+            models.OrganisationMember.organisation_id.in_(org_ids),
+            models.User.role == Roles.STUDENT
+        )
+        .group_by(models.OrganisationMember.organisation_id)
+        .all()
+    )
+
+    result = []
+    for org in joined_orgs:
+        org_data = {column.name: getattr(org, column.name) for column in org.__table__.columns}
+
+        org_data["members"] = member_counts.get(org.id, 0)
+        org_data["courses"] = course_counts.get(org.id, 0)
+        org_data["staff"] = staff_counts.get(org.id, 0)
+        org_data["students"] = student_counts.get(org.id, 0)
+
+        result.append(org_data)
+
+    return result
     
-    return joined_orgs
+
 @router.delete("{org_id}/member/{id}/remove")
 async def remove_member(
     org_id,

@@ -233,7 +233,7 @@ class Channel(Base):
     # Requirements Check: Admin Privileges / Broadcasts
     is_announcement_only = Column(Boolean, default=False)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=datetime.now(timezone.utc))
     created_by_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete="SET NULL"), nullable=True)
 
     # Relationships

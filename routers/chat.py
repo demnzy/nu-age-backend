@@ -114,7 +114,7 @@ async def chat_websocket(
                     "channel_id": str(channel_id),
                     "type": "typing",
                     "content": "typing...",
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                     "sender": {
                         "id": str(user.id),
                         "name": f"{user.first_name} {user.last_name}"

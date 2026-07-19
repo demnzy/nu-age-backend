@@ -23,7 +23,7 @@ router = APIRouter(prefix="/study", tags=["Self Study"])
 def get_due_cards(material_ids: Optional[str] = None, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
     query = db.query(models.Flashcard).filter(
         models.Flashcard.user_id == user.id,
-        models.Flashcard.next_review_date <= datetime.now()
+        models.Flashcard.next_review_date <= datetime.now(timezone.utc)
     )
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",")]
