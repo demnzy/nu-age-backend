@@ -661,7 +661,7 @@ async def get_joined_organisations(
     member_counts = dict(
         db.query(
             models.OrganisationMember.organisation_id,
-            func.count(models.OrganisationMember.id)
+            func.count(models.OrganisationMember.user_id)
         )
         .filter(models.OrganisationMember.organisation_id.in_(org_ids))
         .group_by(models.OrganisationMember.organisation_id)
