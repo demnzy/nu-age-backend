@@ -25,7 +25,7 @@ async def create_course(
 ):
     # 1. PERMISSION CHECK
     # Keep your specific role check (backward compatible with your existing Roles)
-    if user.role != "Admin" and user.role != "Instructor": 
+    if user.role != "Admin" and user.role != "Teacher": 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="You do not have the permission to perform this operation"
