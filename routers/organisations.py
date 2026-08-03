@@ -773,3 +773,62 @@ async def remove_member(
         )
     member.delete()
     db.commit()
+
+
+@router.get("/{course_id}/enrollments/org-students")
+def get_org_students_with_enrollment_status(
+    course_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(auth.get_current_user)
+):
+    # 1. Find the org where current_user is the admin/owner
+    org = db.query(models.Organisation).filter(
+        models.Organisation.owner_id == current_user.id
+    ).first()
+
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not admin, cannot perform action"
+        )
+
+    # 2. Get all students in that org
+    org_students = (
+        db.query(models.User)
+        .join(models.OrganisationMember, models.User.id == models.OrganisationMember.user_id)
+        .filter(
+            models.OrganisationMember.organisation_id == org.id,
+            models.User.role == Roles.STUDENT
+        )
+        .all()
+    )
+
+    if not org_students:
+        return {"students": []}
+
+    # 3. Get enrollments for this course, keyed by student_id for quick lookup
+    student_ids = [s.id for s in org_students]
+    enrollments = (
+        db.query(models.Enrollment)
+        .filter(
+            models.Enrollment.course_id == course_id,
+            models.Enrollment.student_id.in_(student_ids)
+        )
+        .all()
+    )
+    enrollment_by_student = {e.student_id: e for e in enrollments}
+
+    # 4. Build response shape
+    students = []
+    for user in org_students:
+        enrollment = enrollment_by_student.get(user.id)
+        students.append({
+            "id": str(user.id),
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "progress": enrollment.progress if enrollment else 0.0,
+            "is_enrolled": enrollment is not None,
+        })
+
+    return {"students": students}
