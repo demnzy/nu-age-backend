@@ -166,8 +166,9 @@ async def get_organisation_members(
 
 @router.get('/courses')
 async def get_organisation_courses(
-    id: UUID = Query(...),  # Change from Query(None) to Query(...) with UUID type
-    user=Depends(auth.get_current_user), 
+    id: UUID = Query(...),
+    teacher_id: UUID | None = Query(None),   # optional teacher scope, only honored per rules below
+    user=Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     # 1. Verify the organization exists
@@ -175,7 +176,28 @@ async def get_organisation_courses(
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organisation not found")
 
-    # 2. THE FIX: Create an isolated subquery that ONLY handles counting
+    # 2. ROLE-BASED SCOPE OVERRIDE
+    #    - ADMIN (org owner/staff): may see the whole org, or narrow to any teacher_id
+    #      they explicitly pass (e.g. admin drilling into one teacher's courses).
+    #    - TEACHER / INSTRUCTOR (includes freelancers): can NEVER see another
+    #      teacher's courses, regardless of what teacher_id they send. We force
+    #      it to their own user id, ignoring/overriding the query param.
+    #    Adjust the role string(s) below to match your actual role enum/values.
+    user_role = getattr(user, "role", None)
+    user_role = user_role.value if hasattr(user_role, "value") else user_role
+    user_role = (user_role or "").upper()
+
+    if user_role in ("TEACHER", "INSTRUCTOR"):
+        teacher_id = user.id
+    elif user_role in ("ADMIN", "OWNER"):
+        pass  # admin may pass teacher_id or leave it None for the full org list
+    else:
+        # Any other role (e.g. STUDENT) hitting this endpoint shouldn't get a
+        # free-form teacher_id either — lock it down rather than silently
+        # falling through to "see everything in the org".
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view organisation courses")
+
+    # 3. Isolated subquery that ONLY handles counting
     enrollment_counts = (
         db.query(
             models.Enrollment.course_id,
@@ -185,20 +207,22 @@ async def get_organisation_courses(
         .subquery()
     )
 
-    # 3. Main query: Fetch courses (which automatically loads categories/admins) 
-    # and join the counts subquery cleanly
-    results = (
+    # 4. Main query: base filter is always org_id, narrowed by teacher_id when set.
+    query = (
         db.query(
             models.Course,
-            # Coalesce ensures we get 0 instead of Null if there are no enrollments
             func.coalesce(enrollment_counts.c.student_count, 0).label("total_students")
         )
         .outerjoin(enrollment_counts, models.Course.id == enrollment_counts.c.course_id)
         .filter(models.Course.org_id == id)
-        .all()
     )
 
-    # 4. Attach the database-calculated count directly to the course objects
+    if teacher_id is not None:
+        query = query.filter(models.Course.teacher_id == teacher_id)
+
+    results = query.all()
+
+    # 5. Attach the database-calculated count directly to the course objects
     courses_with_counts = []
     for course, count in results:
         course.total_students = count
