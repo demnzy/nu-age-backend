@@ -84,6 +84,7 @@ class CourseBase(BaseModel):
     org_id: Optional[str] = None
     teacher_id: Optional[str] = None
     supervised: bool = False
+    is_freelance: bool = False   
     
     # --- ADD THESE FOR BUNNY.NET ---
     image_bytes: Optional[str] = None

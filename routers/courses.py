@@ -16,32 +16,34 @@ from services.bunny_service import upload_bytes_to_bunny
 from sqlalchemy import func, extract
 router = APIRouter(prefix="/courses")
 
-
+DEFAULT_ORG_ID = "584b537e-6521-4852-a7e4-18f6c095126d"  # the "Nu Age" freelance pool org
 @router.post('/create')
 async def create_course(
-    payload: CourseBase, 
-    user = Depends(auth.get_current_user), 
+    payload: CourseBase,
+    user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    # 1. PERMISSION CHECK
-    # Keep your specific role check (backward compatible with your existing Roles)
-    if user.role != "Admin" and user.role != "Teacher": 
+    if user.role != "Admin" and user.role != "Teacher":
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have the permission to perform this operation"
         )
-    
-    # 2. EXTRACT DATA
-    # Explicitly exclude image fields so SQLAlchemy doesn't crash on raw strings
+ 
     course_data = payload.model_dump(exclude={"image_bytes", "image_filename"})
     course_data['admin_id'] = user.id
-    
-    # 3. CREATE COURSE RECORD (First Step)
-    # This generates the course.id needed for the chat and the CDN folder path
+ 
+    # SAFEGUARD: never trust client-supplied teacher_id/org_id for freelance
+    # courses — force them server-side so a freelancer can't submit a course
+    # claiming to be someone else, or pointed at a different org while still
+    # flagged as freelance.
+    if course_data.get("is_freelance"):
+        course_data["teacher_id"] = str(user.id)
+        course_data["org_id"] = DEFAULT_ORG_ID
+ 
     course = models.Course(**course_data)
     db.add(course)
     db.commit()
-    db.refresh(course) 
+    db.refresh(course)
 
     # 4. INITIALIZE CHAT (New Logic for UI compatibility)
     # This ensures every course has a chat_id to avoid the 404/Null errors in org_view.py

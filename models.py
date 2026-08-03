@@ -9,6 +9,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from schemas import Roles, Gender
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.sql import false
 #entities
 import enum
 
@@ -139,6 +140,7 @@ class Course(Base):
     teacher_id = Column(UUID(as_uuid=True), ForeignKey(User.id, ondelete="SET NULL"), nullable=True)
     supervised = Column(Boolean, default=False)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("channels.id", ondelete="SET NULL", use_alter=True,), nullable=True)
+    is_freelance = Column(Boolean, nullable=False, server_default=false())
     
     category = relationship("Category", back_populates= "courses", lazy="joined")
     modules = relationship("Module", back_populates="course", order_by="Module.order_index")
