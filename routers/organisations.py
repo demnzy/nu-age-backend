@@ -15,6 +15,8 @@ import base64
 from services.bunny_service import upload_bytes_to_bunny
 import uuid
 router = APIRouter(prefix="/organisations")
+
+DEFAULT_ORG_ID = "584b537e-6521-4852-a7e4-18f6c095126d"
 @router.post('/create')
 async def create_org(payload: orgbase, user= Depends(auth.get_current_user), db:Session = Depends(get_db)):
     
