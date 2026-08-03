@@ -488,8 +488,7 @@ This should feel like a real course, not a summary of one.
                 # the balance point: meaningfully better structure adherence
                 # on deeply nested schemas than "low", without paying for
                 # "high"/"xhigh" reasoning depth this task doesn't need.
-                model="gpt-5-mini",
-                reasoning_effort="medium",
+                model="gpt-4.1-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},

@@ -212,7 +212,7 @@ async def generate_course_draft(
     payload: AIDraftRequest,
     background_tasks: BackgroundTasks,
     user = Depends(auth.get_current_user),
-    db: Session = Depends(get_db),   # <-- now correctly a parameter
+    db: Session = Depends(get_db),
 ):
     if user.role not in ["ADMIN", "TEACHER", "INSTRUCTOR", "Admin"]:
         raise HTTPException(
@@ -244,27 +244,24 @@ async def generate_course_draft(
 async def get_course_draft_status(
     job_id: str,
     user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
 ):
-    db: Session = Depends(get_db)
-    try:
-        job = db.query(models.CourseDraftJob).filter(
-            models.CourseDraftJob.id == job_id,
-            models.CourseDraftJob.user_id == str(user.id),
-        ).first()
+    job = db.query(models.CourseDraftJob).filter(
+        models.CourseDraftJob.id == job_id,
+        models.CourseDraftJob.user_id == str(user.id),
+    ).first()
 
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found.")
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
 
-        response = {"status": job.status, "job_id": job.id}
+    response = {"status": job.status, "job_id": job.id}
 
-        if job.status == models.JobStatus.SUCCESS:
-            response["data"] = job.result
-        elif job.status == models.JobStatus.FAILED:
-            response["detail"] = job.error or "Course generation failed."
+    if job.status == models.JobStatus.SUCCESS:
+        response["data"] = job.result
+    elif job.status == models.JobStatus.FAILED:
+        response["detail"] = job.error or "Course generation failed."
 
-        return response
-    finally:
-        db.close()
+    return response
 @router.get("/{course_id}/enrollments/org-students")
 def get_enrolled_students(
     course_id: UUID, 
