@@ -212,6 +212,7 @@ async def generate_course_draft(
     payload: AIDraftRequest,
     background_tasks: BackgroundTasks,
     user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),   # <-- now correctly a parameter
 ):
     if user.role not in ["ADMIN", "TEACHER", "INSTRUCTOR", "Admin"]:
         raise HTTPException(
@@ -221,7 +222,6 @@ async def generate_course_draft(
 
     from services.ai_service import run_course_draft_job
 
-    db: Session = Depends(get_db)
     job = models.CourseDraftJob(
         id=str(uuid.uuid4()),
         user_id=str(user.id),
@@ -233,9 +233,8 @@ async def generate_course_draft(
     db.commit()
     db.refresh(job)
     job_id = job.id
-    db.close()
+    # no db.close() needed — get_db's own generator/finally handles teardown
 
-    # Fire and forget — same pattern as process_and_generate_content
     background_tasks.add_task(run_course_draft_job, job_id, payload.topic, payload.context)
 
     return {"status": "queued", "job_id": job_id}
