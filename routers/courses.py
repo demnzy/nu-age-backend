@@ -207,37 +207,65 @@ class AIDraftRequest(BaseModel):
     topic: str
     context: str
 
-@router.post('/generate-draft')
+@router.post('/generate-draft', status_code=status.HTTP_202_ACCEPTED)
 async def generate_course_draft(
     payload: AIDraftRequest,
-    user = Depends(auth.get_current_user)
+    background_tasks: BackgroundTasks,
+    user = Depends(auth.get_current_user),
 ):
-    # 1. Security Check
-    # Ensure only authorized roles can trigger expensive AI generations
-    if user.role not in ["ADMIN", "TEACHER", "INSTRUCTOR", "Admin"]: 
+    if user.role not in ["ADMIN", "TEACHER", "INSTRUCTOR", "Admin"]:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to generate courses."
         )
 
-    # Local import to prevent circular dependency issues
-    from services.ai_service import draft_course_curriculum
-    
+    from services.ai_service import run_course_draft_job
+
+    db: Session = Depends(get_db)
+    job = models.CourseDraftJob(
+        id=str(uuid.uuid4()),
+        user_id=str(user.id),
+        topic=payload.topic,
+        context=payload.context,
+        status=models.JobStatus.PENDING,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    job_id = job.id
+    db.close()
+
+    # Fire and forget — same pattern as process_and_generate_content
+    background_tasks.add_task(run_course_draft_job, job_id, payload.topic, payload.context)
+
+    return {"status": "queued", "job_id": job_id}
+
+
+@router.get('/generate-draft/{job_id}')
+async def get_course_draft_status(
+    job_id: str,
+    user = Depends(auth.get_current_user),
+):
+    db: Session = Depends(get_db)
     try:
-        # 2. Trigger the Generation
-        draft_data = await draft_course_curriculum(topic=payload.topic, context=payload.context)
-        
-        # 3. Return the payload to populate the frontend builder
-        return {"status": "success", "data": draft_data}
-        
-    except Exception as e:
-        print(f"[CRITICAL ERROR] AI Generation Failed: {str(e)}")
-        # If OpenAI fails the validation constraints (e.g. didn't provide 3 bullets), it throws here
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Failed to generate the course draft. The AI structure may have been invalid."
-        )
-    
+        job = db.query(models.CourseDraftJob).filter(
+            models.CourseDraftJob.id == job_id,
+            models.CourseDraftJob.user_id == str(user.id),
+        ).first()
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found.")
+
+        response = {"status": job.status, "job_id": job.id}
+
+        if job.status == models.JobStatus.SUCCESS:
+            response["data"] = job.result
+        elif job.status == models.JobStatus.FAILED:
+            response["detail"] = job.error or "Course generation failed."
+
+        return response
+    finally:
+        db.close()
 @router.get("/{course_id}/enrollments/org-students")
 def get_enrolled_students(
     course_id: UUID, 

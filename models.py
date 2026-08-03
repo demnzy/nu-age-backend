@@ -396,3 +396,23 @@ class Connection(Base):
     # Relationships to easily fetch the User objects
     requester = relationship("User", foreign_keys=[requester_id])
     addressee = relationship("User", foreign_keys=[addressee_id])
+class JobStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+from sqlalchemy import Column, String, DateTime, Enum as SAEnum, JSON, Text
+class CourseDraftJob(Base):
+    __tablename__ = "course_draft_jobs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, nullable=False, index=True)
+    topic = Column(String, nullable=False)
+    context = Column(Text, nullable=True)
+
+    status = Column(SAEnum(JobStatus), default=JobStatus.PENDING, nullable=False)
+    result = Column(JSON, nullable=True)     # populated on SUCCESS
+    error = Column(Text, nullable=True)      # populated on FAILED, safe-to-show message
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

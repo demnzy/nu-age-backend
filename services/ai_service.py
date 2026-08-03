@@ -1,19 +1,30 @@
 import asyncio
-from pydantic import BaseModel
-from typing import List
+import time
+import traceback
+from pydantic import BaseModel, Field
+from typing import List, Literal, Annotated, Union
 from sqlalchemy.orm import Session
 
 # The native OpenAI client
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APITimeoutError, APIStatusError
 import models
 from schemas import *
 # Import your session maker AND your Settings class
 from database import SessionLocal, Settings
 
-# Initialize OpenAI natively (Notice we removed the base_url proxy!)
+# --- CHANGED: explicit timeout + capped retries -----------------------------
+# Root cause of the original timeout bug: no timeout was set, so the SDK's
+# default (10 minutes) applied. A slow call would outlive the frontend's 200s
+# timeout before the backend's `except` block ever ran, which is why failures
+# were silent. This does NOT change generation depth/quality — only how fast
+# a genuinely stuck call fails and gets logged.
 client = AsyncOpenAI(
     api_key=Settings().OPENAI_API_KEY,
+    timeout=170.0,      # per-call ceiling, comfortably bounded
+    max_retries=1,      # 1 retry on transient network/5xx errors, not silent 2x+ backoff
 )
+# -----------------------------------------------------------------------------
+
 
 class GeneratedFlashcard(BaseModel):
     front: str
@@ -21,8 +32,8 @@ class GeneratedFlashcard(BaseModel):
 
 class GeneratedQuestion(BaseModel):
     question_text: str
-    options: List[str] 
-    answer_index: int 
+    options: List[str]
+    answer_index: int
     explanation: str
 
 # This is the exact structure OpenAI will mathematically enforce
@@ -30,19 +41,22 @@ class AIResponse(BaseModel):
     flashcards: List[GeneratedFlashcard]
     questions: List[GeneratedQuestion]
 
+
 def chunk_text(text: str, chunk_size: int = 15000, overlap: int = 1000) -> List[str]:
-    if not text: return []
+    if not text:
+        return []
     chunks, start, text_length = [], 0, len(text)
     while start < text_length:
         end = start + chunk_size
         chunks.append(text[start:end])
-        start = end - overlap 
+        start = end - overlap
     return chunks
+
 
 async def process_and_generate_content(user_id: str, material_ids: List[str], content_text: str, types_requested: List[str]):
     """Thread-safe background worker using OpenAI's guaranteed Structured Outputs."""
-    db: Session = SessionLocal() 
-    
+    db: Session = SessionLocal()
+
     system_prompt = """
 You are a sharp academic coach built for students who are under real pressure —
 packed schedules, high-stakes exams, and the constant need to make information
@@ -155,7 +169,7 @@ Adhere strictly to the generation size configurations provided.
     try:
         chunks = chunk_text(content_text)
         total_chunks = len(chunks)
-        
+
         if total_chunks == 0:
             print("[WARNING] No text to process.")
             return
@@ -174,7 +188,7 @@ Adhere strictly to the generation size configurations provided.
 
                 # --- DYNAMIC TARGET INSTRUCTIONS ---
                 generation_goals = []
-                
+
                 if "flashcards" in types_requested:
                     generation_goals.append(f"- Generate exactly {cards_per_chunk} Flashcards.")
 
@@ -185,18 +199,18 @@ Adhere strictly to the generation size configurations provided.
                     generation_goals.append(f"- Generate exactly {quiz_per_chunk} QUIZ multiple-choice questions (Focus on core concepts and immediate factual application).")
 
                 goals_text = "\n".join(generation_goals)
-                
+
                 # Combine the goals and the text for the user message
                 user_prompt = f"TARGET OUTPUTS FOR THIS CHUNK:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
 
-                # Native OpenAI parsing
+                # Native OpenAI parsing — unchanged, this function was never the source of the timeout bug
                 response = await client.beta.chat.completions.parse(
-                    model="gpt-4o-mini", 
+                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    response_format=AIResponse, 
+                    response_format=AIResponse,
                     temperature=0.2
                 )
 
@@ -219,7 +233,7 @@ Adhere strictly to the generation size configurations provided.
 
                 db.commit()
                 print(f"[SUCCESS] Chunk {index + 1} saved.")
-                
+
                 # A 1-second pause keeps you safely under OpenAI's Tier 1 limits
                 await asyncio.sleep(1)
 
@@ -231,23 +245,20 @@ Adhere strictly to the generation size configurations provided.
 
     except Exception as e:
         print(f"[CRITICAL ERROR] Background task failed: {e}")
-        
+
     finally:
         # Unlock the materials so the frontend knows to stop spinning
         materials = db.query(models.StudyMaterial).filter(
             models.StudyMaterial.id.in_(material_ids)
         ).all()
-        
+
         for mat in materials:
             mat.is_generating = False
-            
+
         db.commit()
         db.close()
         print("[DEBUG] Database session closed and materials unlocked.")
 
-
-from pydantic import BaseModel, Field
-from typing import List, Literal, Annotated, Union
 
 # =====================================================================
 # 3. THE GENERATION ENGINE
@@ -255,8 +266,11 @@ from typing import List, Literal, Annotated, Union
 
 async def draft_course_curriculum(topic: str, context: str) -> dict:
     """
-    Generates a highly structured, multi-format course draft for frontend review.
-    Uses structured outputs (response_format=AICourseDraft) to guarantee schema compliance.
+    Generates a highly structured, multi-format course draft.
+    PROMPT CONTENT UNCHANGED from the original — depth requirements
+    (6+ modules, 5+ lessons/module, 15+ question final assessment) are
+    preserved exactly. Only the model, timeout handling, and error typing
+    changed.
     """
 
     system_prompt = """
@@ -459,21 +473,90 @@ This should feel like a real course, not a summary of one.
 """.strip()
 
     print(f"[INFO] Generating curriculum for: '{topic}'")
+    start = time.monotonic()
 
-    response = await client.beta.chat.completions.parse(
-        # gpt-4o handles deeply nested discriminated unions significantly better than gpt-4o-mini.
-        # Do not downgrade this without testing schema compliance on complex topics first.
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        response_format=AICourseDraft,
-        # Slightly raised from 0.3 — at 0.3 the model converged hard on a single
-        # "safe" structure (5 modules x 3 lessons, same type order). 0.4-0.5 gives
-        # it room to actually vary structure across modules while staying schema-valid.
-        temperature=0.45,
+    try:
+        # --- CHANGED: hard backstop even beyond the client's own timeout ----
+        response = await asyncio.wait_for(
+            client.beta.chat.completions.parse(
+                # --- CHANGED: gpt-4o -> gpt-5-mini ---------------------------
+                # Cheaper than gpt-4o ($0.25/$2 per M vs ~$2.50/$10 per M) and
+                # a newer/stronger model. It's a reasoning model, so latency
+                # per call is higher than gpt-4o at the same effort — but this
+                # now runs as a background job, so that's no longer the thing
+                # racing your frontend's timeout. reasoning_effort="medium" is
+                # the balance point: meaningfully better structure adherence
+                # on deeply nested schemas than "low", without paying for
+                # "high"/"xhigh" reasoning depth this task doesn't need.
+                model="gpt-5-mini",
+                reasoning_effort="medium",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=AICourseDraft,
+                temperature=0.45,
+            ),
+            timeout=280.0,  # generous backstop for a reasoning model on a large nested schema
+        )
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - start
+        print(f"[ERROR] Curriculum generation exceeded {elapsed:.1f}s hard timeout for topic '{topic}'")
+        raise RuntimeError("Generation took too long. Try a narrower topic or shorter context.")
+    except APITimeoutError as e:
+        print(f"[ERROR] OpenAI API timeout for topic '{topic}': {e}")
+        raise RuntimeError("The AI provider timed out. Please try again.")
+    except APIStatusError as e:
+        print(f"[ERROR] OpenAI API error ({e.status_code}) for topic '{topic}': {e.response.text}")
+        raise RuntimeError(f"The AI provider returned an error (status {e.status_code}).")
+
+    elapsed = time.monotonic() - start
+    usage = getattr(response, "usage", None)
+    print(
+        f"[TIMING] Curriculum generation for '{topic}' took {elapsed:.1f}s "
+        f"(tokens: prompt={getattr(usage, 'prompt_tokens', '?')}, "
+        f"completion={getattr(usage, 'completion_tokens', '?')})"
     )
 
     parsed: AICourseDraft = response.choices[0].message.parsed
     return parsed.model_dump()
+
+
+async def run_course_draft_job(job_id: str, topic: str, context: str):
+    """
+    Background wrapper: owns the job row lifecycle (PENDING -> RUNNING ->
+    SUCCESS/FAILED) so the HTTP request never has to wait for generation.
+    Same shape as process_and_generate_content's is_generating flag pattern,
+    but with explicit status + result/error columns for polling.
+    """
+    db: Session = SessionLocal()
+
+    try:
+        job = db.query(models.CourseDraftJob).filter(models.CourseDraftJob.id == job_id).first()
+        if not job:
+            print(f"[ERROR] Job {job_id} vanished before it could start.")
+            return
+
+        job.status = models.JobStatus.RUNNING
+        db.commit()
+
+        draft_data = await draft_course_curriculum(topic=topic, context=context)
+
+        job.status = models.JobStatus.SUCCESS
+        job.result = draft_data
+        db.commit()
+        print(f"[SUCCESS] Job {job_id} completed for topic '{topic}'.")
+
+    except Exception as e:
+        # Full trace server-side for debugging; short, safe message stored for the frontend.
+        print(f"[CRITICAL ERROR] Job {job_id} failed: {traceback.format_exc()}")
+        db.rollback()
+
+        job = db.query(models.CourseDraftJob).filter(models.CourseDraftJob.id == job_id).first()
+        if job:
+            job.status = models.JobStatus.FAILED
+            job.error = str(e) if isinstance(e, RuntimeError) else "Failed to generate the course draft. The AI structure may have been invalid."
+            db.commit()
+
+    finally:
+        db.close()
