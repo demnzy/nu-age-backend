@@ -586,7 +586,7 @@ async def process_invitation_join(
         new_member = models.OrganisationMember(
             user_id=user.id,
             organisation_id=invite.organisation_id,
-            role=invite_role
+            role=invite_role.lower()
         )
         db.add(new_member)
         
@@ -837,3 +837,6 @@ def get_org_students_with_enrollment_status(
         })
 
     return {"students": students}
+
+
+    
