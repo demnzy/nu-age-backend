@@ -155,9 +155,9 @@ async def get_organisation_members(
     # 3. Build the role filter list based on the query parameters
     target_roles = []
     if students:
-        target_roles.append("STUDENT") 
+        target_roles.append("student")
     if teachers:
-        target_roles.append("TEACHER") 
+        target_roles.append("teacher")
 
     # 4. If any roles were requested, apply the filter to the association table's role column
     if target_roles:
