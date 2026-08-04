@@ -303,7 +303,8 @@ async def send_organisation_invite(
         organisation_id=request.organisation_id,
         uses_left=1, # Single-use for a direct email
         expires_at=datetime.now(timezone('UTC')) + timedelta(days=7), # Expires in 7 days
-        created_by=current_user.id
+        created_by=current_user.id,
+        role=request.role # Preserve the intended role so process-invite can honor it later
     )
     
     db.add(new_invite)
@@ -577,11 +578,15 @@ async def process_invitation_join(
         return {"status": "already_member", "message": "User is already in this organisation."}
         
     try:
+        # Preserve the role that was set when the invite was sent, defaulting
+        # to "student" only if the invite somehow has no role stored.
+        invite_role = str(getattr(invite, "role", None) or "student").lower()
+
         # Create the junction table entry
         new_member = models.OrganisationMember(
             user_id=user.id,
             organisation_id=invite.organisation_id,
-            role="student" 
+            role=invite_role
         )
         db.add(new_member)
         

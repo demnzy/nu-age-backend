@@ -115,6 +115,7 @@ class Invitations(Base):
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    role = Column(String,nullable=False, server_default = "student")
 #courses and categories
 
 class Category(Base):
