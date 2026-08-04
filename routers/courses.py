@@ -171,14 +171,15 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
     if setting.teacher_id is not None:
         if setting.teacher_id == "none":  # Special case to remove teacher
             course.teacher_id = None
-        course.teacher_id = setting.teacher_id
+        else:
+            course.teacher_id = setting.teacher_id
     if setting.category_id is not None:
         course.category_id = setting.category_id    
     if setting.supervised is not None:
         course.supervised = setting.supervised
     db.commit()
     db.refresh(course)
-
+    return course
 
 
 @router.delete("/{course_id}/delete", status_code=status.HTTP_200_OK)
