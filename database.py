@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str
     FIREBASE_BASE64_KEY: str
     UNSPLASH_ACCESS_KEY: str
+    REVENUECAT_WEBHOOK_SECRET: str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL
