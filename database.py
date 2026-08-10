@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY : str
     RESEND_API_KEY: str
     FIREBASE_BASE64_KEY: str
+    UNSPLASH_ACCESS_KEY: str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

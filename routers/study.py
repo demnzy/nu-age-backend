@@ -270,62 +270,101 @@ def get_material_status(
     }
 
 
+# Drop-in replacement for generate_study_content() in study.py.
+# Only this one function changes — nothing else in study.py needs to move.
+# Add this import near the top of study.py, alongside the existing imports:
+#
+from monetization_models import CreditBalance, CreditLedgerEntry
+
 @router.post("/generate")
 async def generate_study_content(
-    payload: schemas.GeneratePayload, 
-    background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db), 
+    payload: schemas.GeneratePayload,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
     user = Depends(auth.get_current_user)
 ):
-    # --- 1. THE GENERATION LIMIT CHECK ---
+    # --- 1. THE GENERATION LIMIT CHECK (free quota, then credits fallback) ---
     sub = db.query(models.UserSubscription).filter(
         models.UserSubscription.user_id == user.id
     ).first()
-    
+
     if not sub:
         sub = models.UserSubscription(user_id=user.id, plan_id="free")
         db.add(sub)
         db.commit()
         db.refresh(sub)
 
-    if sub.plan.generations_limit is not None and sub.generations_used >= sub.plan.generations_limit:
-        raise HTTPException(
-            status_code=403, 
-            detail="You have reached your AI generation limit. Please upgrade your plan."
-        )
+    credit_source = "free_quota"
+    credit_balance = None  # only set if we end up spending a credit
 
-    # Charge them for the generation!
-    sub.generations_used += 1
+    if sub.plan.generations_limit is not None and sub.generations_used >= sub.plan.generations_limit:
+        # Free quota exhausted — fall back to purchased credits instead of
+        # hard-403ing, same idea as the old check but with a paid path.
+        credit_balance = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
+
+        if not credit_balance or credit_balance.balance <= 0:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_generations",
+                    "free_used": sub.generations_used,
+                    "free_limit": sub.plan.generations_limit,
+                    "credits_remaining": credit_balance.balance if credit_balance else 0,
+                    "message": "You're out of free generations and credits. Buy a credit pack to continue.",
+                }
+            )
+
+        credit_balance.balance -= 1
+        db.add(CreditLedgerEntry(
+            user_id=user.id,
+            delta=-1,
+            reason="generation_spend",
+            reference_id=",".join(str(m) for m in payload.material_ids),
+            balance_after=credit_balance.balance,
+        ))
+        credit_source = "credits"
+    else:
+        sub.generations_used += 1
     # --------------------------------------
 
     materials = db.query(models.StudyMaterial).filter(
         models.StudyMaterial.id.in_(payload.material_ids)
     ).all()
-    
+
     if not materials:
-        # If the material isn't found, refund the generation we just charged them
-        sub.generations_used -= 1
+        # If the material isn't found, refund whatever we just charged —
+        # credits if that's what was spent, otherwise the free quota tick.
+        if credit_source == "credits":
+            credit_balance.balance += 1
+            db.add(CreditLedgerEntry(
+                user_id=user.id,
+                delta=1,
+                reason="generation_refund",
+                reference_id=",".join(str(m) for m in payload.material_ids),
+                balance_after=credit_balance.balance,
+            ))
+        else:
+            sub.generations_used -= 1
         db.commit()
         raise HTTPException(status_code=404, detail="Materials not found.")
 
     # Lock the materials in the database
     for mat in materials:
         mat.is_generating = True
-        
-    # Commit both the lock AND the usage increment at the same time
+
+    # Commit both the lock AND the usage/credit change at the same time
     db.commit()
 
     combined_text = "\n\n".join([m.content for m in materials if m.content])
-    
+
     # 2. Queue the heavy AI lifting
     background_tasks.add_task(
-        process_and_generate_content, 
+        process_and_generate_content,
         user_id=str(user.id),
-        material_ids=[str(m.id) for m in materials], # Pass IDs to unlock them later
+        material_ids=[str(m.id) for m in materials],  # Pass IDs to unlock them later
         content_text=combined_text,
         types_requested=payload.types
     )
 
     # 3. Return instantly
-    return {"message": "AI Generation started", "status": "processing"}
-
+    return {"message": "AI Generation started", "status": "processing", "source": credit_source}

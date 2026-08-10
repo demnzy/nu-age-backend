@@ -10,7 +10,7 @@ sys.path.insert(0, os.getcwd())
 from database import Base
 # Explicitly import your models one by one to force registration
 from models import User, Organisation, OrganisationMember, Category, Course, Enrollment, Module, Lesson
-
+import monetization_models 
 target_metadata = Base.metadata
 from alembic import context
 

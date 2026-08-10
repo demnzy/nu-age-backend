@@ -1,6 +1,8 @@
 import asyncio
+import re
 import time
 import traceback
+import httpx
 from pydantic import BaseModel, Field
 from typing import List, Literal, Annotated, Union
 from sqlalchemy.orm import Session
@@ -24,6 +26,108 @@ client = AsyncOpenAI(
     max_retries=1,      # 1 retry on transient network/5xx errors, not silent 2x+ backoff
 )
 # -----------------------------------------------------------------------------
+
+
+# --- NEW: image insertion support --------------------------------------------
+# The model cannot know real image URLs — asking it to write markdown image
+# links directly just gets you plausible-looking URLs that 404. Instead, the
+# model is instructed to write a placeholder token with a search query:
+#   ![alt text](IMG:short search query)
+# After generation, we resolve every placeholder to a real, working Unsplash
+# photo URL. Unique queries are deduped and rate-limited (Unsplash's free
+# tier is 50 req/hour) so a big course draft doesn't blow through the quota.
+
+IMAGE_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(IMG:\s*([^)]+?)\s*\)")
+UNSPLASH_API_URL = "https://api.unsplash.com/search/photos"
+
+
+async def _search_unsplash(client: httpx.AsyncClient, query: str) -> str | None:
+    """Return a working, hotlinkable Unsplash image URL for a query, or None."""
+    access_key = Settings().UNSPLASH_ACCESS_KEY
+    if not access_key:
+        print("[WARNING] UNSPLASH_ACCESS_KEY not configured — leaving image placeholders unresolved.")
+        return None
+
+    try:
+        resp = await client.get(
+            UNSPLASH_API_URL,
+            params={"query": query, "per_page": 1, "orientation": "landscape"},
+            headers={"Authorization": f"Client-ID {access_key}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results") or []
+        if not results:
+            return None
+        # 'regular' is a sensibly-sized, always-valid hotlink per Unsplash's API terms.
+        return results[0]["urls"]["regular"]
+    except Exception as e:
+        print(f"[WARNING] Unsplash lookup failed for query '{query}': {e}")
+        return None
+
+
+async def resolve_image_placeholders(data: dict) -> dict:
+    """
+    Walk the parsed course draft, find every `IMG:query` placeholder in any
+    string field, and replace it with a real Unsplash image URL. Placeholders
+    that fail to resolve (no key configured, no results, API error) are
+    stripped out entirely rather than left broken in the markdown.
+    """
+    # 1. Collect every unique query across the whole draft first, so repeated
+    #    topics (e.g. "supply and demand" used in two lessons) cost one call.
+    queries: set[str] = set()
+
+    def collect(node):
+        if isinstance(node, str):
+            queries.update(m.group(2) for m in IMAGE_PLACEHOLDER_RE.finditer(node))
+        elif isinstance(node, dict):
+            for v in node.values():
+                collect(v)
+        elif isinstance(node, list):
+            for v in node:
+                collect(v)
+
+    collect(data)
+
+    if not queries:
+        return data
+
+    # 2. Resolve them all concurrently (bounded, to stay polite to the API).
+    semaphore = asyncio.Semaphore(5)
+    resolved: dict[str, str | None] = {}
+
+    async with httpx.AsyncClient() as client:
+        async def resolve_one(q: str):
+            async with semaphore:
+                resolved[q] = await _search_unsplash(client, q)
+
+        await asyncio.gather(*(resolve_one(q) for q in queries))
+
+    # 3. Substitute back into the tree.
+    def replace_in_text(text: str) -> str:
+        def _sub(m: re.Match) -> str:
+            alt, query = m.group(1), m.group(2)
+            url = resolved.get(query)
+            if not url:
+                # Drop unresolved placeholders instead of shipping a dead link.
+                return ""
+            return f"![{alt}]({url})"
+        return IMAGE_PLACEHOLDER_RE.sub(_sub, text)
+
+    def walk(node):
+        if isinstance(node, str):
+            return replace_in_text(node) if IMAGE_PLACEHOLDER_RE.search(node) else node
+        elif isinstance(node, dict):
+            return {k: walk(v) for k, v in node.items()}
+        elif isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    resolved_count = sum(1 for v in resolved.values() if v)
+    print(f"[INFO] Resolved {resolved_count}/{len(queries)} image placeholders via Unsplash.")
+
+    return walk(data)
+# -------------------------------------------------------------------------------
 
 
 class GeneratedFlashcard(BaseModel):
@@ -359,6 +463,23 @@ not as a rotating set you cycle through.
       A "text" lesson that is one undifferentiated wall of prose is a failure,
       regardless of how good the writing is.
 
+      IMAGES. Where a real image would meaningfully help understanding (a
+      diagram-worthy process, a historical photo, a visual concept, a chart-like
+      comparison, a physical object the student may not have seen) insert ONE
+      image placeholder using this EXACT syntax, inline at the relevant point
+      in the markdown:
+        ![short descriptive alt text](IMG: concise, literal, photo-searchable query)
+      Rules for this:
+        - You do NOT know real image URLs. NEVER write a real-looking URL.
+          Always use the literal `IMG:` placeholder above — it gets resolved
+          to a real image afterward.
+        - The query must be concrete and photo-searchable (e.g. "stock market
+          trading floor", "human heart anatomy diagram", "Great Wall of China"),
+          not abstract (never "opportunity cost" or "monetary policy concept").
+        - At most 1-2 images per text lesson. Not every lesson needs one —
+          only insert one where a real photo genuinely adds value over the
+          prose alone. Do not decorate for the sake of it.
+
       End the `text` field with exactly 3 bullet points summarising the
       three things the student must recall cold, a week from now.
 
@@ -518,7 +639,11 @@ This should feel like a real course, not a summary of one.
     )
 
     parsed: AICourseDraft = response.choices[0].message.parsed
-    return parsed.model_dump()
+    draft_data = parsed.model_dump()
+
+    draft_data = await resolve_image_placeholders(draft_data)
+
+    return draft_data
 
 
 async def run_course_draft_job(job_id: str, topic: str, context: str):

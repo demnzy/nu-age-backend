@@ -4,6 +4,6 @@ from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated="auto")
 
 # 1. Hash a new password
-plain_password = "test"
+plain_password = "shadow@knight124"
 hashed = pwd_context.hash(plain_password)
 print(hashed)

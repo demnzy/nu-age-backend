@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network,monetization
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
@@ -43,6 +43,7 @@ app.include_router(certificate.router, tags=["Certificates"])
 app.include_router(study.router, tags=["Self Study"])
 app.include_router(subscriptions.router, tags=["Subscription Management"])
 app.include_router(network.router, tags=["Friends Management"])
+app.include_router(monetization.router, tags=["Monetization Management"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

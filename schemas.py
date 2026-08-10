@@ -86,7 +86,7 @@ class CourseBase(BaseModel):
     supervised: bool = False
     is_freelance: bool = False   
     
-    # --- ADD THESE FOR BUNNY.NET ---
+    # --- ADD THESE FOR BUSNNY.NET ---
     image_bytes: Optional[str] = None
     image_filename: Optional[str] = None
     
@@ -414,3 +414,10 @@ class MemberResponse(BaseModel):
     streak: Optional[int] = 0
     university: Optional[str] = ""
     model_config = {'from_attributes' : True}
+
+
+class OrgDraftRequest(BaseModel):
+    org_id: UUID
+    topic: str
+    context: str | None = None
+ 
