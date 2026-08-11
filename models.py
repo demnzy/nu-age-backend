@@ -419,3 +419,71 @@ class CourseDraftJob(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+# Add this alongside your existing models
+
+class Playlist(Base):
+    __tablename__ = 'playlists'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    
+    # Links to the existing 'user' table
+    creator_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete="CASCADE"), nullable=False)
+    
+    rating = Column(Float, default=0.0, nullable=False)
+    is_public = Column(Boolean, default=True, nullable=False)
+    
+    # Matches your existing timestamp pattern
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    creator = relationship("User", backref="playlists")
+    
+    # Connects to the junction table to get the courses 
+    # Ordered by the index so the UI displays them in the exact order intended
+    playlist_courses = relationship("PlaylistCourse", back_populates="playlist", order_by="PlaylistCourse.order_index", cascade="all, delete-orphan")
+
+
+class PlaylistCourse(Base):
+    __tablename__ = 'playlist_courses'
+    
+    # Links the specific playlist and course together
+    playlist_id = Column(UUID(as_uuid=True), ForeignKey('playlists.id', ondelete="CASCADE"), primary_key=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey('courses.id', ondelete="CASCADE"), primary_key=True)
+    
+    # Mirrors the sorting logic you used in your Module and Lesson tables
+    order_index = Column(Integer, nullable=False, default=0) 
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    playlist = relationship("Playlist", back_populates="playlist_courses")
+    course = relationship("Course") # Allows you to easily query the full course data via the playlist
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+ 
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True)
+ 
+    # The opaque token string itself. Store a HASH of it, not the raw value —
+    # same principle as passwords: if your DB leaks, raw refresh tokens in
+    # plaintext are instant account takeover for every user. Hash with sha256
+    # (fast hash is fine here — these are already high-entropy random tokens,
+    # unlike passwords, so we're not defending against brute force, just DB leaks).
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+ 
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+ 
+    # Set when this token has been used to mint a new one (rotation) or
+    # explicitly revoked (logout). A non-null revoked_at means "dead, don't honor."
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+ 
+    # Optional but recommended: track device/user-agent so users can see
+    # "active sessions" and revoke individual ones later.
+    device_label = Column(String, nullable=True)
+ 
+    user = relationship("models.User", backref="refresh_tokens")

@@ -420,4 +420,8 @@ class OrgDraftRequest(BaseModel):
     org_id: UUID
     topic: str
     context: str | None = None
- 
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    type: str

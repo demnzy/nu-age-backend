@@ -16,6 +16,14 @@ class UserDirectorySchema(BaseModel):
     name: str
     email: str
 
+# NEW: request bodies for the refresh-token endpoints below.
+class RefreshRequest(BaseModel):
+    refresh_token: str
+    device_label: str | None = None
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
 router = APIRouter(prefix=('/users'))
 
 # create a user
@@ -485,7 +493,11 @@ async def verify_email( payload: VerifyEmailSchema,background_tasks: BackgroundT
     }
 
 @router.post('/auth/login', response_model=TokenResponse)
-def user_login(user: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def user_login(
+    user: OAuth2PasswordRequestForm = Depends(),
+    device_label: str | None = None,  # NEW: optional, e.g. "Android - Pixel 7"
+    db: Session = Depends(get_db),
+):
     # 1. Find the user by either email OR username
     actual_user = (
         db.query(models.User).filter(models.User.email == user.username).first() or 
@@ -527,7 +539,54 @@ def user_login(user: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
     # 5. Generate Token
     token = auth.create_access_token({"email": actual_user.email})
-    return token
+
+    # NEW: also issue a refresh token so the client can stay silently
+    # logged in past the short access-token expiry.
+    refresh_token = auth.create_refresh_token(db, actual_user.id, device_label=device_label)
+
+    return {
+        "access_token": token["access_token"],
+        "refresh_token": refresh_token,
+        "type": token["type"],
+    }
+
+
+# NEW: exchange a refresh token for a new access token. Does NOT depend on
+# get_current_user — no access token is needed, since the whole point is
+# that the access token is presumed expired/gone.
+@router.post('/auth/refresh', response_model=TokenResponse)
+def refresh_token_endpoint(payload: RefreshRequest, db: Session = Depends(get_db)):
+    user, new_refresh_token = auth.verify_and_rotate_refresh_token(
+        db, payload.refresh_token, device_label=payload.device_label
+    )
+
+    if not user:
+        # Covers: unknown token, expired token, reused/revoked token.
+        # Client should treat this the same as a dead session — clear
+        # local tokens and prompt login.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token invalid or expired. Please log in again.",
+        )
+
+    new_access_token = auth.create_access_token({"email": user.email})
+
+    return {
+        "access_token": new_access_token["access_token"],
+        # IMPORTANT: refresh tokens rotate on every use. The client MUST
+        # overwrite its stored refresh token with this new value — reusing
+        # the old one will trip reuse-detection and log the user out of
+        # every device (see verify_and_rotate_refresh_token).
+        "refresh_token": new_refresh_token,
+        "type": new_access_token["type"],
+    }
+
+
+# NEW: revoke just this device's refresh token (server-side logout).
+@router.post('/auth/logout', status_code=status.HTTP_204_NO_CONTENT)
+def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
+    auth.revoke_refresh_token(db, payload.refresh_token)
+    return None
     
 # Admin get all users
 @router.get('', response_model= List[UserBase])
@@ -642,5 +701,3 @@ def delete_user(email:str, user= Depends(auth.get_current_user), db: Session = D
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= "User Not found")
     db.delete(User)
     db.commit()
-    
-

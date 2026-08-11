@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     FIREBASE_BASE64_KEY: str
     UNSPLASH_ACCESS_KEY: str
     REVENUECAT_WEBHOOK_SECRET: str
+    REFRESH_EXPIRE_DAYS: str
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL
