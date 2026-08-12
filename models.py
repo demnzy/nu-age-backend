@@ -449,9 +449,6 @@ class Playlist(Base):
 
     # Relationships
     creator = relationship("User", backref="playlists")
-    
-    # Connects to the junction table to get the courses 
-    # Ordered by the index so the UI displays them in the exact order intended
     playlist_courses = relationship("PlaylistCourse", back_populates="playlist", order_by="PlaylistCourse.order_index", cascade="all, delete-orphan")
 
 
@@ -469,6 +466,21 @@ class PlaylistCourse(Base):
     # Relationships
     playlist = relationship("Playlist", back_populates="playlist_courses")
     course = relationship("Course") # Allows you to easily query the full course data via the playlist
+
+class PlaylistEnrollment(Base):
+    __tablename__ = 'playlist_enrollments'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    playlist_id = Column(UUID(as_uuid=True), ForeignKey('playlists.id', ondelete="CASCADE"), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete="CASCADE"), nullable=False)
+    
+    enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    progress = Column(Float, default=0.0) # 0 to 100
+    
+    # Relationships
+    playlist = relationship("Playlist", backref="enrollments")
+    student = relationship("User", backref="playlist_enrollments")
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"

@@ -427,3 +427,58 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     type: str
+
+class PlaylistBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    is_public: bool = True
+    image_bytes: Optional[str] = None
+    image_filename: Optional[str] = None
+
+class PlaylistCreate(PlaylistBase):
+    org_id: Optional[UUID] = None
+
+class PlaylistUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_public: Optional[bool] = None
+    image_bytes: Optional[str] = None
+    image_filename: Optional[str] = None
+
+class PlaylistCourseOut(BaseModel):
+    playlist_id: UUID
+    course_id: UUID
+    order_index: int
+    added_at: datetime
+    course: CourseOut
+
+    class Config:
+        from_attributes = True
+
+class PlaylistOut(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    rating: float
+    is_public: bool
+    creator_id: UUID
+    org_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    
+    playlist_courses: List[PlaylistCourseOut] = []
+
+    class Config:
+        from_attributes = True
+
+class PlaylistEnrollmentOut(BaseModel):
+    id: UUID
+    playlist_id: UUID
+    student_id: UUID
+    enrolled_at: datetime
+    completed_at: Optional[datetime] = None
+    progress: float
+
+    class Config:
+        from_attributes = True

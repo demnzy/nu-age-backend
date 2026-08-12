@@ -537,6 +537,31 @@ def bulk_sync_progress(
             if course_entries:
                 enrollment.completed_at = max(e.completed_at for e in course_entries)
 
+        db.flush()
+
+        # Update Playlist Progress if applicable
+        playlists_enrolled = db.query(models.PlaylistEnrollment).join(
+            models.PlaylistCourse, models.PlaylistCourse.playlist_id == models.PlaylistEnrollment.playlist_id
+        ).filter(
+            models.PlaylistEnrollment.student_id == user.id,
+            models.PlaylistCourse.course_id == course_id
+        ).all()
+
+        for pe in playlists_enrolled:
+            total_c = db.query(func.count(models.PlaylistCourse.id)).filter_by(playlist_id=pe.playlist_id).scalar()
+            completed_c = db.query(func.count(models.Enrollment.id)).join(
+                models.PlaylistCourse, models.PlaylistCourse.course_id == models.Enrollment.course_id
+            ).filter(
+                models.PlaylistCourse.playlist_id == pe.playlist_id,
+                models.Enrollment.student_id == user.id,
+                models.Enrollment.progress >= 99.9
+            ).scalar()
+
+            if total_c > 0:
+                pe.progress = round((completed_c / total_c) * 100, 1)
+                if pe.progress >= 99.9 and not pe.completed_at:
+                    pe.completed_at = func.now()
+
     db.commit()
 
     return {"results": results}

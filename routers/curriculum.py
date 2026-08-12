@@ -250,7 +250,34 @@ def mark_lesson_complete(
         enrollment.progress = new_percentage
         if new_percentage >= 100.0 and enrollment.completed_at is None:
             enrollment.completed_at = func.now()
-        
+            db.flush()
+            
+            # Update Playlist Progress if applicable
+            playlists_enrolled = db.query(models.PlaylistEnrollment).join(
+                models.PlaylistCourse, models.PlaylistCourse.playlist_id == models.PlaylistEnrollment.playlist_id
+            ).filter(
+                models.PlaylistEnrollment.student_id == user.id,
+                models.PlaylistCourse.course_id == course_id
+            ).all()
+
+            for pe in playlists_enrolled:
+                total_c = db.query(func.count(models.PlaylistCourse.id)).filter_by(playlist_id=pe.playlist_id).scalar()
+                completed_c = db.query(func.count(models.Enrollment.id)).join(
+                    models.PlaylistCourse, models.PlaylistCourse.course_id == models.Enrollment.course_id
+                ).filter(
+                    models.PlaylistCourse.playlist_id == pe.playlist_id,
+                    models.Enrollment.student_id == user.id,
+                    models.Enrollment.progress >= 99.9
+                ).scalar()
+                
+                # because this current course might not be flushed as >= 100 yet in the DB if we haven't flushed
+                # we just db.flush() before this query
+                
+                if total_c > 0:
+                    pe.progress = round((completed_c / total_c) * 100, 1)
+                    if pe.progress >= 99.9 and not pe.completed_at:
+                        pe.completed_at = func.now()
+
     db.commit()
 
     return {
