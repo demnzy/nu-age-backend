@@ -10,8 +10,8 @@ from pydantic import BaseModel
 import models
 import schemas
 from database import get_db
-import utils.oauth2 as auth
-from utils.bunny_storage import upload_bytes_to_bunny
+from services import auth
+from services.bunny_service import upload_bytes_to_bunny
 
 router = APIRouter(
     prefix="/playlists",
