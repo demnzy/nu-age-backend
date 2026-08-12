@@ -20,7 +20,7 @@ router = APIRouter(
 
 @router.post("/", response_model=schemas.PlaylistOut, status_code=status.HTTP_201_CREATED)
 async def create_playlist(payload: schemas.PlaylistCreate, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have the permission to perform this operation"
@@ -82,7 +82,7 @@ async def update_playlist(playlist_id: UUID, payload: schemas.PlaylistUpdate, db
     if not playlist:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist not found")
 
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     update_data = payload.model_dump(exclude_unset=True, exclude={"image_bytes", "image_filename"})
@@ -114,7 +114,7 @@ def add_courses_to_playlist(playlist_id: UUID, payload: CourseMappingPayload, db
     if not playlist:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist not found")
 
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     max_order = db.query(func.max(models.PlaylistCourse.order_index)).filter(models.PlaylistCourse.playlist_id == playlist_id).scalar() or 0
@@ -137,7 +137,7 @@ def add_courses_to_playlist(playlist_id: UUID, payload: CourseMappingPayload, db
 
 @router.delete("/{playlist_id}/courses/{course_id}")
 def remove_course_from_playlist(playlist_id: UUID, course_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     mapping = db.query(models.PlaylistCourse).filter_by(playlist_id=playlist_id, course_id=course_id).first()
@@ -154,7 +154,7 @@ class ReorderPayload(BaseModel):
 
 @router.put("/{playlist_id}/courses/reorder")
 def reorder_course(playlist_id: UUID, payload: ReorderPayload, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     target = db.query(models.PlaylistCourse).filter_by(playlist_id=playlist_id, course_id=payload.course_id).first()
@@ -197,7 +197,7 @@ def enroll_in_playlist(playlist_id: UUID, db: Session = Depends(get_db), user=De
 
 @router.get("/{playlist_id}/analytics")
 def playlist_analytics(playlist_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    if user.role != "admin" and user.role != "owner":
+    if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
         
     enrollments = db.query(models.PlaylistEnrollment).filter_by(playlist_id=playlist_id).all()
