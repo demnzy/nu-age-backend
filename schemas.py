@@ -149,6 +149,8 @@ class CourseOut(BaseModel):
     image_url: Optional[str] = None
     admin: UserMin 
     objectives: List[str] |  None = None
+    rating: Optional[float] = None
+    rating_count: Optional[int] = None
 
     class Config:
         from_attributes = True
