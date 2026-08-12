@@ -135,6 +135,34 @@ def add_courses_to_playlist(playlist_id: UUID, payload: CourseMappingPayload, db
     db.commit()
     return {"message": f"Added {added} courses to playlist."}
 
+class BulkPlaylistCoursesPayload(BaseModel):
+    course_ids: List[UUID]
+
+@router.post("/{playlist_id}/courses/bulk", status_code=status.HTTP_200_OK)
+def save_bulk_playlist_courses(playlist_id: UUID, payload: BulkPlaylistCoursesPayload, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
+    playlist = db.query(models.Playlist).filter(models.Playlist.id == playlist_id).first()
+    if not playlist:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist not found")
+
+    if user.role != "Admin" and user.role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    db.query(models.PlaylistCourse).filter(models.PlaylistCourse.playlist_id == playlist_id).delete(synchronize_session=False)
+    db.flush()
+
+    added = 0
+    for idx, cid in enumerate(payload.course_ids):
+        new_mapping = models.PlaylistCourse(
+            playlist_id=playlist_id,
+            course_id=cid,
+            order_index=idx
+        )
+        db.add(new_mapping)
+        added += 1
+
+    db.commit()
+    return {"message": f"Bulk saved {added} courses to playlist."}
+
 @router.delete("/{playlist_id}/courses/{course_id}")
 def remove_course_from_playlist(playlist_id: UUID, course_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
     if user.role != "Admin" and user.role != "owner":
