@@ -368,3 +368,175 @@ def get_weekly_activity(
         })
 
     return response
+
+# --- Add to courses.py ---
+
+@router.get('/{course_id}/download')
+def get_course_for_download(
+    course_id: UUID,
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns a full course tree (course + modules + lessons, nested) in one
+    call, shaped for local offline storage.
+
+    Permission: enrolled students only, same check as
+    GET /courses/{course_id}/enrollment in enrollments.py — mirrored here
+    rather than imported since it's a one-line query, to avoid a cross-router
+    import for something this small. If you'd rather share it, pull it into
+    a shared services/enrollment.py helper and call it from both places.
+    """
+    course = (
+        db.query(models.Course)
+        .options(
+            joinedload(models.Course.modules).joinedload(models.Module.lessons)
+        )
+        .filter(models.Course.id == course_id)
+        .first()
+    )
+
+    if not course:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
+
+    enrollment = db.query(models.Enrollment).filter(
+        models.Enrollment.course_id == course_id,
+        models.Enrollment.student_id == user.id,
+    ).first()
+
+    # Course admin/teacher can also preview-download without enrolling —
+    # matches the pattern used elsewhere in this file (change_setting, etc).
+    # Drop this if you want download to be strictly enrollment-only.
+    is_owner = user.id in (course.admin_id, course.teacher_id)
+
+    if not enrollment and not is_owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You must be enrolled in this course to download it."
+        )
+
+    modules_sorted = sorted(course.modules, key=lambda m: m.order_index)
+
+    return {
+        "id": str(course.id),
+        "name": course.name,
+        "description": course.description,
+        "category_id": str(course.category_id) if course.category_id else None,
+        "objectives": course.objectives,
+        "image_url": course.image_url,
+        "server_updated_at": course.updated_at.isoformat() if getattr(course, "updated_at", None) else None,
+        "modules": [
+            {
+                "id": str(module.id),
+                "title": module.title,
+                "order_index": module.order_index,
+                "lessons": [
+                    {
+                        "id": str(lesson.id),
+                        "title": lesson.title,
+                        "order_index": lesson.order_index,
+                        "type": lesson.type,
+                        "content": lesson.content,
+                    }
+                    for lesson in sorted(module.lessons, key=lambda l: l.order_index)
+                ],
+            }
+            for module in modules_sorted
+        ],
+    }
+
+# --- Add to courses.py (or a progress.py router if you prefer) ---
+#
+
+class OfflineProgressEntry(BaseModel):
+    lesson_id: UUID
+    course_id: UUID
+    status: str                            # 'in_progress' | 'completed'
+    completed_at: Optional[str] = None     # ISO string, client-local timestamp
+    quiz_answers: Optional[dict] = None
+    quiz_score: Optional[float] = None
+
+class BulkProgressSync(BaseModel):
+    entries: List[OfflineProgressEntry]
+
+
+@router.post('/progress/bulk-sync')
+def bulk_sync_progress(
+    payload: BulkProgressSync,
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    results = []
+    touched_course_ids = set()
+
+    for entry in payload.entries:
+        existing = db.query(models.LessonProgress).filter(
+            models.LessonProgress.lesson_id == entry.lesson_id,
+            models.LessonProgress.student_id == user.id,
+        ).first()
+
+        if existing:
+            # Don't let an offline "in_progress" clobber a "completed"
+            # that already happened server-side (e.g. from another device
+            # syncing first) — same dedup principle as bulk_enroll_students
+            # already uses in enrollments.py.
+            if existing.status == "completed" and entry.status != "completed":
+                results.append({"lesson_id": str(entry.lesson_id), "status": "skipped_already_completed"})
+                continue
+            existing.status = entry.status
+            existing.completed_at = entry.completed_at
+            existing.quiz_answers = entry.quiz_answers
+            existing.quiz_score = entry.quiz_score
+        else:
+            db.add(models.LessonProgress(
+                lesson_id=entry.lesson_id,
+                course_id=entry.course_id,
+                student_id=user.id,
+                status=entry.status,
+                completed_at=entry.completed_at,
+                quiz_answers=entry.quiz_answers,
+                quiz_score=entry.quiz_score,
+            ))
+
+        results.append({"lesson_id": str(entry.lesson_id), "status": "synced"})
+        touched_course_ids.add(entry.course_id)
+
+    db.flush()  # make the LessonProgress writes visible to the recalculation query below
+
+    # Recalculate Enrollment.progress (and completed_at, if just finished)
+    # for every course touched by this sync batch.
+    for course_id in touched_course_ids:
+        enrollment = db.query(models.Enrollment).filter(
+            models.Enrollment.course_id == course_id,
+            models.Enrollment.student_id == user.id,
+        ).first()
+
+        if not enrollment:
+            continue  # shouldn't happen — download requires enrollment — but fail safe
+
+        total_lessons = (
+            db.query(models.Lesson)
+            .join(models.Module, models.Lesson.module_id == models.Module.id)
+            .filter(models.Module.course_id == course_id)
+            .count()
+        )
+
+        completed_lessons = db.query(models.LessonProgress).filter(
+            models.LessonProgress.course_id == course_id,
+            models.LessonProgress.student_id == user.id,
+            models.LessonProgress.status == "completed",
+        ).count()
+
+        if total_lessons > 0:
+            enrollment.progress = round((completed_lessons / total_lessons) * 100, 1)
+
+        if enrollment.progress >= 99.9 and not enrollment.completed_at:
+            # Course just finished via offline sync. Use the latest
+
+            course_entries = [e for e in payload.entries if e.course_id == course_id and e.completed_at]
+            if course_entries:
+                enrollment.completed_at = max(e.completed_at for e in course_entries)
+
+    db.commit()
+
+    return {"results": results}
