@@ -540,3 +540,41 @@ def bulk_sync_progress(
     db.commit()
 
     return {"results": results}
+
+@router.post('/{course_id}/rate')
+async def rate_course(
+    course_id: str,
+    rating: float = Body(..., embed=True),
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not (1 <= rating <= 5):
+        raise HTTPException(status_code=400, detail="Valid rating between 1 and 5 is required.")
+        
+    enrollment = db.query(models.Enrollment).filter(
+        models.Enrollment.course_id == course_id,
+        models.Enrollment.student_id == user.id
+    ).first()
+    
+    if not enrollment:
+        raise HTTPException(status_code=403, detail="You must be enrolled to rate this course.")
+        
+    if enrollment.progress < 100 and enrollment.completed_at is None:
+        raise HTTPException(status_code=403, detail="You must complete the course before rating it.")
+        
+    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found.")
+        
+    old_user_rating = enrollment.user_rating
+    enrollment.user_rating = rating
+    
+    if old_user_rating is not None:
+        course.rating = round(((course.rating * course.rating_count) - old_user_rating + rating) / course.rating_count, 1)
+    else:
+        course.rating = round(((course.rating * course.rating_count) + rating) / (course.rating_count + 1), 1)
+        course.rating_count += 1
+        
+    db.commit()
+    
+    return {"message": "Rating submitted successfully", "new_rating": course.rating, "rating_count": course.rating_count}

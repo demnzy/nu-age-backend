@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-
+import random
 from database import Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -142,6 +142,9 @@ class Course(Base):
     supervised = Column(Boolean, default=False)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("channels.id", ondelete="SET NULL", use_alter=True,), nullable=True)
     is_freelance = Column(Boolean, nullable=False, server_default=false())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    rating = Column(Float, default=lambda: random.uniform(4.5, 5.0))
+    rating_count = Column(Integer, default=1, server_default="1")
     
     category = relationship("Category", back_populates= "courses", lazy="joined")
     modules = relationship("Module", back_populates="course", order_by="Module.order_index")
@@ -160,6 +163,7 @@ class Enrollment(Base):
     enrolled_at  = Column(DateTime(timezone=True), server_default=func.now())
     progress = Column(Float, nullable=False, server_default="0.0", default=0.0)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    user_rating = Column(Float, nullable=True)
     course = relationship("Course",overlaps="Students,courses")
     student = relationship("User",overlaps="Students,courses")
 
@@ -171,6 +175,7 @@ class Module(Base):
     title = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     course_id = Column(UUID(as_uuid=True), ForeignKey(Course.id, ondelete = "CASCADE"), nullable = False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     
     # UPDATE 1: Changed from String to Integer for proper sorting
@@ -185,6 +190,7 @@ class Lesson(Base):
     title = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     module_id = Column(UUID(as_uuid=True), ForeignKey(Module.id, ondelete = "CASCADE"), nullable = False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     
     order_index = Column(Integer, nullable = False)
     
@@ -429,9 +435,11 @@ class Playlist(Base):
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     
+    
     # Links to the existing 'user' table
     creator_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete="CASCADE"), nullable=False)
-    
+    org_id = Column(UUID(as_uuid=True), ForeignKey(Organisation.id, ondelete = "CASCADE"), nullable = True)
+    image_url= Column(String, nullable=True)
     rating = Column(Float, default=0.0, nullable=False)
     is_public = Column(Boolean, default=True, nullable=False)
     
