@@ -114,7 +114,7 @@ import models
 def get_all_courses(
     name: str = Query(None),
     org: UUID = Query(None),
-    is_public: bool = Query(None),
+    is_public: str = Query(None),
     id: UUID = Query(None),
     progress: int = Query(None), 
     user = Depends(auth.get_current_user), 
@@ -123,6 +123,7 @@ def get_all_courses(
     query = db.query(models.Course).options(
         joinedload(models.Course.admin),
         joinedload(models.Course.category),
+        joinedload(models.Course.organisation),
         joinedload(models.Course.Students)
     )
     
@@ -137,7 +138,13 @@ def get_all_courses(
     if org:
         query = query.filter(models.Course.org_id == org)
     
-    if is_public is not None:
+    if is_public == "organisation":
+        user_org_ids = [org.id for org in user.organisations]
+        query = query.filter(
+            models.Course.public == "organisation",
+            models.Course.org_id.in_(user_org_ids)
+        )
+    elif is_public is not None:
         query = query.filter(models.Course.public == is_public)
         
     if id:

@@ -80,7 +80,7 @@ class CourseBase(BaseModel):
     description: str
     category_id: str
     objectives: Optional[List[str]] = None
-    public: bool = False
+    public: str = "false"
     org_id: Optional[str] = None
     teacher_id: Optional[str] = None
     supervised: bool = False
@@ -115,7 +115,7 @@ class EnrollmentBase(BaseModel):
 class CourseUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    public: bool | None= None
+    public: str | None= None
     
 
 # schemas.py
@@ -151,6 +151,8 @@ class CourseOut(BaseModel):
     objectives: List[str] |  None = None
     rating: Optional[float] = None
     rating_count: Optional[int] = None
+    public: Optional[str] = None
+    organisation: Optional['orgbase'] = None
 
     class Config:
         from_attributes = True
@@ -171,7 +173,7 @@ class CourseSettings(BaseModel):
     description: Optional[str] = None
     supervised: Optional[bool] = None
     teacher_id: Optional[UUID] | str = None
-    public: Optional[bool] = None
+    public: Optional[str] = None
     category_id: Optional[UUID] = None
 
 # --- Flashcard Schemas ---
@@ -466,6 +468,7 @@ class PlaylistOut(BaseModel):
     org_id: Optional[UUID] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    Organisation: str
     
     playlist_courses: List[PlaylistCourseOut] = []
 

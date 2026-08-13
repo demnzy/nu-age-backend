@@ -54,16 +54,28 @@ async def create_playlist(payload: schemas.PlaylistCreate, db: Session = Depends
 
 @router.get("/", response_model=List[schemas.PlaylistOut])
 def get_all_playlists(db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    # Basic implementation: get playlists where org_id matches user.org_id
-    # Alternatively, just get all public playlists for now if user has no org
-    if getattr(user, 'org_id', None):
-        playlists = db.query(models.Playlist).filter(
-            or_(models.Playlist.org_id == user.org_id, models.Playlist.is_public == True)
-        ).all()
-    else:
-        playlists = db.query(models.Playlist).filter(models.Playlist.is_public == True).all()
-    return playlists
+    results = (
+        db.query(models.Playlist, models.Organisation.name)
+        .join(models.Organisation, models.Organisation.id == models.Playlist.org_id)
+        .filter(models.Playlist.is_public == True)
+        .all()
+    )
 
+    return [
+        {
+            "id": playlist.id,
+            "name": playlist.name,
+            "description": playlist.description,
+            "org_id": playlist.org_id,
+            "Organisation": org_name,
+            "image_url": playlist.image_url,
+            "rating": playlist.rating,
+            "is_public": playlist.is_public,
+            "creator_id": playlist.creator_id,
+            "created_at": playlist.created_at,
+            "updated_at": playlist.updated_at
+        }
+        for playlist, org_name in results ]
 @router.get("/orgs/{org_id}", response_model=List[schemas.PlaylistOut])
 def get_org_playlists(org_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
     playlists = db.query(models.Playlist).filter(models.Playlist.org_id == org_id).all()

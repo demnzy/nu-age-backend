@@ -135,7 +135,7 @@ class Course(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     category_id = Column(UUID(as_uuid=True), ForeignKey(Category.id))
     objectives = Column(ARRAY(String), nullable=True)
-    public = Column(Boolean, default=False)
+    public = Column(String, default="false")
     org_id = Column(UUID(as_uuid=True), ForeignKey(Organisation.id, ondelete = "CASCADE"), nullable = True)
     image_url= Column(String, nullable=True)
     teacher_id = Column(UUID(as_uuid=True), ForeignKey(User.id, ondelete="SET NULL"), nullable=True)
