@@ -468,7 +468,7 @@ class PlaylistOut(BaseModel):
     org_id: Optional[UUID] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
-    Organisation: str
+    Organisation: Optional[str] = None
     
     playlist_courses: List[PlaylistCourseOut] = []
 
