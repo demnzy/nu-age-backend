@@ -124,7 +124,8 @@ def get_all_courses(
         joinedload(models.Course.admin),
         joinedload(models.Course.category),
         joinedload(models.Course.organisation),
-        joinedload(models.Course.Students)
+        joinedload(models.Course.Students),
+        joinedload(models.Course.modules)
     )
     
     # 2. Apply Filters
