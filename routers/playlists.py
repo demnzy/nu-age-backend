@@ -78,8 +78,10 @@ def get_all_playlists(db: Session = Depends(get_db), user=Depends(auth.get_curre
         for playlist, org_name in results ]
 @router.get("/orgs/{org_id}", response_model=List[schemas.PlaylistOut])
 def get_org_playlists(org_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
-    playlists = db.query(models.Playlist).filter(models.Playlist.org_id == org_id).all()
-    return playlists
+    query = db.query(models.Playlist).filter(models.Playlist.org_id == org_id)
+    if user.role != "Admin" and user.role != "owner":
+        query = query.filter(models.Playlist.is_public == True)
+    return query.all()
 
 @router.get("/{playlist_id}", response_model=schemas.PlaylistOut)
 def get_playlist(playlist_id: UUID, db: Session = Depends(get_db), user=Depends(auth.get_current_user)):
