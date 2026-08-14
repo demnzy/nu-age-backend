@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel, field_serializer, EmailStr, Field
+from pydantic import BaseModel, field_serializer, EmailStr, Field, field_validator
 from typing import Optional, List, Union, Literal, Annotated
 from enum import Enum
 from uuid import UUID
@@ -86,6 +86,13 @@ class CourseBase(BaseModel):
     supervised: bool = False
     is_freelance: bool = False   
     auto_certificate: bool = True
+    
+    @field_validator('public', mode='before')
+    @classmethod
+    def coerce_public_to_string(cls, v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        return str(v)
     
     # --- ADD THESE FOR BUSNNY.NET ---
     image_bytes: Optional[str] = None
