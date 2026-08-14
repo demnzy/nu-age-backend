@@ -351,7 +351,8 @@ def get_enrollment_stats(
 
     # Sort times from fastest (lowest seconds) to slowest (highest seconds)
     completion_times.sort()
-    course_name = db.query(models.Course).filter(models.Course.id==course_id).first().name
+    course = db.query(models.Course).filter(models.Course.id==course_id).first()
+    course_name = course.name
     total_completers = len(completion_times)
     
     # 4. Calculate User's Rank and Percentile
@@ -360,7 +361,7 @@ def get_enrollment_stats(
     
     # Percentile: (Number of people slower than you / Total people) * 100
     people_slower = total_completers - rank
-    percentile = (people_slower / total_completers) * 100 if total_completers > 1 else 100.0
+    percentile = (people_slower / total_completers) * 100 if total_completers > 1 else 0.0
 
     # 5. Construct the dynamic Certificate URL
     # Assuming you have a certificate router like `/certificates/download/{enrollment_id}`
@@ -374,6 +375,7 @@ def get_enrollment_stats(
         "time_spent_seconds": user_time_seconds,
         "time_spent_formatted": format_seconds(user_time_seconds),
         "certificate_download_url": cert_url,
+        "auto_certificate": course.auto_certificate,
         "leaderboard_rank": rank,
         "total_completers": total_completers,
         "faster_than_percentile": round(percentile, 1)

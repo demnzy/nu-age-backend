@@ -85,6 +85,7 @@ class CourseBase(BaseModel):
     teacher_id: Optional[str] = None
     supervised: bool = False
     is_freelance: bool = False   
+    auto_certificate: bool = True
     
     # --- ADD THESE FOR BUSNNY.NET ---
     image_bytes: Optional[str] = None
@@ -153,6 +154,7 @@ class CourseOut(BaseModel):
     rating_count: Optional[int] = None
     public: Optional[str] = None
     organisation: Optional['orgbase'] = None
+    auto_certificate: bool
 
     class Config:
         from_attributes = True
@@ -173,6 +175,7 @@ class CourseSettings(BaseModel):
     description: Optional[str] = None
     supervised: Optional[bool] = None
     teacher_id: Optional[UUID] | str = None
+    auto_certificate: Optional[bool] = None
     public: Optional[str] = None
     category_id: Optional[UUID] = None
 
@@ -285,6 +288,7 @@ class EnrollmentStatsResponse(BaseModel):
     time_spent_seconds: int
     time_spent_formatted: str  # e.g., "12h 30m"
     certificate_download_url: Optional[str] = None
+    auto_certificate: bool
     
     # Leaderboard / Gamification stats
     leaderboard_rank: int

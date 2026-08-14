@@ -142,6 +142,7 @@ class Course(Base):
     supervised = Column(Boolean, default=False)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("channels.id", ondelete="SET NULL", use_alter=True,), nullable=True)
     is_freelance = Column(Boolean, nullable=False, server_default=false())
+    auto_certificate = Column(Boolean, nullable=False, server_default="true")
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     rating = Column(Float, default=lambda: random.uniform(4.5, 5.0))
     rating_count = Column(Integer, default=1, server_default="1")

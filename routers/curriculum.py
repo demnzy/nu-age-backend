@@ -58,6 +58,7 @@ class ModuleRead(BaseModel):
 class CourseCurriculumRead(BaseModel):
     course_id: UUID
     course_title:str
+    auto_certificate: bool
     modules: List[ModuleRead]
     completed_lesson_ids: List[str] # <-- New field
 # ==========================================
@@ -193,6 +194,7 @@ async def get_course_curriculum(
     return {
         "course_id": course_id,
         "course_title": course.name,
+        "auto_certificate": course.auto_certificate,
         "overall_progress": overall_progress,
         "completed_lesson_ids": completed_lesson_ids,
         "modules": modules_list
