@@ -132,12 +132,13 @@ async def chat_websocket(
 
             import json
             meta = data.get("metadata_payload")
-            if isinstance(meta, dict):
-                meta_json = json.dumps(meta)
-            elif isinstance(meta, str):
-                meta_json = meta
+            if isinstance(meta, str):
+                try: meta_dict = json.loads(meta)
+                except: meta_dict = None
+            elif isinstance(meta, dict):
+                meta_dict = meta
             else:
-                meta_json = None
+                meta_dict = None
 
             if msg_type == "poll_vote":
                 poll_id = data.get("poll_id")
@@ -145,30 +146,62 @@ async def chat_websocket(
                     original_poll = db.query(models.Message).filter_by(id=poll_id).first()
                     if original_poll:
                         # Extract existing votes
-                        try:
-                            current_meta = json.loads(original_poll.metadata_payload) if original_poll.metadata_payload else {}
-                        except:
-                            current_meta = {}
+                        current_meta = original_poll.metadata_payload or {}
+                        if isinstance(current_meta, str):
+                            try: current_meta = json.loads(current_meta)
+                            except: current_meta = {}
                             
                         votes = current_meta.get("votes", {})
-                        # Update user's vote
-                        votes[str(user.id)] = content # The option string was sent as content
+                        
+                        # Handle toggle logic for votes based on single/multi select
+                        option_voted = content
+                        is_multi = current_meta.get("is_multi_select", False)
+                        user_id_str = str(user.id)
+                        
+                        if is_multi:
+                            # If multi-select, user's vote is a list of options
+                            user_votes = votes.get(user_id_str, [])
+                            if isinstance(user_votes, str): user_votes = [user_votes]
+                            if option_voted in user_votes:
+                                user_votes.remove(option_voted)
+                            else:
+                                user_votes.append(option_voted)
+                                
+                            if not user_votes:
+                                if user_id_str in votes: del votes[user_id_str]
+                            else:
+                                votes[user_id_str] = user_votes
+                        else:
+                            # Single select: toggle off if same, otherwise set
+                            if votes.get(user_id_str) == option_voted:
+                                del votes[user_id_str]
+                            else:
+                                votes[user_id_str] = option_voted
+                                
                         current_meta["votes"] = votes
-                        original_poll.metadata_payload = json.dumps(current_meta)
+                        original_poll.metadata_payload = current_meta
                         db.commit()
                         db.refresh(original_poll)
                         
-                        # Broadcast the updated poll (do not create a new message)
+                        # Resolve sender name safely
+                        sender_name = "Unknown"
+                        if original_poll.sender:
+                            first = original_poll.sender.first_name or ""
+                            last = original_poll.sender.last_name or ""
+                            sender_name = f"{first} {last}".strip()
+                            if not sender_name: sender_name = getattr(original_poll.sender, "username", "Unknown")
+                        else: sender_name = "System"
+                            
                         broadcast_payload = {
                             "id": str(original_poll.id),
                             "channel_id": str(channel_id),
                             "type": "poll_update",
                             "content": original_poll.content,
-                            "metadata_payload": json.loads(original_poll.metadata_payload) if original_poll.metadata_payload else None,
+                            "metadata_payload": original_poll.metadata_payload,
                             "created_at": original_poll.created_at.isoformat(),
                             "sender": {
-                                "id": str(original_poll.sender.id),
-                                "name": f"{original_poll.sender.first_name} {original_poll.sender.last_name}"
+                                "id": str(original_poll.sender.id) if original_poll.sender else "system",
+                                "name": sender_name
                             }
                         }
                         channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
@@ -182,23 +215,30 @@ async def chat_websocket(
                 sender_id=user.id,
                 content=content,
                 type=msg_type,
-                metadata_payload=meta_json
+                metadata_payload=meta_dict
             )
             db.add(new_msg)
             db.commit()
             db.refresh(new_msg)
 
             # 6. Broadcast the message
+            sender_name = "Unknown"
+            if user:
+                first = user.first_name or ""
+                last = user.last_name or ""
+                sender_name = f"{first} {last}".strip()
+                if not sender_name: sender_name = getattr(user, "username", "Unknown")
+
             broadcast_payload = {
                 "id": str(new_msg.id),
                 "channel_id": str(channel_id),
                 "type": new_msg.type.value if hasattr(new_msg.type, 'value') else new_msg.type,
                 "content": new_msg.content,
-                "metadata_payload": json.loads(new_msg.metadata_payload) if new_msg.metadata_payload else None,
+                "metadata_payload": new_msg.metadata_payload,
                 "created_at": new_msg.created_at.isoformat(),
                 "sender": {
                     "id": str(user.id),
-                    "name": f"{user.first_name} {user.last_name}"
+                    "name": sender_name
                 }
             }
 
