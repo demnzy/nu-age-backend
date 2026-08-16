@@ -261,6 +261,7 @@ class ChannelMember(Base):
     # Distinguish between an admin (can post in announcement chats) and a standard member
     role = Column(String, default="member", nullable=False) 
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_read_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     channel = relationship("Channel", back_populates="members")

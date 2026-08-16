@@ -104,10 +104,14 @@ async def chat_websocket(
             channel = db.query(models.Channel).filter_by(id=channel_id).first()
             if channel.is_announcement_only and membership.role != "admin":
                 continue
-
             # ==========================================
             # CRITICAL FIX: INTERCEPT TYPING BEFORE DB SAVE
             # ==========================================
+            if msg_type == "read_receipt":
+                membership.last_read_at = datetime.now(timezone.utc)
+                db.commit()
+                continue
+                
             if msg_type == "typing":
                 typing_payload = {
                     "id": "ephemeral",
@@ -229,6 +233,27 @@ def get_user_channels(
             
             # Grab the ISO timestamp for Flet to format
             last_msg_time = last_message.created_at.isoformat()
+                # Calculate unread count
+        unread_count = 0
+        if membership.last_read_at:
+            unread_count = (
+                db.query(models.Message)
+                .filter(
+                    models.Message.channel_id == channel.id,
+                    models.Message.created_at > membership.last_read_at,
+                    models.Message.sender_id != user.id
+                )
+                .count()
+            )
+        else:
+            unread_count = (
+                db.query(models.Message)
+                .filter(
+                    models.Message.channel_id == channel.id,
+                    models.Message.sender_id != user.id
+                )
+                .count()
+            )
         # ==========================================
             
         results.append({
@@ -236,8 +261,9 @@ def get_user_channels(
             "name": display_name,
             "type": channel.type.value if hasattr(channel.type, 'value') else channel.type,
             "is_online": target_is_online,
-            "last_msg": last_msg_content,   # <--- The frontend will now see this!
-            "time": last_msg_time,          # <--- The frontend will format this into AM/PM!
+            "last_msg": last_msg_content,
+            "time": last_msg_time,
+            "unread": unread_count,
             "role": membership.role,
             "is_announcement_only": channel.is_announcement_only
         })
