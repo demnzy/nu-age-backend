@@ -130,12 +130,59 @@ async def chat_websocket(
                 continue  # <--- THIS STOPS THE DB CRASH!
             # ==========================================
 
+            import json
+            meta = data.get("metadata_payload")
+            if isinstance(meta, dict):
+                meta_json = json.dumps(meta)
+            elif isinstance(meta, str):
+                meta_json = meta
+            else:
+                meta_json = None
+
+            if msg_type == "poll_vote":
+                poll_id = data.get("poll_id")
+                if poll_id:
+                    original_poll = db.query(models.Message).filter_by(id=poll_id).first()
+                    if original_poll:
+                        # Extract existing votes
+                        try:
+                            current_meta = json.loads(original_poll.metadata_payload) if original_poll.metadata_payload else {}
+                        except:
+                            current_meta = {}
+                            
+                        votes = current_meta.get("votes", {})
+                        # Update user's vote
+                        votes[str(user.id)] = content # The option string was sent as content
+                        current_meta["votes"] = votes
+                        original_poll.metadata_payload = json.dumps(current_meta)
+                        db.commit()
+                        db.refresh(original_poll)
+                        
+                        # Broadcast the updated poll (do not create a new message)
+                        broadcast_payload = {
+                            "id": str(original_poll.id),
+                            "channel_id": str(channel_id),
+                            "type": "poll_update",
+                            "content": original_poll.content,
+                            "metadata_payload": json.loads(original_poll.metadata_payload) if original_poll.metadata_payload else None,
+                            "created_at": original_poll.created_at.isoformat(),
+                            "sender": {
+                                "id": str(original_poll.sender.id),
+                                "name": f"{original_poll.sender.first_name} {original_poll.sender.last_name}"
+                            }
+                        }
+                        channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                        for member in channel_members:
+                            await manager.send_personal_message(broadcast_payload, str(member[0]))
+                continue # Skip standard save
+
             # 5. Commit to the Database (Only real messages get here now)
             new_msg = models.Message(
                 channel_id=channel_id,
                 sender_id=user.id,
                 content=content,
-                type=msg_type
+                type=msg_type,
+                metadata_payload=meta_json
             )
             db.add(new_msg)
             db.commit()
@@ -147,6 +194,7 @@ async def chat_websocket(
                 "channel_id": str(channel_id),
                 "type": new_msg.type.value if hasattr(new_msg.type, 'value') else new_msg.type,
                 "content": new_msg.content,
+                "metadata_payload": json.loads(new_msg.metadata_payload) if new_msg.metadata_payload else None,
                 "created_at": new_msg.created_at.isoformat(),
                 "sender": {
                     "id": str(user.id),
