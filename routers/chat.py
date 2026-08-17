@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified, joinedload
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm import joinedload
 from fastapi import WebSocket
 from uuid import UUID
 import models
