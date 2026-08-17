@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified, joinedload
 from fastapi import WebSocket
 from uuid import UUID
 import models
@@ -180,6 +181,7 @@ async def chat_websocket(
                                 
                         current_meta["votes"] = votes
                         original_poll.metadata_payload = current_meta
+                        flag_modified(original_poll, 'metadata_payload')
                         db.commit()
                         db.refresh(original_poll)
                         
