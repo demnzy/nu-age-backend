@@ -43,8 +43,12 @@ class ConnectionManager:
     async def send_personal_message(self, message: dict, user_id: str):
         """Pushes a JSON payload to all active devices of a specific user."""
         if user_id in self.active_connections:
-            for connection in self.active_connections[user_id]:
-                await connection.send_json(message)
+            for connection in list(self.active_connections[user_id]):
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    print(f"Dead connection dropped for user {user_id}: {e}")
+                    self.disconnect(connection, user_id)
 
 # Instantiate a single global manager
 manager = ConnectionManager()
