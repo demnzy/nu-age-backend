@@ -140,8 +140,7 @@ async def chat_websocket(
             else:
                 meta_dict = None
 
-            if msg_type == "poll_vote":
-                poll_id = data.get("poll_id")
+            if msg_type == "poll_vote":`r`n                try:`r`n                    poll_id = data.get("poll_id")
                 if poll_id:
                     original_poll = db.query(models.Message).filter_by(id=poll_id).first()
                     if original_poll:
@@ -678,3 +677,4 @@ def start_direct_message(
     db.commit()
     
     return {"channel_id": str(new_channel.id)}
+
