@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     UNSPLASH_ACCESS_KEY: str
     REVENUECAT_WEBHOOK_SECRET: str
     REFRESH_EXPIRE_DAYS: str
+    AGENT_ROUTER_API_KEY: str = ""
+    AI_PROVIDER: str = "agentrouter"
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

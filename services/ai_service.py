@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 # The native OpenAI client
 from openai import AsyncOpenAI, APITimeoutError, APIStatusError
+import instructor
 import models
 from schemas import *
 # Import your session maker AND your Settings class
@@ -25,6 +26,13 @@ client = AsyncOpenAI(
     timeout=170.0,      # per-call ceiling, comfortably bounded
     max_retries=1,      # 1 retry on transient network/5xx errors, not silent 2x+ backoff
 )
+
+agent_router_client = instructor.from_openai(AsyncOpenAI(
+    base_url="https://agentrouter.org/v1",
+    api_key=Settings().AGENT_ROUTER_API_KEY,
+    timeout=170.0,
+    max_retries=1,
+))
 # -----------------------------------------------------------------------------
 
 
@@ -308,18 +316,29 @@ Adhere strictly to the generation size configurations provided.
                 user_prompt = f"TARGET OUTPUTS FOR THIS CHUNK:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
 
                 # Native OpenAI parsing — unchanged, this function was never the source of the timeout bug
-                response = await client.beta.chat.completions.parse(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    response_format=AIResponse,
-                    temperature=0.2
-                )
-
-                # The response is already a perfectly formatted Python object
-                result = response.choices[0].message.parsed
+                if Settings().AI_PROVIDER == "agentrouter":
+                    result = await agent_router_client.chat.completions.create(
+                        model="anthropic/claude-3.5-sonnet",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        response_model=AIResponse,
+                        temperature=0.2
+                    )
+                else:
+                    response = await client.beta.chat.completions.parse(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        response_format=AIResponse,
+                        temperature=0.2
+                    )
+    
+                    # The response is already a perfectly formatted Python object
+                    result = response.choices[0].message.parsed
 
                 if "flashcards" in types_requested and result.flashcards:
                     for card in result.flashcards:
@@ -598,27 +617,44 @@ This should feel like a real course, not a summary of one.
 
     try:
         # --- CHANGED: hard backstop even beyond the client's own timeout ----
-        response = await asyncio.wait_for(
-            client.beta.chat.completions.parse(
-                # --- CHANGED: gpt-4o -> gpt-5-mini ---------------------------
-                # Cheaper than gpt-4o ($0.25/$2 per M vs ~$2.50/$10 per M) and
-                # a newer/stronger model. It's a reasoning model, so latency
-                # per call is higher than gpt-4o at the same effort — but this
-                # now runs as a background job, so that's no longer the thing
-                # racing your frontend's timeout. reasoning_effort="medium" is
-                # the balance point: meaningfully better structure adherence
-                # on deeply nested schemas than "low", without paying for
-                # "high"/"xhigh" reasoning depth this task doesn't need.
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                response_format=AICourseDraft,
-                temperature=0.45,
-            ),
-            timeout=280.0,  # generous backstop for a reasoning model on a large nested schema
-        )
+        if Settings().AI_PROVIDER == "agentrouter":
+            parsed = await asyncio.wait_for(
+                agent_router_client.chat.completions.create(
+                    model="anthropic/claude-3.5-sonnet",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_model=AICourseDraft,
+                    temperature=0.45,
+                ),
+                timeout=280.0,
+            )
+            usage = None
+        else:
+            response = await asyncio.wait_for(
+                client.beta.chat.completions.parse(
+                    # --- CHANGED: gpt-4o -> gpt-5-mini ---------------------------
+                    # Cheaper than gpt-4o ($0.25/$2 per M vs ~$2.50/$10 per M) and
+                    # a newer/stronger model. It's a reasoning model, so latency
+                    # per call is higher than gpt-4o at the same effort — but this
+                    # now runs as a background job, so that's no longer the thing
+                    # racing your frontend's timeout. reasoning_effort="medium" is
+                    # the balance point: meaningfully better structure adherence
+                    # on deeply nested schemas than "low", without paying for
+                    # "high"/"xhigh" reasoning depth this task doesn't need.
+                    model="gpt-4.1-mini",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format=AICourseDraft,
+                    temperature=0.45,
+                ),
+                timeout=280.0,  # generous backstop for a reasoning model on a large nested schema
+            )
+            parsed: AICourseDraft = response.choices[0].message.parsed
+            usage = getattr(response, "usage", None)
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start
         print(f"[ERROR] Curriculum generation exceeded {elapsed:.1f}s hard timeout for topic '{topic}'")
@@ -631,14 +667,12 @@ This should feel like a real course, not a summary of one.
         raise RuntimeError(f"The AI provider returned an error (status {e.status_code}).")
 
     elapsed = time.monotonic() - start
-    usage = getattr(response, "usage", None)
+    usage = getattr(locals().get('response'), "usage", None)
     print(
         f"[TIMING] Curriculum generation for '{topic}' took {elapsed:.1f}s "
         f"(tokens: prompt={getattr(usage, 'prompt_tokens', '?')}, "
         f"completion={getattr(usage, 'completion_tokens', '?')})"
     )
-
-    parsed: AICourseDraft = response.choices[0].message.parsed
     draft_data = parsed.model_dump()
 
     draft_data = await resolve_image_placeholders(draft_data)

@@ -8,3 +8,4 @@ python_jose==3.5.0
 SQLAlchemy==2.0.49
 uvicorn[standard]
 email-validator>=2.0.0
+instructor

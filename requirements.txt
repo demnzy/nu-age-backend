@@ -181,3 +181,4 @@ google-api-core
 google-cloud-firestore
 google-cloud-storage
 pyjwt
+instructor
