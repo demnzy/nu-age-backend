@@ -32,7 +32,7 @@ agent_router_client = instructor.from_openai(AsyncOpenAI(
     api_key=Settings().AGENT_ROUTER_API_KEY,
     timeout=170.0,
     max_retries=1,
-))
+), mode=instructor.Mode.JSON)
 # -----------------------------------------------------------------------------
 
 
