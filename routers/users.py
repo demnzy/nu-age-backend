@@ -605,7 +605,14 @@ def get_one_user(identifier: str | UUID | None= Query(None, description = "get a
     user = db.query(models.User).filter(or_(models.User.username==identifier, models.User.id==identifier)).first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail= "User not found")
-    return user
+    
+    active = db.query(models.Enrollment).filter(models.Enrollment.student_id == user.id, models.Enrollment.completed_at == None).count()
+    finished = db.query(models.Enrollment).filter(models.Enrollment.student_id == user.id, models.Enrollment.completed_at != None).count()
+    
+    res = UserProfile.model_validate(user)
+    res.active_count = active
+    res.finished_count = finished
+    return res
 
 @router.get('/me', response_model=UserBase)
 def get_current_user(user = Depends(auth.get_current_user), db:Session = Depends(get_db)):
@@ -647,6 +654,9 @@ def update_profile(
     
     if 'last_name' in update_data:
         user.last_name = update_data['last_name']
+
+    if 'gender' in update_data:
+        user.gender = update_data['gender']
 
     # 4. Save Changes
     db.commit()

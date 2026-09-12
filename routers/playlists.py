@@ -242,15 +242,65 @@ def playlist_analytics(playlist_id: UUID, db: Session = Depends(get_db), user=De
     if user.role != "Admin" and user.role != "owner":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
         
+    playlist = db.query(models.Playlist).filter_by(id=playlist_id).first()
+    if not playlist:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playlist not found")
+
+    # 1. Fetch courses in this playlist
+    playlist_courses = db.query(models.PlaylistCourse).filter_by(playlist_id=playlist_id).all()
+    course_ids = [pc.course_id for pc in playlist_courses]
+    total_courses = len(course_ids)
+
+    # 2. Existing direct playlist enrollments
     enrollments = db.query(models.PlaylistEnrollment).filter_by(playlist_id=playlist_id).all()
-    
+    enrolled_students = {en.student_id: en for en in enrollments}
+
+    # 3. Check for students enrolled in any of the constituent courses
+    if course_ids:
+        course_enrollments = db.query(models.Enrollment).filter(models.Enrollment.course_id.in_(course_ids)).all()
+        student_course_map = {}
+        for ce in course_enrollments:
+            student_course_map.setdefault(ce.student_id, []).append(ce)
+
+        for s_id, ce_list in student_course_map.items():
+            completed_c = sum(1 for c in ce_list if (c.progress or 0) >= 99.9 or c.completed_at)
+            avg_progress = round(sum(float(c.progress or 0.0) for c in ce_list) / total_courses, 1) if total_courses > 0 else 0.0
+            
+            if s_id in enrolled_students:
+                pe = enrolled_students[s_id]
+                if pe.progress != avg_progress:
+                    pe.progress = avg_progress
+                if completed_c == total_courses and total_courses > 0 and not pe.completed_at:
+                    pe.completed_at = func.now()
+            else:
+                student_user = db.query(models.User).filter_by(id=s_id).first()
+                if student_user:
+                    earliest_enroll = min((c.enrolled_at for c in ce_list if c.enrolled_at), default=None)
+                    pe = models.PlaylistEnrollment(
+                        playlist_id=playlist_id,
+                        student_id=s_id,
+                        progress=avg_progress,
+                        completed_at=func.now() if completed_c == total_courses and total_courses > 0 else None
+                    )
+                    if earliest_enroll:
+                        pe.enrolled_at = earliest_enroll
+                    db.add(pe)
+                    enrolled_students[s_id] = pe
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
     data = []
-    for en in enrollments:
-        data.append({
-            "student_id": en.student_id,
-            "student_name": f"{en.student.first_name} {en.student.last_name}",
-            "enrolled_at": en.enrolled_at,
-            "progress": en.progress,
-            "completed_at": en.completed_at
-        })
+    for en in enrolled_students.values():
+        if en.student:
+            data.append({
+                "student_id": en.student_id,
+                "student_name": f"{en.student.first_name} {en.student.last_name}",
+                "student_email": getattr(en.student, "email", "") or "",
+                "enrolled_at": en.enrolled_at,
+                "progress": en.progress or 0.0,
+                "completed_at": en.completed_at
+            })
     return data

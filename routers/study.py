@@ -36,6 +36,7 @@ def get_due_cards(material_ids: Optional[str] = None, db: Session = Depends(get_
             "id": card.id,
             "front": card.front,
             "back": card.back,
+            "material_id": card.material_id,
             "srs_state": {
                 "interval": card.interval_days,
                 "ease_factor": card.ease_factor,

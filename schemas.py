@@ -37,6 +37,7 @@ class UserBase(BaseModel):
     model_config = {'from_attributes' : True}
 
 class UserProfile(BaseModel):
+    id: Optional[UUID] = None
     email: EmailStr
     username : str
     first_name : str
@@ -45,6 +46,10 @@ class UserProfile(BaseModel):
     role: str
     streak: Optional[int] = 0
     university: Optional[str] = ""
+    created_at: Optional[datetime] = None
+    is_verified: Optional[bool] = False
+    active_count: Optional[int] = 0
+    finished_count: Optional[int] = 0
     model_config = {'from_attributes' : True}
     
 class UserReg(BaseModel):
@@ -74,6 +79,7 @@ class ProfileUpdate(BaseModel):
     last_name: Optional[str] = None
     email: Optional[EmailStr] = None
     username: Optional[str] = None
+    gender: Optional[str] = None
 
 class CourseBase(BaseModel):
     name: str
@@ -196,6 +202,7 @@ class FlashcardResponse(BaseModel):
     id: UUID
     front: str
     back: str
+    material_id: Optional[UUID] = None
     srs_state: SRSState
     
     class Config:

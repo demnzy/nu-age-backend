@@ -584,29 +584,57 @@ async def rate_course(
     if not (1 <= rating <= 5):
         raise HTTPException(status_code=400, detail="Valid rating between 1 and 5 is required.")
         
+    try:
+        c_uuid = UUID(str(course_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid course ID format.")
+
     enrollment = db.query(models.Enrollment).filter(
-        models.Enrollment.course_id == course_id,
+        models.Enrollment.course_id == c_uuid,
         models.Enrollment.student_id == user.id
     ).first()
     
     if not enrollment:
         raise HTTPException(status_code=403, detail="You must be enrolled to rate this course.")
         
-    if enrollment.progress < 100 and enrollment.completed_at is None:
-        raise HTTPException(status_code=403, detail="You must complete the course before rating it.")
+    if enrollment.progress < 99.0 and enrollment.completed_at is None:
+        total_l = db.query(func.count(models.Lesson.id)).join(
+            models.Module, models.Module.id == models.Lesson.module_id
+        ).filter(models.Module.course_id == c_uuid).scalar() or 0
         
-    course = db.query(models.Course).filter(models.Course.id == course_id).first()
+        comp_l = db.query(func.count(models.LessonProgress.id)).filter(
+            models.LessonProgress.course_id == c_uuid,
+            models.LessonProgress.student_id == user.id
+        ).scalar() or 0
+        
+        if total_l > 0 and comp_l >= total_l:
+            enrollment.progress = 100.0
+            if not enrollment.completed_at:
+                enrollment.completed_at = func.now()
+            db.flush()
+        else:
+            raise HTTPException(status_code=403, detail="You must complete the course before rating it.")
+        
+    course = db.query(models.Course).filter(models.Course.id == c_uuid).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found.")
         
     old_user_rating = enrollment.user_rating
     enrollment.user_rating = rating
     
+    current_rating = float(course.rating) if course.rating is not None else 0.0
+    current_count = int(course.rating_count) if course.rating_count is not None else 0
+
     if old_user_rating is not None:
-        course.rating = round(((course.rating * course.rating_count) - old_user_rating + rating) / course.rating_count, 1)
+        if current_count > 0:
+            course.rating = round(((current_rating * current_count) - old_user_rating + rating) / current_count, 1)
+        else:
+            course.rating = round(float(rating), 1)
+            course.rating_count = 1
     else:
-        course.rating = round(((course.rating * course.rating_count) + rating) / (course.rating_count + 1), 1)
-        course.rating_count += 1
+        new_count = current_count + 1
+        course.rating = round(((current_rating * current_count) + rating) / new_count, 1)
+        course.rating_count = new_count
         
     db.commit()
     
