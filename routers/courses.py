@@ -484,26 +484,14 @@ def bulk_sync_progress(
         ).first()
 
         if existing:
-            # Don't let an offline "in_progress" clobber a "completed"
-            # that already happened server-side (e.g. from another device
-            # syncing first) — same dedup principle as bulk_enroll_students
-            # already uses in enrollments.py.
-            if existing.status == "completed" and entry.status != "completed":
-                results.append({"lesson_id": str(entry.lesson_id), "status": "skipped_already_completed"})
-                continue
-            existing.status = entry.status
-            existing.completed_at = entry.completed_at
-            existing.quiz_answers = entry.quiz_answers
-            existing.quiz_score = entry.quiz_score
+            results.append({"lesson_id": str(entry.lesson_id), "status": "skipped_already_completed"})
+            touched_course_ids.add(entry.course_id)
+            continue
         else:
             db.add(models.LessonProgress(
                 lesson_id=entry.lesson_id,
                 course_id=entry.course_id,
                 student_id=user.id,
-                status=entry.status,
-                completed_at=entry.completed_at,
-                quiz_answers=entry.quiz_answers,
-                quiz_score=entry.quiz_score,
             ))
 
         results.append({"lesson_id": str(entry.lesson_id), "status": "synced"})

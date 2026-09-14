@@ -162,6 +162,13 @@ class Course(Base):
     admin = relationship("User", foreign_keys=[admin_id], back_populates="created_courses", lazy="joined")
     organisation = relationship("Organisation", back_populates="courses")
     teacher = relationship("User", foreign_keys=[teacher_id], back_populates="teaches")
+
+    @property
+    def total_modules(self) -> int:
+        try:
+            return len(self.modules) if self.modules else 0
+        except Exception:
+            return 0
      
 class Enrollment(Base):
     __tablename__ = 'enrollments'

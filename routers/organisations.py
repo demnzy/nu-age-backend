@@ -229,8 +229,12 @@ async def get_organisation_courses(
     courses_with_counts = []
     for course, count in results:
         course.total_students = count
+        try:
+            course.total_modules = len(course.modules) if course.modules else 0
+        except Exception:
+            course.total_modules = 0
         courses_with_counts.append(course)
- 
+
     return courses_with_counts
 
 @router.post("/{org_id}/join")
