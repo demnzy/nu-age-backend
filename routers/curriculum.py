@@ -223,6 +223,11 @@ def mark_lesson_complete(
     ).first()
     
     if not existing_progress:
+        # Verify lesson exists in lessons table to prevent foreign key violation if lesson was deleted
+        lesson = db.query(models.Lesson).filter_by(id=lesson_id).first()
+        if not lesson:
+            return {"message": "Lesson does not exist or was removed", "status": "skipped"}
+
         # Create the progress record
         new_progress = models.LessonProgress(
             student_id=user.id, 

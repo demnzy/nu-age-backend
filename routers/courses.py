@@ -487,12 +487,18 @@ def bulk_sync_progress(
             results.append({"lesson_id": str(entry.lesson_id), "status": "skipped_already_completed"})
             touched_course_ids.add(entry.course_id)
             continue
-        else:
-            db.add(models.LessonProgress(
-                lesson_id=entry.lesson_id,
-                course_id=entry.course_id,
-                student_id=user.id,
-            ))
+
+        # Verify lesson exists in lessons table
+        lesson = db.query(models.Lesson).filter_by(id=entry.lesson_id).first()
+        if not lesson:
+            results.append({"lesson_id": str(entry.lesson_id), "status": "skipped_not_found"})
+            continue
+
+        db.add(models.LessonProgress(
+            lesson_id=entry.lesson_id,
+            course_id=entry.course_id,
+            student_id=user.id,
+        ))
 
         results.append({"lesson_id": str(entry.lesson_id), "status": "synced"})
         touched_course_ids.add(entry.course_id)
