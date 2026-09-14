@@ -169,6 +169,7 @@ class CourseOut(BaseModel):
     organisation: Optional['orgbase'] = None
     auto_certificate: bool
     total_modules: Optional[int] = 0
+    total_students: Optional[int] = 0
 
     class Config:
         from_attributes = True

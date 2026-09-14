@@ -165,10 +165,16 @@ class Course(Base):
 
     @property
     def total_modules(self) -> int:
+        if hasattr(self, "_total_modules") and self._total_modules is not None:
+            return self._total_modules
         try:
             return len(self.modules) if self.modules else 0
         except Exception:
             return 0
+
+    @total_modules.setter
+    def total_modules(self, value: int):
+        self._total_modules = value
      
 class Enrollment(Base):
     __tablename__ = 'enrollments'
