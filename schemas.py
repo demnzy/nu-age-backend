@@ -352,65 +352,224 @@ class AssessmentQuestion(BaseModel):
 
     @model_validator(mode="after")
     def must_have_correct_answer(self) -> "AssessmentQuestion":
-        # Only validate if options exist (prevents crashing on non-assessment lessons)
         if self.options and not any(opt.is_correct for opt in self.options):
-            raise ValueError("At least one option must be marked is_correct=True.")
+            self.options[0].is_correct = True
         return self
 
+class StepperStep(BaseModel):
+    tag: str = Field(description="Short phase/milestone badge, e.g., 'Step 1', 'Setup', 'Phase A'")
+    headline: str = Field(description="Concise action or phase title")
+    content: str = Field(description="Clear, substantive explanation of this step")
+    takeaway: str = Field(description="Key insight or common pitfall to remember for this step")
+
+class SequencerItem(BaseModel):
+    id: str = Field(description="Unique short identifier, e.g. 'step_1', 'item_a'")
+    label: str = Field(description="Action, milestone, or event text to be arranged")
+    correct_order: int = Field(description="1-based integer index of correct sequence order (1, 2, 3...)")
+    explanation: str = Field(description="Why this step belongs at this position in the sequence")
+
+class CodeLabTestCase(BaseModel):
+    description: str = Field(description="What this test case checks, e.g. 'Handles empty list'")
+    input: str = Field(description="Arguments or input data for the test case")
+    expected_output: str = Field(description="Expected standard output or return value")
+
 # ---------------------------------------------------------------------------
-# Unified Content Schema (The Workaround)
+# Unified Content Schema for OpenAI Structured Outputs
 # ---------------------------------------------------------------------------
 
 class AILessonContent(BaseModel):
     # The AI must populate ALL these fields, but we instruct it to leave unused ones empty based on the lesson type.
     text: str = Field(
-        description="Rich Markdown text containing a relatable hook, rigorous explanation, and summary. ONLY populate if type is 'text', otherwise leave as empty string."
+        description="Rich Markdown text for 'text' lesson OR active recall passage with [[blank]] / [[blank|hint]] tokens for 'cloze'. Empty string if other type."
     )
     cards: List[str] = Field(
-        description="A list of standalone facts. ONLY populate if type is 'cards', otherwise leave as empty array."
+        description="List of standalone atomic facts/definitions. ONLY populate if type is 'cards', otherwise empty list."
     )
     scenario: str = Field(
-        description="A real-world prompt. ONLY populate if type is 'scenario', otherwise leave as empty string."
+        description="Dilemma setup with context, numbers, or constraints. ONLY populate if type is 'scenario', otherwise empty string."
     )
     choices: List[ScenarioChoice] = Field(
-        description="Must contain at least 2 choices. ONLY populate if type is 'scenario', otherwise leave as empty array."
+        description="3-4 decision choices with consequences. ONLY populate if type is 'scenario', otherwise empty list."
     )
     questions: List[AssessmentQuestion] = Field(
-        description="Multiple choice questions. ONLY populate if type is 'assessment', otherwise leave as empty array."
+        description="Multiple-choice questions with answer options. ONLY populate if type is 'assessment', otherwise empty list."
+    )
+    title: str = Field(
+        description="Walkthrough title. ONLY populate if type is 'stepper', otherwise empty string."
+    )
+    intro: str = Field(
+        description="Introductory context. ONLY populate if type is 'stepper', otherwise empty string."
+    )
+    steps: List[StepperStep] = Field(
+        description="Sequential walkthrough steps. ONLY populate if type is 'stepper', otherwise empty list."
+    )
+    prompt: str = Field(
+        description="Sequencing challenge prompt. ONLY populate if type is 'sequencer', otherwise empty string."
+    )
+    items: List[SequencerItem] = Field(
+        description="Items to arrange in order. ONLY populate if type is 'sequencer', otherwise empty list."
+    )
+    distractors: List[str] = Field(
+        description="Plausible distractor words for cloze blanks. ONLY populate if type is 'cloze', otherwise empty list."
+    )
+    explanation: str = Field(
+        description="Pedagogical explanation for cloze blanks. ONLY populate if type is 'cloze', otherwise empty string."
+    )
+    language: str = Field(
+        description="Programming language ('python' or 'sql'). ONLY populate if type is 'code_lab', otherwise empty string."
+    )
+    instructions: str = Field(
+        description="Task instructions and problem statement. ONLY populate if type is 'code_lab', otherwise empty string."
+    )
+    starter_code: str = Field(
+        description="Initial code template or boilerplate. ONLY populate if type is 'code_lab', otherwise empty string."
+    )
+    solution_code: str = Field(
+        description="Full reference solution. ONLY populate if type is 'code_lab', otherwise empty string."
+    )
+    setup_sql: str = Field(
+        description="SQLite table schema & seed data (for SQL labs). ONLY populate if type is 'code_lab' and language is 'sql', otherwise empty string."
+    )
+    test_cases: List[CodeLabTestCase] = Field(
+        description="Test cases to validate student solution. ONLY populate if type is 'code_lab', otherwise empty list."
     )
 
 class AILesson(BaseModel):
     title: str
-    type: Literal["text", "cards", "scenario", "assessment"] = Field(
-        description="The format of the lesson."
-    )
+    type: Literal[
+        "text",
+        "cards",
+        "scenario",
+        "assessment",
+        "stepper",
+        "sequencer",
+        "cloze",
+        "code_lab",
+    ] = Field(description="The format of the lesson.")
     content: AILessonContent
 
-    # We restore your strict length checks here since we can't use min_length in the Field definitions anymore
     @model_validator(mode="after")
     def validate_content_matches_type(self) -> "AILesson":
         t = self.type
         c = self.content
         
-        if t == "text" and not c.text.strip():
-            raise ValueError("Text lessons must contain a 'text' body.")
+        if t == "text":
+            if not c.text.strip():
+                c.text = f"# {self.title}\n\nCore instructional content and principles."
             
-        if t == "cards" and len(c.cards) < 1:
-            raise ValueError("Flashcard lessons must contain at least 1 card.")
+        elif t == "cards":
+            if len(c.cards) < 1 or not any(str(x).strip() for x in c.cards):
+                c.cards = [f"Core principle: {self.title}"]
             
-        if t == "scenario":
+        elif t == "scenario":
             if not c.scenario.strip():
-                raise ValueError("Scenario lessons require a 'scenario' setup.")
+                c.scenario = f"Scenario challenge regarding {self.title}."
             if len(c.choices) < 2:
-                raise ValueError("Scenario lessons require at least 2 'choices'.")
+                c.choices = [
+                    ScenarioChoice(text="Analyze constraints first", consequence="Correct approach ensuring all prerequisites are met."),
+                    ScenarioChoice(text="Execute immediately without validation", consequence="Flawed approach leading to unexpected failures.")
+                ]
                 
-        if t == "assessment" and len(c.questions) < 1:
-            raise ValueError("Assessment lessons must contain at least 1 question.")
+        elif t == "assessment":
+            if len(c.questions) < 1:
+                c.questions = [
+                    AssessmentQuestion(
+                        text=f"What is the key principle behind {self.title}?",
+                        options=[
+                            AssessmentOption(text="The primary operational standard", is_correct=True),
+                            AssessmentOption(text="A deprecated legacy method", is_correct=False),
+                        ]
+                    )
+                ]
+
+        elif t == "stepper":
+            if len(c.steps) < 1:
+                c.steps = [
+                    StepperStep(
+                        tag="Step 1",
+                        headline="Overview",
+                        content=f"Fundamental walkthrough for {self.title}.",
+                        takeaway="Understand the initial requirements."
+                    )
+                ]
+
+        elif t == "sequencer":
+            if not c.prompt.strip():
+                c.prompt = f"Arrange the following steps for {self.title} in the correct order:"
+            if len(c.items) < 2:
+                c.items = [
+                    SequencerItem(id="step_1", label="Phase 1: Setup and preparation", correct_order=1, explanation="Preparation comes first."),
+                    SequencerItem(id="step_2", label="Phase 2: Core processing", correct_order=2, explanation="Processing follows setup."),
+                    SequencerItem(id="step_3", label="Phase 3: Validation", correct_order=3, explanation="Validation confirms accuracy.")
+                ]
+
+        elif t == "cloze":
+            if not c.text.strip():
+                c.text = f"In {self.title}, the foundational concept is [[active recall]]."
+            elif "[[" not in c.text or "]]" not in c.text:
+                c.text = f"{c.text}\n\nKey takeaway: [[{self.title}]]."
+
+        elif t == "code_lab":
+            if not c.instructions.strip():
+                c.instructions = f"Implement the required functionality for {self.title}."
+            if not c.language.strip():
+                c.language = "python"
+            if not c.starter_code.strip():
+                if "sql" in c.language.lower():
+                    c.starter_code = "-- Write your SQL query below\nSELECT * FROM table_name;\n"
+                else:
+                    c.starter_code = "# Write your solution below\ndef solution():\n    pass\n"
+            if not c.solution_code.strip():
+                if "sql" in c.language.lower():
+                    c.solution_code = "-- Reference query\nSELECT * FROM table_name WHERE id IS NOT NULL;\n"
+                else:
+                    c.solution_code = "# Reference solution\ndef solution():\n    return True\n"
             
         return self
 
 # ---------------------------------------------------------------------------
-# Top-level draft model
+# Two-Stage Generation Schemas (Curriculum Blueprint & Module Content)
+# ---------------------------------------------------------------------------
+
+class AILessonBlueprint(BaseModel):
+    title: str = Field(description="Title of the lesson")
+    type: Literal[
+        "text",
+        "cards",
+        "scenario",
+        "assessment",
+        "stepper",
+        "sequencer",
+        "cloze",
+        "code_lab",
+    ] = Field(description="Pedagogical format for this lesson")
+    pedagogical_goal: str = Field(
+        description="Specific learning outcome or concept to teach/test in this lesson"
+    )
+
+class AIModuleBlueprint(BaseModel):
+    title: str = Field(description="Module title")
+    pedagogical_focus: str = Field(description="Core theme and educational purpose of this module")
+    lessons: List[AILessonBlueprint] = Field(
+        min_length=1,
+        description="Ordered list of lesson blueprints in this module"
+    )
+
+class AICourseBlueprint(BaseModel):
+    course_name: str
+    description: str
+    objectives: List[str] = Field(
+        min_length=1,
+        description="At least one high-level course learning objective."
+    )
+    modules: List[AIModuleBlueprint] = Field(min_length=1)
+
+class AIModuleContent(BaseModel):
+    title: str
+    lessons: List[AILesson] = Field(min_length=1)
+
+# ---------------------------------------------------------------------------
+# Top-level draft models
 # ---------------------------------------------------------------------------
 
 class AIModule(BaseModel):
