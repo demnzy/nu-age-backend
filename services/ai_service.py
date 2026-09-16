@@ -43,10 +43,20 @@ def _render_mermaid_url(mermaid_code: str) -> str:
 
 
 def _render_educational_illustration_url(query: str) -> str:
-    """Builds a deterministic, high-quality textbook diagram/illustration URL for educational topics."""
-    prompt = f"{query.strip()} educational textbook diagram clear infographic vector illustration clean white background high resolution detailed"
+    """
+    Builds a deterministic, high-quality vector concept illustration URL.
+    Uses Pollinations Flux engine with explicit text/label suppression to eliminate gibberish.
+    """
+    clean_query = query.strip()
+    prompt = (
+        f"clean minimalist vector art illustration of {clean_query}, "
+        "flat 2D graphic design, conceptual symbolic visual, modern high contrast, "
+        "pure clean white background, studio lighting, "
+        "no text, no words, no letters, no labels, no watermark, no pseudo-text, no typography"
+    )
     encoded_prompt = urllib.parse.quote(prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
+    seed = abs(hash(clean_query)) % 100000
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&model=flux&seed={seed}&nologo=true"
 
 
 async def resolve_image_placeholders(data: dict) -> dict:
@@ -776,13 +786,83 @@ Follow the exact field rules for each lesson type.
     raise RuntimeError(f"Failed to generate content for module '{module_bp.title}': {last_error}")
 
 
+FINAL_EXAM_PROMPT = """
+You are a senior academic dean and psychometric assessment specialist designing the comprehensive capstone final examination for a course.
+
+EXAMINATION DESIGN PRINCIPLES:
+1. CURRICULUM-WIDE MASTERY: Questions must systematically sample concepts, syntax, edge cases, trade-offs, and lifecycles from EVERY single module in the provided syllabus.
+2. RIGOROUS APPLICATION: Every question must be grounded in concrete scenarios, debugging problems, architectural dilemmas, or execution tracing. Avoid trivial recall or pure definitions.
+3. CONVINCING DISTRACTORS: Every incorrect option must represent a classic misconception, off-by-one bug, or flawed reasoning pattern.
+4. EXAM SIZE: Generate 15 to 25 scenario-grounded multiple-choice questions.
+""".strip()
+
+
+async def synthesize_comprehensive_final_exam(
+    course_name: str,
+    course_desc: str,
+    modules: list,
+) -> dict:
+    """
+    Dedicated Stage 3 generator: Synthesizes a comprehensive, rigorous final capstone
+    examination (15-25 questions) covering every single module across the entire curriculum.
+    Runs with its own dedicated token budget so it never compromises module generation or hits token limits.
+    """
+    syllabus_summary = []
+    for i, m in enumerate(modules, start=1):
+        m_title = m.get("title", f"Module {i}")
+        lesson_titles = [l.get("title", "") for l in m.get("lessons", [])]
+        syllabus_summary.append(f"Module {i}: {m_title}\n  Topics covered: {', '.join(lesson_titles)}")
+
+    syllabus_text = "\n\n".join(syllabus_summary)
+
+    user_prompt = f"""
+COURSE: {course_name}
+COURSE DESCRIPTION: {course_desc}
+
+ENTIRE COURSE SYLLABUS TO TEST:
+{syllabus_text}
+
+Synthesize a comprehensive, university-level final examination with 15 to 25 challenging multiple-choice questions that systematically test mastery across all modules above.
+""".strip()
+
+    try:
+        response = await asyncio.wait_for(
+            client.beta.chat.completions.parse(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": FINAL_EXAM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=AICapstoneExam,
+                temperature=0.35,
+            ),
+            timeout=180.0,
+        )
+        parsed: AICapstoneExam = response.choices[0].message.parsed
+        questions_data = [
+            {
+                "text": q.text,
+                "options": [{"text": opt.text, "is_correct": opt.is_correct} for opt in q.options]
+            }
+            for q in parsed.questions
+        ]
+        return {
+            "title": parsed.title or "Comprehensive Final Examination & Certification Assessment",
+            "questions": questions_data,
+        }
+    except Exception as e:
+        print(f"[WARNING] Dedicated final exam generation failed: {e}. Falling back to standard module questions.")
+        return None
+
+
 async def draft_course_curriculum(topic: str, context: str) -> dict:
     """
-    Two-stage hierarchical course curriculum generation permanently locked to OpenAI.
+    Three-stage hierarchical course curriculum generation permanently locked to OpenAI.
     Stage 1: Creates an educationally grounded course blueprint.
-    Stage 2: Concurrently synthesizes rich lesson content across all 8 supported formats.
+    Stage 2: Concurrently synthesizes rich lesson content across all supported formats.
+    Stage 3: Dedicated synthesis of a comprehensive capstone final examination (15-25 questions).
     """
-    print(f"[INFO] Initiating two-stage OpenAI curriculum generation for: '{topic}'")
+    print(f"[INFO] Initiating multi-stage OpenAI curriculum generation for: '{topic}'")
     start = time.monotonic()
 
     try:
@@ -809,6 +889,38 @@ async def draft_course_curriculum(topic: str, context: str) -> dict:
 
         tasks = [synthesize_one(i, mbp) for i, mbp in enumerate(blueprint.modules)]
         modules_data = await asyncio.gather(*tasks)
+
+        # 3. Stage 3: Dedicated Comprehensive Final Capstone Exam Synthesis
+        print(f"[INFO] Synthesizing comprehensive final capstone exam across all {len(modules_data)} modules...")
+        try:
+            exam_data = await synthesize_comprehensive_final_exam(
+                course_name=blueprint.course_name,
+                course_desc=blueprint.description,
+                modules=modules_data,
+            )
+            if exam_data and exam_data.get("questions"):
+                last_module = modules_data[-1]
+                lessons = last_module.get("lessons", [])
+                
+                target_assessment = None
+                for l in reversed(lessons):
+                    if l.get("type") == "assessment":
+                        target_assessment = l
+                        break
+                
+                if target_assessment:
+                    target_assessment["title"] = exam_data.get("title", target_assessment.get("title", "Comprehensive Final Examination"))
+                    target_assessment["content"]["questions"] = exam_data["questions"]
+                else:
+                    lessons.append({
+                        "id": "new",
+                        "title": exam_data.get("title", "Comprehensive Final Examination"),
+                        "type": "assessment",
+                        "content": {"questions": exam_data["questions"]},
+                    })
+                print(f"[SUCCESS] Comprehensive final capstone exam generated with {len(exam_data['questions'])} questions.")
+        except Exception as exam_err:
+            print(f"[WARNING] Could not attach comprehensive final exam: {exam_err}")
 
         draft_data = {
             "course_name": blueprint.course_name,

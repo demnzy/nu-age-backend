@@ -584,6 +584,13 @@ class AIModuleContent(BaseModel):
     title: str
     lessons: List[AILesson] = Field(min_length=1)
 
+class AICapstoneExam(BaseModel):
+    title: str = Field(description="Title of the comprehensive final capstone exam")
+    questions: List[AssessmentQuestion] = Field(
+        min_length=15,
+        description="15 to 25 scenario-grounded multiple-choice questions thoroughly testing concepts from all course modules."
+    )
+
 # ---------------------------------------------------------------------------
 # Top-level draft models
 # ---------------------------------------------------------------------------
