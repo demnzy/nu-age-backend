@@ -464,13 +464,13 @@ Supported lesson types:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURRICULUM STRUCTURING RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. COURSE SCOPE: A comprehensive course must contain 5 to 7 modules, each with 4 to 6 lessons.
+1. COURSE SCOPE: A comprehensive course must contain 5 to 6 modules, each with 4 to 5 lessons.
 2. DOMAIN-SPECIFIC FORMAT SELECTION:
    - For coding, data science, databases, or algorithms: You MUST include "code_lab" lessons (for programming exercises) and "sequencer" lessons (for algorithm execution, lifecycle phases, or data pipelines).
    - For technical, engineering, operations, or laboratory workflows: Heavily utilize "stepper" and "sequencer" lessons.
    - For business, management, legal, ethics, or leadership topics: Heavily utilize "scenario" lessons with nuanced consequences.
    - For all subjects: Integrate "cloze" and "cards" for active recall vocabulary retention, and "text" for foundational explanations.
-3. MULTI-MODAL REINFORCEMENT: Include 1 to 2 "video" lessons across the curriculum for concepts best conveyed visually or dynamically.
+3. MANDATORY VIDEO INCLUSION: Every course MUST contain 2 to 4 "video" lessons distributed across the curriculum (e.g. an intro walkthrough in Module 1, and in key complex or algorithmic modules) to provide multi-modal visual reinforcement.
 4. FINAL CAPSTONE EXAM: The very last lesson of the very last module MUST be an "assessment" serving as a comprehensive final examination covering all modules.
 5. PEDAGOGICAL GOAL: Assign a clear, specific learning outcome or mental model to every lesson blueprint.
 """.strip()
@@ -478,6 +478,9 @@ CURRICULUM STRUCTURING RULES:
 
 STAGE_2_SYNTHESIZER_PROMPT = """
 You are an elite instructional content synthesizer. Your task is to generate rich, production-ready educational content for every lesson in a specified course module, adhering strictly to the provided lesson blueprint.
+
+CONCISENESS & TOKEN EFFICIENCY:
+Keep explanations high-density, precise, and educational (250-400 words for text lessons). Provide clean, idiomatic starter and solution code without superfluous boilerplate. Do not generate repetitive walls of text.
 
 You must populate the `content` field for each lesson according to its `type`.
 All unused fields in the `content` object must be left empty (empty string "" or empty list []).
@@ -490,13 +493,14 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Rich Markdown content in the `text` field.
    - Start with a compelling real-world hook that explains why this concept matters.
    - Use structured Markdown: ## and ### subheadings, **bold** key terms on first introduction, numbered/bulleted lists, > blockquotes for definitions or core rules, and Markdown tables when comparing concepts or formulas.
-   - VISUAL AIDS & DIAGRAMS (Include 1-2 relevant visual aids where helpful):
+   - MANDATORY VISUAL AID (Include at least 1 visual aid in every text lesson):
      a) For architectures, memory layouts, flowcharts, data structures, or execution lifecycles:
         Use Mermaid.js diagram syntax inside a DIAGRAM placeholder:
         ![Memory Pointer Layout](DIAGRAM:graph LR\n  A[Pointer ptr] -->|0x7ffd| B[Value: 42])
-     b) For physical, scientific, or real-world concepts:
-        Use descriptive educational textbook illustration query inside an IMG placeholder:
-        ![Photosynthesis Process](IMG:plant chloroplast light reaction and calvin cycle textbook diagram)
+     b) For concepts, physical models, computer architecture, or technical processes:
+        Use a descriptive educational textbook illustration query inside an IMG placeholder:
+        ![C++ Compilation Pipeline](IMG:C++ compiler phases preprocessor compiler assembler linker textbook diagram)
+        ![Computer Memory Architecture](IMG:computer RAM memory hierarchy stack and heap visual textbook diagram)
      NEVER invent random external URLs. Only use DIAGRAM: or IMG: placeholders.
    - End the `text` field with exactly 3 bullet points summarizing the core takeaways.
 
@@ -692,7 +696,8 @@ TARGET AUDIENCE / CONTEXT:
 
 Design a comprehensive course curriculum blueprint. Select the optimal lesson types
 from the 8 supported formats to match each subtopic's pedagogical needs.
-Ensure 5 to 7 modules, with 4 to 6 lessons per module.
+Ensure 5 to 6 modules, with 4 to 5 lessons per module.
+Include 2 to 3 "video" lessons across the course for visual walkthoughs and demonstrations.
 Conclude the final module with a comprehensive final assessment.
 """.strip()
 
