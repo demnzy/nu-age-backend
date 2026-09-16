@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     REFRESH_EXPIRE_DAYS: str
     AGENT_ROUTER_API_KEY: str = ""
     AI_PROVIDER: str = "agentrouter"
+    YOUTUBE_API_KEY: str = ""
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL

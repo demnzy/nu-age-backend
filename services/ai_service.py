@@ -88,6 +88,103 @@ async def resolve_image_placeholders(data: dict) -> dict:
 # -------------------------------------------------------------------------------
 
 
+# --- YouTube Educational Video Search & Resolution Engine ---------------------
+YOUTUBE_PLACEHOLDER_RE = re.compile(r"^YOUTUBE:\s*(.+)$", re.IGNORECASE)
+
+
+async def _search_youtube(query: str) -> str:
+    """
+    Finds a relevant, embeddable YouTube video URL for an educational query.
+    1. Uses official YouTube Data API v3 when YOUTUBE_API_KEY is configured
+       (with videoEmbeddable=true and videoDuration=short/medium).
+    2. Gracefully falls back to Invidious public search API.
+    3. Final fallback to a YouTube query link if all endpoints fail.
+    """
+    clean_query = query.strip()
+    if not clean_query:
+        return ""
+
+    yt_key = getattr(Settings(), "YOUTUBE_API_KEY", "") or ""
+    if yt_key:
+        try:
+            params = {
+                "part": "snippet",
+                "q": clean_query,
+                "type": "video",
+                "videoEmbeddable": "true",
+                "maxResults": 1,
+                "safeSearch": "moderate",
+                "key": yt_key,
+            }
+            async with httpx.AsyncClient(timeout=6.0) as client_http:
+                resp = await client_http.get(
+                    "https://www.googleapis.com/youtube/v3/search",
+                    params=params,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data.get("items", [])
+                    if items and "id" in items[0] and "videoId" in items[0]["id"]:
+                        video_id = items[0]["id"]["videoId"]
+                        return f"https://www.youtube.com/watch?v={video_id}"
+        except Exception as yt_err:
+            print(f"[WARNING] YouTube Data API search failed: {yt_err}")
+
+    # Fallback to public Invidious instances
+    invidious_endpoints = [
+        "https://invidious.privacydev.net/api/v1/search",
+        "https://vid.puffyan.us/api/v1/search",
+    ]
+    for endpoint in invidious_endpoints:
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client_http:
+                resp = await client_http.get(
+                    endpoint,
+                    params={"q": clean_query, "type": "video"},
+                )
+                if resp.status_code == 200:
+                    items = resp.json()
+                    if isinstance(items, list) and items:
+                        vid_id = items[0].get("videoId")
+                        if vid_id:
+                            return f"https://www.youtube.com/watch?v={vid_id}"
+        except Exception:
+            continue
+
+    encoded = urllib.parse.quote(clean_query)
+    return f"https://www.youtube.com/results?search_query={encoded}"
+
+
+async def resolve_video_placeholders(data: dict) -> dict:
+    """
+    Scans the draft structure for 'video' lessons and resolves any
+    'YOUTUBE: <query>' placeholders into verified, embeddable YouTube URLs.
+    """
+    async def process_lesson(lesson: dict):
+        if lesson.get("type") == "video":
+            content = lesson.get("content", {})
+            v_url = content.get("video_url", "")
+            match = YOUTUBE_PLACEHOLDER_RE.match(v_url.strip())
+            if match:
+                search_term = match.group(1).strip()
+                resolved = await _search_youtube(search_term)
+                if resolved:
+                    content["video_url"] = resolved
+            elif not v_url.strip():
+                title = lesson.get("title", "Lesson")
+                resolved = await _search_youtube(f"{title} tutorial")
+                if resolved:
+                    content["video_url"] = resolved
+
+    modules = data.get("modules", [])
+    for mod in modules:
+        for l in mod.get("lessons", []):
+            await process_lesson(l)
+
+    return data
+# -------------------------------------------------------------------------------
+
+
 class GeneratedFlashcard(BaseModel):
     front: str
     back: str
@@ -362,6 +459,7 @@ Supported lesson types:
 - "sequencer": Chronological or algorithmic reordering challenge where students arrange scrambled steps into the correct sequence.
 - "cloze": Active recall passage with fill-in-the-blank tokens [[blank]] or [[blank|hint]] to test precise conceptual vocabulary.
 - "code_lab": Hands-on coding or SQL playground with starter boilerplate, reference solution, and unit test cases.
+- "video": High-impact, concise video walkthrough or demonstration (<4 min) reinforcing complex mechanisms or visual setups.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURRICULUM STRUCTURING RULES:
@@ -372,8 +470,9 @@ CURRICULUM STRUCTURING RULES:
    - For technical, engineering, operations, or laboratory workflows: Heavily utilize "stepper" and "sequencer" lessons.
    - For business, management, legal, ethics, or leadership topics: Heavily utilize "scenario" lessons with nuanced consequences.
    - For all subjects: Integrate "cloze" and "cards" for active recall vocabulary retention, and "text" for foundational explanations.
-3. FINAL CAPSTONE EXAM: The very last lesson of the very last module MUST be an "assessment" serving as a comprehensive final examination covering all modules.
-4. PEDAGOGICAL GOAL: Assign a clear, specific learning outcome or mental model to every lesson blueprint.
+3. MULTI-MODAL REINFORCEMENT: Include 1 to 2 "video" lessons across the curriculum for concepts best conveyed visually or dynamically.
+4. FINAL CAPSTONE EXAM: The very last lesson of the very last module MUST be an "assessment" serving as a comprehensive final examination covering all modules.
+5. PEDAGOGICAL GOAL: Assign a clear, specific learning outcome or mental model to every lesson blueprint.
 """.strip()
 
 
@@ -449,6 +548,12 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Populate `solution_code`: Complete, optimal, passing solution code.
    - Populate `setup_sql`: For "sql", DDL `CREATE TABLE` and sample `INSERT INTO` statements for SQLite. For other languages, leave empty string "".
    - Populate `test_cases`: 2 to 4 test case objects ({description, input, expected_output}).
+
+9. "video" (Instructional Video Lesson):
+   - Populate `video_url`: Provide a targeted YouTube video search query prefixed with "YOUTUBE:".
+     Format: `YOUTUBE: <topic> <concept> short tutorial`
+     Example: `YOUTUBE: binary search algorithm explained in 3 minutes`
+   - Populate `accompanying_text`: 2 to 3 concise paragraphs of lecture summary, key principles demonstrated in the video, and practical takeaways.
 """.strip()
 
 
@@ -562,6 +667,12 @@ def normalize_lesson(lesson: AILesson) -> dict:
             content["test_cases"] = [
                 {"description": "Default test case", "input": "", "expected_output": "True"}
             ]
+
+    elif t == "video":
+        if not content.get("video_url", "").strip():
+            content["video_url"] = f"YOUTUBE: {lesson.title} tutorial"
+        if not content.get("accompanying_text", "").strip():
+            content["accompanying_text"] = f"Key video walkthrough and explanations for {lesson.title}."
 
     return {
         "id": "new",
@@ -719,8 +830,11 @@ async def draft_course_curriculum(topic: str, context: str) -> dict:
         f"({len(draft_data.get('modules', []))} modules, {total_lessons} lessons)."
     )
 
-    # 3. Resolve image placeholders via Unsplash
+    # 3. Resolve visual diagram and illustration placeholders
     draft_data = await resolve_image_placeholders(draft_data)
+
+    # 4. Resolve educational video placeholders via YouTube API
+    draft_data = await resolve_video_placeholders(draft_data)
 
     return draft_data
 

@@ -433,6 +433,14 @@ class AILessonContent(BaseModel):
     test_cases: List[CodeLabTestCase] = Field(
         description="Test cases to validate student solution. ONLY populate if type is 'code_lab', otherwise empty list."
     )
+    video_url: str = Field(
+        default="",
+        description="YouTube video search query or URL (e.g. 'YOUTUBE: brief video search query' or 'https://www.youtube.com/watch?v=...'). ONLY populate if type is 'video', otherwise empty string."
+    )
+    accompanying_text: str = Field(
+        default="",
+        description="Educational notes or summary accompanying the video. ONLY populate if type is 'video', otherwise empty string."
+    )
 
 class AILesson(BaseModel):
     title: str
@@ -445,6 +453,7 @@ class AILesson(BaseModel):
         "sequencer",
         "cloze",
         "code_lab",
+        "video",
     ] = Field(description="The format of the lesson.")
     content: AILessonContent
 
@@ -524,6 +533,12 @@ class AILesson(BaseModel):
                     c.solution_code = "-- Reference query\nSELECT * FROM table_name WHERE id IS NOT NULL;\n"
                 else:
                     c.solution_code = "# Reference solution\ndef solution():\n    return True\n"
+
+        elif t == "video":
+            if not c.video_url.strip():
+                c.video_url = f"YOUTUBE: {self.title} short tutorial"
+            if not c.accompanying_text.strip():
+                c.accompanying_text = f"Key video walkthrough and explanations for {self.title}."
             
         return self
 
@@ -542,6 +557,7 @@ class AILessonBlueprint(BaseModel):
         "sequencer",
         "cloze",
         "code_lab",
+        "video",
     ] = Field(description="Pedagogical format for this lesson")
     pedagogical_goal: str = Field(
         description="Specific learning outcome or concept to teach/test in this lesson"
