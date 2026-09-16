@@ -2,6 +2,8 @@ import asyncio
 import re
 import time
 import traceback
+import base64
+import urllib.parse
 import httpx
 from pydantic import BaseModel, Field
 from typing import List, Literal, Annotated, Union
@@ -23,53 +25,59 @@ client = AsyncOpenAI(
 # -----------------------------------------------------------------------------
 
 
-# --- NEW: image insertion support --------------------------------------------
-# The model cannot know real image URLs — asking it to write markdown image
-# links directly just gets you plausible-looking URLs that 404. Instead, the
-# model is instructed to write a placeholder token with a search query:
-#   ![alt text](IMG:short search query)
-# After generation, we resolve every placeholder to a real, working Unsplash
-# photo URL. Unique queries are deduped and rate-limited (Unsplash's free
-# tier is 50 req/hour) so a big course draft doesn't blow through the quota.
+# --- Educational Visual & Diagram Support -----------------------------------
+# 1. Mermaid.js Diagrams:
+#    ![alt text](DIAGRAM:graph TD\n...) -> Encoded to high-res SVG/PNG via mermaid.ink
+# 2. Educational Illustrations / Photos:
+#    ![alt text](IMG:concrete search query) -> Resolved via Unsplash or high-detail educational diagram generation
 
 IMAGE_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(IMG:\s*([^)]+?)\s*\)")
+DIAGRAM_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(DIAGRAM:\s*([\s\S]+?)\s*\)")
 UNSPLASH_API_URL = "https://api.unsplash.com/search/photos"
 
 
-async def _search_unsplash(client: httpx.AsyncClient, query: str) -> str | None:
-    """Return a working, hotlinkable Unsplash image URL for a query, or None."""
-    access_key = Settings().UNSPLASH_ACCESS_KEY
-    if not access_key:
-        print("[WARNING] UNSPLASH_ACCESS_KEY not configured — leaving image placeholders unresolved.")
-        return None
+def _render_mermaid_url(mermaid_code: str) -> str:
+    """Encodes a Mermaid.js diagram string into a working hotlinkable SVG/PNG image URL."""
+    clean = mermaid_code.strip()
+    b64 = base64.urlsafe_b64encode(clean.encode("utf-8")).decode("utf-8")
+    return f"https://mermaid.ink/img/{b64}?bgColor=FFFFFF"
 
-    try:
-        resp = await client.get(
-            UNSPLASH_API_URL,
-            params={"query": query, "per_page": 1, "orientation": "landscape"},
-            headers={"Authorization": f"Client-ID {access_key}"},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        results = resp.json().get("results") or []
-        if not results:
-            return None
-        # 'regular' is a sensibly-sized, always-valid hotlink per Unsplash's API terms.
-        return results[0]["urls"]["regular"]
-    except Exception as e:
-        print(f"[WARNING] Unsplash lookup failed for query '{query}': {e}")
-        return None
+
+def _render_educational_illustration_url(query: str) -> str:
+    """Builds a deterministic, high-quality textbook diagram/illustration URL for educational topics."""
+    prompt = f"{query.strip()} educational textbook diagram clear infographic vector illustration clean white background"
+    encoded_prompt = urllib.parse.quote(prompt)
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
+
+
+async def _search_unsplash(client: httpx.AsyncClient, query: str) -> str | None:
+    """Return a working Unsplash photo URL for a query, or fallback to educational illustration."""
+    access_key = Settings().UNSPLASH_ACCESS_KEY
+    if access_key:
+        try:
+            resp = await client.get(
+                UNSPLASH_API_URL,
+                params={"query": query, "per_page": 1, "orientation": "landscape"},
+                headers={"Authorization": f"Client-ID {access_key}"},
+                timeout=8.0,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results") or []
+                if results:
+                    return results[0]["urls"]["regular"]
+        except Exception as e:
+            print(f"[WARNING] Unsplash lookup failed for query '{query}': {e}")
+
+    # Fallback to high-definition educational illustration
+    return _render_educational_illustration_url(query)
 
 
 async def resolve_image_placeholders(data: dict) -> dict:
     """
-    Walk the parsed course draft, find every `IMG:query` placeholder in any
-    string field, and replace it with a real Unsplash image URL. Placeholders
-    that fail to resolve (no key configured, no results, API error) are
-    stripped out entirely rather than left broken in the markdown.
+    Walk the parsed course draft:
+    1. Converts `![alt](DIAGRAM:mermaid_code)` into working Mermaid rendered diagrams.
+    2. Resolves `![alt](IMG:query)` to Unsplash photo or educational illustration.
     """
-    # 1. Collect every unique query across the whole draft first, so repeated
-    #    topics (e.g. "supply and demand" used in two lessons) cost one call.
     queries: set[str] = set()
 
     def collect(node):
@@ -84,42 +92,44 @@ async def resolve_image_placeholders(data: dict) -> dict:
 
     collect(data)
 
-    if not queries:
-        return data
+    resolved_images: dict[str, str | None] = {}
+    if queries:
+        semaphore = asyncio.Semaphore(5)
+        async with httpx.AsyncClient() as client:
+            async def resolve_one(q: str):
+                async with semaphore:
+                    resolved_images[q] = await _search_unsplash(client, q)
+            await asyncio.gather(*(resolve_one(q) for q in queries))
 
-    # 2. Resolve them all concurrently (bounded, to stay polite to the API).
-    semaphore = asyncio.Semaphore(5)
-    resolved: dict[str, str | None] = {}
-
-    async with httpx.AsyncClient() as client:
-        async def resolve_one(q: str):
-            async with semaphore:
-                resolved[q] = await _search_unsplash(client, q)
-
-        await asyncio.gather(*(resolve_one(q) for q in queries))
-
-    # 3. Substitute back into the tree.
     def replace_in_text(text: str) -> str:
-        def _sub(m: re.Match) -> str:
-            alt, query = m.group(1), m.group(2)
-            url = resolved.get(query)
-            if not url:
-                # Drop unresolved placeholders instead of shipping a dead link.
-                return ""
+        # First resolve Mermaid diagram placeholders
+        def _sub_diag(m: re.Match) -> str:
+            alt, code = m.group(1), m.group(2)
+            url = _render_mermaid_url(code)
             return f"![{alt}]({url})"
-        return IMAGE_PLACEHOLDER_RE.sub(_sub, text)
+
+        text = DIAGRAM_PLACEHOLDER_RE.sub(_sub_diag, text)
+
+        # Next resolve image / illustration placeholders
+        def _sub_img(m: re.Match) -> str:
+            alt, query = m.group(1), m.group(2)
+            url = resolved_images.get(query)
+            if not url:
+                url = _render_educational_illustration_url(query)
+            return f"![{alt}]({url})"
+
+        return IMAGE_PLACEHOLDER_RE.sub(_sub_img, text)
 
     def walk(node):
         if isinstance(node, str):
-            return replace_in_text(node) if IMAGE_PLACEHOLDER_RE.search(node) else node
+            if IMAGE_PLACEHOLDER_RE.search(node) or DIAGRAM_PLACEHOLDER_RE.search(node):
+                return replace_in_text(node)
+            return node
         elif isinstance(node, dict):
             return {k: walk(v) for k, v in node.items()}
         elif isinstance(node, list):
             return [walk(v) for v in node]
         return node
-
-    resolved_count = sum(1 for v in resolved.values() if v)
-    print(f"[INFO] Resolved {resolved_count}/{len(queries)} image placeholders via Unsplash.")
 
     return walk(data)
 # -------------------------------------------------------------------------------
@@ -428,10 +438,14 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Rich Markdown content in the `text` field.
    - Start with a compelling real-world hook that explains why this concept matters.
    - Use structured Markdown: ## and ### subheadings, **bold** key terms on first introduction, numbered/bulleted lists, > blockquotes for definitions or core rules, and Markdown tables when comparing concepts or formulas.
-   - IMAGES: Insert 1-2 photo-searchable image placeholders inline where a visual aid improves comprehension:
-     ![descriptive alt text](IMG: concrete searchable query)
-     e.g., ![Server rack architecture](IMG: modern datacenter server rack)
-     NEVER invent web URLs. Only use the literal IMG: placeholder.
+   - VISUAL AIDS & DIAGRAMS (Include 1-2 relevant visual aids where helpful):
+     a) For architectures, memory layouts, flowcharts, data structures, or execution lifecycles:
+        Use Mermaid.js diagram syntax inside a DIAGRAM placeholder:
+        ![Memory Pointer Layout](DIAGRAM:graph LR\n  A[Pointer ptr] -->|0x7ffd| B[Value: 42])
+     b) For physical, scientific, or real-world concepts:
+        Use descriptive educational textbook illustration query inside an IMG placeholder:
+        ![Photosynthesis Process](IMG:plant chloroplast light reaction and calvin cycle textbook diagram)
+     NEVER invent random external URLs. Only use DIAGRAM: or IMG: placeholders.
    - End the `text` field with exactly 3 bullet points summarizing the core takeaways.
 
 2. "cards" (Atomic Flashcard Deck):
@@ -476,11 +490,11 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Populate `explanation`: Thorough educational explanation of why the blanked terms are correct.
 
 8. "code_lab" (Interactive Coding Playground):
-   - Populate `language`: "python" or "sql".
-   - Populate `instructions`: Comprehensive problem statement, input/output requirements, and edge case specifications.
-   - Populate `starter_code`: Clean boilerplate with function signatures, docstrings, and `# TODO` comments. CRITICAL: starter_code is strictly required and must NEVER be empty.
+   - Populate `language`: Select the matching language for the course: "cpp", "javascript", "typescript", "java", "python", "c", or "sql".
+   - Populate `instructions`: Comprehensive problem statement, input/output specifications, and constraints.
+   - Populate `starter_code`: Clean, idiomatic boilerplate with proper headers/signatures, docstrings, and `# TODO` / `// TODO` markers. CRITICAL: starter_code is strictly required and must NEVER be empty.
    - Populate `solution_code`: Complete, optimal, passing solution code.
-   - Populate `setup_sql`: For "sql", DDL `CREATE TABLE` and sample `INSERT INTO` statements for SQLite. For "python", leave empty string "".
+   - Populate `setup_sql`: For "sql", DDL `CREATE TABLE` and sample `INSERT INTO` statements for SQLite. For other languages, leave empty string "".
    - Populate `test_cases`: 2 to 4 test case objects ({description, input, expected_output}).
 """.strip()
 
