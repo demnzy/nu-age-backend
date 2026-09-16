@@ -189,10 +189,11 @@ class CourseSettings(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     supervised: Optional[bool] = None
-    teacher_id: Optional[UUID] | str = None
+    teacher_id: Optional[Union[UUID, str]] = None
     auto_certificate: Optional[bool] = None
     public: Optional[str] = None
-    category_id: Optional[UUID] = None
+    category_id: Optional[Union[UUID, str]] = None
+    category: Optional[str] = None
 
 # --- Flashcard Schemas ---
 class SRSState(BaseModel):

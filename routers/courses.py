@@ -167,24 +167,78 @@ def change_setting(course_id: UUID, setting: CourseSettings,  db: Session = Depe
     if not course:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course not found")
     
-    if user.role != "Admin" and user.id != course.admin_id:
+    # Permission verification
+    # Allow:
+    # 1. System Admins
+    # 2. Course creator/admin
+    # 3. Assigned Teacher
+    # 4. Organisation owner
+    # 5. Organisation members who are Admin / Teacher / Instructor
+    has_permission = False
+    user_role_str = str(getattr(user, "role", "")).lower()
+    if user_role_str in ["admin", "superadmin", "roles.admin"]:
+        has_permission = True
+    elif str(user.id) == str(course.admin_id):
+        has_permission = True
+    elif course.teacher_id and str(user.id) == str(course.teacher_id):
+        has_permission = True
+    elif course.org_id:
+        org = db.query(models.Organisation).filter(models.Organisation.id == course.org_id).first()
+        if org and str(org.owner_id) == str(user.id):
+            has_permission = True
+        else:
+            org_member = db.query(models.OrganisationMember).filter(
+                models.OrganisationMember.organisation_id == course.org_id,
+                models.OrganisationMember.user_id == user.id
+            ).first()
+            if org_member and str(org_member.role).lower() in ["admin", "owner", "teacher", "instructor"]:
+                has_permission = True
+
+    if not has_permission:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to perform this action")
     
-    if setting.name is not None:
-        course.name = setting.name
+    if setting.name is not None and str(setting.name).strip():
+        course.name = str(setting.name).strip()
     if setting.description is not None:
-        course.description = setting.description
+        course.description = str(setting.description).strip()
     if setting.public is not None:
-        course.public = setting.public
+        p_val = str(setting.public).strip().lower()
+        if p_val in ["true", "public", "published"]:
+            course.public = "true"
+        elif p_val in ["organisation", "organization", "campus"]:
+            course.public = "organisation"
+        else:
+            course.public = "false"
     if setting.teacher_id is not None:
-        if setting.teacher_id == "none":  # Special case to remove teacher
+        t_val = str(setting.teacher_id).strip()
+        if t_val.lower() in ["none", "null", "", "unassigned"]:
             course.teacher_id = None
         else:
-            course.teacher_id = setting.teacher_id
+            try:
+                course.teacher_id = UUID(t_val)
+            except ValueError:
+                course.teacher_id = None
     if setting.category_id is not None:
-        course.category_id = setting.category_id    
+        c_val = str(setting.category_id).strip()
+        if c_val.lower() in ["none", "null", ""]:
+            course.category_id = None
+        else:
+            try:
+                course.category_id = UUID(c_val)
+            except ValueError:
+                cat = db.query(models.Category).filter(func.lower(models.Category.name) == c_val.lower()).first()
+                if cat:
+                    course.category_id = cat.id
+    elif getattr(setting, "category", None) is not None:
+        c_val = str(setting.category).strip()
+        if c_val:
+            cat = db.query(models.Category).filter(func.lower(models.Category.name) == c_val.lower()).first()
+            if cat:
+                course.category_id = cat.id
     if setting.supervised is not None:
         course.supervised = setting.supervised
+    if setting.auto_certificate is not None:
+        course.auto_certificate = setting.auto_certificate
     db.commit()
     db.refresh(course)
     return course
