@@ -25,15 +25,14 @@ client = AsyncOpenAI(
 # -----------------------------------------------------------------------------
 
 
-# --- Educational Visual & Diagram Support -----------------------------------
+# --- Educational Visual & Diagram Engine ------------------------------------
 # 1. Mermaid.js Diagrams:
 #    ![alt text](DIAGRAM:graph TD\n...) -> Encoded to high-res SVG/PNG via mermaid.ink
-# 2. Educational Illustrations / Photos:
-#    ![alt text](IMG:concrete search query) -> Resolved via Unsplash or high-detail educational diagram generation
+# 2. Educational Textbook Illustrations:
+#    ![alt text](IMG:concept query) -> High-definition educational diagram & infographic generator
 
 IMAGE_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(IMG:\s*([^)]+?)\s*\)")
 DIAGRAM_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(DIAGRAM:\s*([\s\S]+?)\s*\)")
-UNSPLASH_API_URL = "https://api.unsplash.com/search/photos"
 
 
 def _render_mermaid_url(mermaid_code: str) -> str:
@@ -45,64 +44,20 @@ def _render_mermaid_url(mermaid_code: str) -> str:
 
 def _render_educational_illustration_url(query: str) -> str:
     """Builds a deterministic, high-quality textbook diagram/illustration URL for educational topics."""
-    prompt = f"{query.strip()} educational textbook diagram clear infographic vector illustration clean white background"
+    prompt = f"{query.strip()} educational textbook diagram clear infographic vector illustration clean white background high resolution detailed"
     encoded_prompt = urllib.parse.quote(prompt)
     return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
-
-
-async def _search_unsplash(client: httpx.AsyncClient, query: str) -> str | None:
-    """Return a working Unsplash photo URL for a query, or fallback to educational illustration."""
-    access_key = Settings().UNSPLASH_ACCESS_KEY
-    if access_key:
-        try:
-            resp = await client.get(
-                UNSPLASH_API_URL,
-                params={"query": query, "per_page": 1, "orientation": "landscape"},
-                headers={"Authorization": f"Client-ID {access_key}"},
-                timeout=8.0,
-            )
-            if resp.status_code == 200:
-                results = resp.json().get("results") or []
-                if results:
-                    return results[0]["urls"]["regular"]
-        except Exception as e:
-            print(f"[WARNING] Unsplash lookup failed for query '{query}': {e}")
-
-    # Fallback to high-definition educational illustration
-    return _render_educational_illustration_url(query)
 
 
 async def resolve_image_placeholders(data: dict) -> dict:
     """
     Walk the parsed course draft:
-    1. Converts `![alt](DIAGRAM:mermaid_code)` into working Mermaid rendered diagrams.
-    2. Resolves `![alt](IMG:query)` to Unsplash photo or educational illustration.
+    1. Converts `![alt](DIAGRAM:mermaid_code)` into working Mermaid diagrams.
+    2. Resolves `![alt](IMG:query)` to relevant, targeted educational diagrams/illustrations.
+    Zero reliance on Unsplash stock photography.
     """
-    queries: set[str] = set()
-
-    def collect(node):
-        if isinstance(node, str):
-            queries.update(m.group(2) for m in IMAGE_PLACEHOLDER_RE.finditer(node))
-        elif isinstance(node, dict):
-            for v in node.values():
-                collect(v)
-        elif isinstance(node, list):
-            for v in node:
-                collect(v)
-
-    collect(data)
-
-    resolved_images: dict[str, str | None] = {}
-    if queries:
-        semaphore = asyncio.Semaphore(5)
-        async with httpx.AsyncClient() as client:
-            async def resolve_one(q: str):
-                async with semaphore:
-                    resolved_images[q] = await _search_unsplash(client, q)
-            await asyncio.gather(*(resolve_one(q) for q in queries))
-
     def replace_in_text(text: str) -> str:
-        # First resolve Mermaid diagram placeholders
+        # 1. Resolve Mermaid diagram placeholders
         def _sub_diag(m: re.Match) -> str:
             alt, code = m.group(1), m.group(2)
             url = _render_mermaid_url(code)
@@ -110,12 +65,10 @@ async def resolve_image_placeholders(data: dict) -> dict:
 
         text = DIAGRAM_PLACEHOLDER_RE.sub(_sub_diag, text)
 
-        # Next resolve image / illustration placeholders
+        # 2. Resolve image / illustration placeholders
         def _sub_img(m: re.Match) -> str:
             alt, query = m.group(1), m.group(2)
-            url = resolved_images.get(query)
-            if not url:
-                url = _render_educational_illustration_url(query)
+            url = _render_educational_illustration_url(query)
             return f"![{alt}]({url})"
 
         return IMAGE_PLACEHOLDER_RE.sub(_sub_img, text)
