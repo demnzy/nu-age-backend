@@ -320,6 +320,10 @@ class VerifyEmailSchema(BaseModel):
     email: str
     code: str
 
+class ResendVerificationSchema(BaseModel):
+    email: Optional[str] = None
+    identifier: Optional[str] = None
+
 class InviteCreateRequest(BaseModel):
     target_email: EmailStr
     organisation_id: UUID

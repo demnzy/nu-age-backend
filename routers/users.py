@@ -2,7 +2,7 @@ from fastapi import *
 from fastapi.security.oauth2 import OAuth2PasswordRequestForm
 from schemas import *
 from database import get_db,Settings
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from sqlalchemy.orm import Session
 import models
 from services import utils, auth
@@ -454,14 +454,17 @@ def send_general_welcome_email(email: str, first_name: str = "there"):
         print(f"Failed to send welcome email to {email}: {e}")
 
 @router.post("/auth/verify-email")
-async def verify_email( payload: VerifyEmailSchema,background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def verify_email(payload: VerifyEmailSchema, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    clean_email = payload.email.strip().lower()
+    clean_code = payload.code.strip()
+
     # 1. Look up the OTP
-    otp_record = db.query(models.SignupOTP).filter(models.SignupOTP.email == payload.email).first()
+    otp_record = db.query(models.SignupOTP).filter(func.lower(models.SignupOTP.email) == clean_email).first()
     
-    if not otp_record or otp_record.code != payload.code:
+    if not otp_record or otp_record.code.strip() != clean_code:
         raise HTTPException(status_code=400, detail="Invalid verification code.")
 
-    # 3. Check if it is expired
+    # 2. Check if it is expired
     now_utc = datetime.now(timezone.utc)
     expires_at = otp_record.expires_at
 
@@ -472,24 +475,64 @@ async def verify_email( payload: VerifyEmailSchema,background_tasks: BackgroundT
     if now_utc > expires_at:
         raise HTTPException(status_code=400, detail="Code expired. Please request a new one.")
 
-    # 2. Find the user and unlock the account
-    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    # 3. Find the user and unlock the account
+    user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
     user.is_verified = True
 
-    # 3. Destroy the OTP so it can't be reused
+    # 4. Destroy the OTP so it can't be reused
     db.delete(otp_record)
     db.commit()
 
-    # 4. Generate the JWT Token so they are instantly logged into the dashboard
-    # access_token = create_access_token(data={"sub": user.email})
     background_tasks.add_task(send_general_welcome_email, user.email, user.first_name)
     return {
         "message": "Email verified successfully!", 
-        # "access_token": access_token, 
-        # "token_type": "bearer"
+    }
+
+@router.post("/auth/resend-verification-otp")
+async def resend_verification_otp(
+    email: Optional[str] = None,
+    payload: Optional[ResendVerificationSchema] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: Session = Depends(get_db)
+):
+    target = email or (payload.email if payload else None) or (payload.identifier if payload else None)
+    if not target or not target.strip():
+        raise HTTPException(status_code=400, detail="Email or username is required.")
+    
+    clean_target = target.strip()
+    user = (
+        db.query(models.User).filter(func.lower(models.User.email) == clean_target.lower()).first() or
+        db.query(models.User).filter(func.lower(models.User.username) == clean_target.lower()).first()
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with that email or username.")
+    
+    if getattr(user, "is_verified", False):
+        return {
+            "message": "Account is already verified. You can log in directly.",
+            "already_verified": True,
+            "email": user.email
+        }
+    
+    code = str(random.randint(100000, 999999))
+    expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+    
+    otp_record = db.query(models.SignupOTP).filter(func.lower(models.SignupOTP.email) == user.email.lower()).first()
+    if otp_record:
+        otp_record.code = code
+        otp_record.expires_at = expires
+    else:
+        db.add(models.SignupOTP(email=user.email, code=code, expires_at=expires))
+    db.commit()
+    
+    background_tasks.add_task(send_background_otp, user.email, code)
+    return {
+        "message": f"A new 6-digit verification code has been sent to {user.email}.",
+        "already_verified": False,
+        "email": user.email
     }
 
 @router.post('/auth/login', response_model=TokenResponse)
@@ -516,7 +559,7 @@ def user_login(
     if getattr(actual_user, 'is_verified', None) is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Account not verified. Please check your email for the OTP code."
+            detail=f"Account not verified. Email: {actual_user.email}"
         )
     # Grab the current time in Nigeria (UTC+1) so streaks reset exactly at midnight local time
     wat_tz = pytz.timezone('Africa/Lagos')
