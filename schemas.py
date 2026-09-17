@@ -417,7 +417,7 @@ class AILessonContent(BaseModel):
         description="Pedagogical explanation for cloze blanks. ONLY populate if type is 'cloze', otherwise empty string."
     )
     language: str = Field(
-        description="Programming language ('python' or 'sql'). ONLY populate if type is 'code_lab', otherwise empty string."
+        description="Programming language ('python', 'sql', 'html', 'javascript', 'typescript', 'cpp', 'c', 'java'). ONLY populate if type is 'code_lab', otherwise empty string."
     )
     instructions: str = Field(
         description="Task instructions and problem statement. ONLY populate if type is 'code_lab', otherwise empty string."

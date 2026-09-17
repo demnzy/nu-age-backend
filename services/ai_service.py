@@ -543,16 +543,18 @@ Supported lesson types:
 CURRICULUM STRUCTURING RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. COURSE SCOPE: A comprehensive course must contain 5 to 6 modules, each with 4 to 5 lessons.
-2. DOMAIN-SPECIFIC FORMAT SELECTION:
-   - For backend programming, algorithms, data structures, and databases: You MUST include "code_lab" lessons (for CLI executable problems) and "sequencer" lessons (for algorithms, pipelines).
-   - CRITICAL CODE LAB RUNTIME LIMITATION: The platform code runner executes strictly in headless server CLI runtimes (Node.js, CPython, GCC, OpenJDK, SQLite). It has NO BROWSER DOM (NO `window`, `document`, `navigator`, `self`, `localStorage`, `IndexedDB`, or Service Workers) and CANNOT execute raw HTML (`<!DOCTYPE html>`).
-     * FOR WEB / BROWSER COURSES (e.g. PWA, HTML5, CSS, DOM APIs, Service Workers): Do NOT blueprint "code_lab" lessons that require browser APIs or HTML markup! Instead, teach web/browser concepts using:
-       - "stepper": for multi-phase setup & registration walkthroughs.
-       - "sequencer": for lifecycle phases (e.g. Service Worker registration -> install -> activate -> fetch).
-       - "cloze": for active recall of API methods, event names, and manifest keys.
-       - "scenario": for architectural trade-offs (e.g. Cache-First vs Network-First vs Stale-While-Revalidate).
-       - "text": for detailed code examples with syntax-highlighted blocks and Mermaid architectural diagrams.
-     * If "code_lab" is blueprinted for a web course, it MUST be a pure Node.js-compatible exercise (e.g. parsing and validating a Web Manifest JSON schema, calculating cache TTL expiry, or algorithmic data manipulation).
+2. DOMAIN-SPECIFIC FORMAT SELECTION & RUNNER AWARENESS:
+   - PLATFORM CODE RUNNER CAPABILITIES & ENVIRONMENTS:
+     The platform supports targeted code execution sandboxes. Rather than avoiding coding exercises, be aware of how each environment operates so you can craft simple, highly explanatory challenges that build deep student understanding:
+     * "html": Live browser preview sandbox with offline DOM & token validation. Ideal for web development, HTML structure, PWA Web App Manifests, Service Worker registration scripts, and DOM manipulation.
+     * "python": Pure CPython AST-checked local sandbox with standard I/O capture. Ideal for algorithmic thinking, data structures, parsing, and backend logic.
+     * "sql": In-memory SQLite database. Supply table schemas and seed data in `setup_sql`; students write target queries. Ideal for relational databases and data modeling.
+     * "javascript" / "typescript": Headless Node.js runtime for logic, data transformations, and backend utilities.
+     * Compiled Systems ("cpp", "c", "java", "rust", "go"): Containerized CLI compilers for systems programming, data structures, and algorithms.
+     Teach students how to use each environment simply and effectively.
+   - PURPOSE-DRIVEN PEDAGOGY & DIVERSITY:
+     * Maintain healthy diversity across lesson formats ("text", "stepper", "sequencer", "scenario", "cards", "cloze", "code_lab", "video").
+     * CRITICAL: Only choose a lesson type when it genuinely achieves the learning goal for that specific module/lesson, rather than uniformly forcing every format into every module. Each module receives its own dedicated generation step and token window for rich, deep context.
    - For technical, engineering, operations, or laboratory workflows: Heavily utilize "stepper" and "sequencer" lessons.
    - For business, management, legal, ethics, or leadership topics: Heavily utilize "scenario" lessons with nuanced consequences.
    - For all subjects: Integrate "cloze" and "cards" for active recall vocabulary retention, and "text" for foundational explanations.
@@ -597,11 +599,14 @@ LESSON TYPE CONTENT SPECIFICATIONS:
 2. "cards" (Atomic Flashcard Deck):
    - Populate `cards`: a list of 4 to 8 standalone, memorable facts, definitions, distinctions, or formulas.
 
-3. "scenario" (Decision Challenge):
-   - Populate `scenario`: A detailed, high-stakes situation setup with concrete characters, numbers, and constraints.
-   - Populate `choices`: 3 to 4 objects with `text` and `consequence`.
-     At least one choice must be a subtle trap (looks textbook-correct but fails due to a real-world constraint in the scenario).
-     Each `consequence` must deeply explain the physiological, business, or technical logic of why it succeeds or fails.
+3. "scenario" (Situational Decision Challenge):
+   - Populate `scenario`: Must be situational, dynamic, and realistic to make students genuinely think—NEVER just a single sentence!
+     * Establish an authentic, multi-paragraph engineering, operational, or architectural dilemma with concrete stakes, systems, and metrics.
+     * Integrate competing constraints (e.g. strict latency budgets, offline reliability requirements, resource constraints, legacy dependencies, security risks).
+     * Clearly frame the trade-offs so that no choice is trivial or obvious.
+   - Populate `choices`: 3 to 4 nuanced decision branches with `text` and in-depth `consequence` analyses.
+     * At least one choice must be a subtle trap (looks standard in theory, but fails under the specific real-world constraints described in the situation).
+     * Each `consequence` must thoroughly explain the operational, technical, or systemic reasoning of why that decision succeeded, failed, or incurred technical debt.
 
 4. "assessment" (Diagnostic Quiz):
    - Populate `questions`: 3 to 6 high-quality multiple choice questions (or 10-15 for a final exam module).
@@ -636,15 +641,16 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Populate `explanation`: Thorough educational explanation of why the blanked terms are correct.
 
 8. "code_lab" (Interactive Coding Playground):
-   - CRITICAL RUNTIME ENVIRONMENT CONSTRAINTS:
-     The platform code runner executes strictly in headless server CLI environments (Node.js for JS/TS, CPython 3, GCC/Clang for C/C++, OpenJDK for Java, SQLite for SQL).
-     * NO BROWSER DOM GLOBALS: Never write code using `window`, `document`, `navigator`, `self.addEventListener`, `localStorage`, `IndexedDB`, or Service Workers.
-     * NO RAW HTML / MARKUP: Do NOT provide `<!DOCTYPE html>`, `<script>`, or HTML templates in starter or solution code (this will trigger fatal SyntaxErrors in Node.js/Python).
-     * Pure CLI Execution: For JavaScript/TypeScript, code must be pure Node.js (e.g. validating a manifest structure or cache configuration object, algorithmic utilities, data processing) that prints output to stdout.
-   - Populate `language`: Select the matching language for the course: "cpp", "javascript", "typescript", "java", "python", "c", or "sql".
-   - Populate `instructions`: Comprehensive problem statement, input/output specifications, and constraints.
-   - Populate `starter_code`: Clean, idiomatic boilerplate with proper headers/signatures, docstrings, and `# TODO` / `// TODO` markers. CRITICAL: starter_code is strictly required and must NEVER be empty.
-   - Populate `solution_code`: Complete, optimal, passing solution code that compiles/runs and passes all test cases.
+   - SANDBOX EXECUTION ENVIRONMENTS & SCOPE:
+     * "html": For web, frontend, PWA, and DOM exercises. Renders with live browser preview and offline markup analysis. Starter code can include full HTML structure (`<!DOCTYPE html>`), `<style>`, `<script>`, Service Worker registrations, and offline caching logic. Test cases check for key tags, attributes, or code tokens.
+     * "python": Sandboxed local CPython environment with AST checks. Reads stdin, writes stdout.
+     * "sql": In-memory SQLite database. Provide DDL schema and seed rows in `setup_sql`; students write SQL queries.
+     * "javascript" / "typescript": Headless Node.js runtime for backend logic and data processing.
+     * "cpp", "c", "java", "rust", "go": Containerized CLI execution environments.
+   - Populate `language`: Select the matching language: "html", "python", "sql", "javascript", "typescript", "cpp", "c", or "java".
+   - Populate `instructions`: Comprehensive problem statement, input/output requirements, and constraints designed to build real student understanding.
+   - Populate `starter_code`: Clean, idiomatic boilerplate with proper structure, signatures, docstrings, and `# TODO` / `// TODO` / `<!-- TODO -->` markers. Must never be empty.
+   - Populate `solution_code`: Complete, optimal passing solution code.
    - Populate `setup_sql`: For "sql", DDL `CREATE TABLE` and sample `INSERT INTO` statements for SQLite. For other languages, leave empty string "".
    - Populate `test_cases`: 2 to 4 test case objects ({description, input, expected_output}).
 
