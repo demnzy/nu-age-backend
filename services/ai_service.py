@@ -35,13 +35,35 @@ DIAGRAM_PLACEHOLDER_RE = re.compile(r"!\[([^\]]*)\]\(DIAGRAM:\s*([\s\S]+?)\s*\)"
 
 
 def _clean_mermaid_syntax(mermaid_code: str) -> str:
-    """Cleans up formatting anomalies and escapes in LLM-generated Mermaid code."""
+    """Cleans up formatting anomalies, single-line compression, and escapes in LLM-generated Mermaid code."""
     clean = mermaid_code.strip()
     # Strip markdown code blocks if the LLM wrapped it in ```mermaid ... ```
     clean = re.sub(r"^```(?:mermaid)?\s*", "", clean)
     clean = re.sub(r"\s*```$", "", clean)
     # Ensure escaped newlines are converted to actual newlines
     clean = clean.replace("\\n", "\n")
+
+    # 1. Header Separation: Ensure header keyword is on its own line
+    clean = re.sub(
+        r'^(flowchart\s+[A-Za-z]+|graph\s+[A-Za-z]+|sequenceDiagram|stateDiagram-v2|classDiagram|erDiagram|mindmap)\s+',
+        r'\1\n  ',
+        clean,
+        flags=re.IGNORECASE
+    )
+
+    # 2. Statement Splitting: If statements were smashed together on a single line, split them
+    clean = re.sub(
+        r'([\]\}\)])\s+([A-Za-z0-9_]+)(?=\s*(?:-->|-.->|==>|--\s*[^->\n]+\s*-->))',
+        r'\1\n  \2',
+        clean
+    )
+
+    # 3. Arrow text normalization: Convert "-- Label -->" into "-->|Label|" for rock-solid Mermaid compatibility
+    clean = re.sub(r'--\s*([^->\n]+?)\s*-->', r'-->|\1|', clean)
+
+    # 4. Truncated / dangling node repair: If an arrow points to a dangling typo or unbracketed token at end
+    clean = re.sub(r'-->\s*([A-Za-z0-9_]+)\s*$', r'--> \1["\1"]', clean)
+
     return clean.strip()
 
 
@@ -522,7 +544,15 @@ CURRICULUM STRUCTURING RULES:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. COURSE SCOPE: A comprehensive course must contain 5 to 6 modules, each with 4 to 5 lessons.
 2. DOMAIN-SPECIFIC FORMAT SELECTION:
-   - For coding, data science, databases, or algorithms: You MUST include "code_lab" lessons (for programming exercises) and "sequencer" lessons (for algorithm execution, lifecycle phases, or data pipelines).
+   - For backend programming, algorithms, data structures, and databases: You MUST include "code_lab" lessons (for CLI executable problems) and "sequencer" lessons (for algorithms, pipelines).
+   - CRITICAL CODE LAB RUNTIME LIMITATION: The platform code runner executes strictly in headless server CLI runtimes (Node.js, CPython, GCC, OpenJDK, SQLite). It has NO BROWSER DOM (NO `window`, `document`, `navigator`, `self`, `localStorage`, `IndexedDB`, or Service Workers) and CANNOT execute raw HTML (`<!DOCTYPE html>`).
+     * FOR WEB / BROWSER COURSES (e.g. PWA, HTML5, CSS, DOM APIs, Service Workers): Do NOT blueprint "code_lab" lessons that require browser APIs or HTML markup! Instead, teach web/browser concepts using:
+       - "stepper": for multi-phase setup & registration walkthroughs.
+       - "sequencer": for lifecycle phases (e.g. Service Worker registration -> install -> activate -> fetch).
+       - "cloze": for active recall of API methods, event names, and manifest keys.
+       - "scenario": for architectural trade-offs (e.g. Cache-First vs Network-First vs Stale-While-Revalidate).
+       - "text": for detailed code examples with syntax-highlighted blocks and Mermaid architectural diagrams.
+     * If "code_lab" is blueprinted for a web course, it MUST be a pure Node.js-compatible exercise (e.g. parsing and validating a Web Manifest JSON schema, calculating cache TTL expiry, or algorithmic data manipulation).
    - For technical, engineering, operations, or laboratory workflows: Heavily utilize "stepper" and "sequencer" lessons.
    - For business, management, legal, ethics, or leadership topics: Heavily utilize "scenario" lessons with nuanced consequences.
    - For all subjects: Integrate "cloze" and "cards" for active recall vocabulary retention, and "text" for foundational explanations.
@@ -606,10 +636,15 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Populate `explanation`: Thorough educational explanation of why the blanked terms are correct.
 
 8. "code_lab" (Interactive Coding Playground):
+   - CRITICAL RUNTIME ENVIRONMENT CONSTRAINTS:
+     The platform code runner executes strictly in headless server CLI environments (Node.js for JS/TS, CPython 3, GCC/Clang for C/C++, OpenJDK for Java, SQLite for SQL).
+     * NO BROWSER DOM GLOBALS: Never write code using `window`, `document`, `navigator`, `self.addEventListener`, `localStorage`, `IndexedDB`, or Service Workers.
+     * NO RAW HTML / MARKUP: Do NOT provide `<!DOCTYPE html>`, `<script>`, or HTML templates in starter or solution code (this will trigger fatal SyntaxErrors in Node.js/Python).
+     * Pure CLI Execution: For JavaScript/TypeScript, code must be pure Node.js (e.g. validating a manifest structure or cache configuration object, algorithmic utilities, data processing) that prints output to stdout.
    - Populate `language`: Select the matching language for the course: "cpp", "javascript", "typescript", "java", "python", "c", or "sql".
    - Populate `instructions`: Comprehensive problem statement, input/output specifications, and constraints.
    - Populate `starter_code`: Clean, idiomatic boilerplate with proper headers/signatures, docstrings, and `# TODO` / `// TODO` markers. CRITICAL: starter_code is strictly required and must NEVER be empty.
-   - Populate `solution_code`: Complete, optimal, passing solution code.
+   - Populate `solution_code`: Complete, optimal, passing solution code that compiles/runs and passes all test cases.
    - Populate `setup_sql`: For "sql", DDL `CREATE TABLE` and sample `INSERT INTO` statements for SQLite. For other languages, leave empty string "".
    - Populate `test_cases`: 2 to 4 test case objects ({description, input, expected_output}).
 
