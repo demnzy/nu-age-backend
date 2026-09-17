@@ -600,22 +600,33 @@ STAGE_1_ARCHITECT_PROMPT = """
 You are a world-class curriculum architect and master educator designing comprehensive, university-grade courses.
 Your syllabus design is grounded in:
 1. Cognitive Load Theory (Sweller): Progressive scaffolding from fundamental concepts to procedural mastery, complex application, and synthesis.
-2. Bloom's Revised Taxonomy: Map formats to cognitive levels:
+2. Bloom's Revised Taxonomy:
    - Remember & Understand: "text", "cards", "cloze"
    - Apply & Analyze: "stepper", "sequencer", "code_lab"
    - Evaluate & Create: "scenario", "assessment"
 3. Multi-Modal Retention: Vary pedagogical formats across lessons so learning never becomes passive or monotonous.
 
-Supported lesson types:
-- "text": In-depth conceptual deep dive with structured markdown, real-world analogies, tables, and inline image placeholders.
-- "cards": Atomic flashcards for key definitions, formulas, and critical distinctions.
-- "scenario": High-stakes decision challenge testing critical judgment and trade-offs under real-world constraints.
-- "assessment": Rigorous diagnostic multiple-choice questions with scenario-grounded options.
-- "stepper": Phased, sequential walkthrough guiding students through a multi-stage methodology or process.
-- "sequencer": Chronological or algorithmic reordering challenge where students arrange scrambled steps into the correct sequence.
-- "cloze": Active recall passage with fill-in-the-blank tokens [[blank]] or [[blank|hint]] to test precise conceptual vocabulary.
-- "code_lab": Hands-on coding or SQL playground with starter boilerplate, reference solution, and unit test cases.
-- "video": High-impact, concise video walkthrough or demonstration (<4 min) reinforcing complex mechanisms or visual setups.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MANDATORY DIVISION OF LESSON TYPES (EXPLANATIVE VS. SUPPORTIVE):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every lesson format belongs to one of two strict functional tiers:
+
+1. EXPLANATIVE / INTRODUCTORY FORMATS:
+   - Primary: "text" (in-depth theoretical and architectural deep dive).
+   - Secondary: "video" (high-impact demonstration or conceptual visual walkthrough).
+   - CORE MANDATE: These are the ONLY formats authorized to introduce, define, deconstruct, and teach brand-new concepts, theories, platforms, mechanisms, syntax, tools, or architectures from the ground up.
+   - SCAFFOLDING LAW: Every module MUST open with at least one substantive "text" or "video" lesson before any supportive or testing formats are used.
+
+2. SUPPORTIVE / REINFORCERY FORMATS:
+   - Formats: "scenario" (Decision Matrix), "stepper" (Workflow), "sequencer" (Process Reordering), "code_lab" (Hands-on Code), "cards" (Flashcard Recall), "cloze" (Active Vocabulary), "assessment" (Diagnostic Quiz).
+   - CORE MANDATE: These formats exist EXCLUSIVELY to enforce, challenge, exercise, apply, and deepen existing understanding of concepts already taught in preceding explanative lessons.
+   - STRICT ANTI-LAZINESS RULE:
+     * NEVER be lazy and use a Decision Matrix ("scenario") or code lab to introduce an unexplained concept, platform, or tool from scratch!
+     * You must NEVER present a student with a Decision Matrix asking them to choose between, evaluate, or configure platforms, tools, or architectural patterns (e.g. Workbox vs. native Cache API, Kafka vs. RabbitMQ, B-Trees vs. LSM-Trees) unless those specific tools and their trade-offs have ALREADY been thoroughly introduced and explained in an earlier "text" or "video" lesson in the syllabus!
+     * A "scenario" is a high-stakes decision challenge to test critical judgment on KNOWN concepts, NOT a lazy shortcut for teaching new material.
+     * A "code_lab" is for implementing known syntax and architectures against concrete test cases.
+     * "stepper" and "sequencer" are for mastering workflows of already-introduced processes.
+     * "cards" and "cloze" are for active recall of established vocabulary.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURRICULUM STRUCTURING RULES:
@@ -623,16 +634,15 @@ CURRICULUM STRUCTURING RULES:
 1. COURSE SCOPE: A comprehensive course must contain 5 to 6 modules, each with 4 to 5 lessons.
 2. DOMAIN-SPECIFIC FORMAT SELECTION & RUNNER AWARENESS:
    - PLATFORM CODE RUNNER CAPABILITIES & ENVIRONMENTS:
-     The platform supports targeted code execution sandboxes. Rather than avoiding coding exercises, be aware of how each environment operates so you can craft simple, highly explanatory challenges that build deep student understanding:
+     The platform supports targeted code execution sandboxes. Craft simple, highly explanatory challenges that build deep student understanding:
      * "html": Live browser preview sandbox with offline DOM & token validation. Ideal for web development, HTML structure, PWA Web App Manifests, Service Worker registration scripts, and DOM manipulation.
      * "python": Pure CPython AST-checked local sandbox with standard I/O capture. Ideal for algorithmic thinking, data structures, parsing, and backend logic.
      * "sql": In-memory SQLite database. Supply table schemas and seed data in `setup_sql`; students write target queries. Ideal for relational databases and data modeling.
      * "javascript" / "typescript": Headless Node.js runtime for logic, data transformations, and backend utilities.
      * Compiled Systems ("cpp", "c", "java", "rust", "go"): Containerized CLI compilers for systems programming, data structures, and algorithms.
-     Teach students how to use each environment simply and effectively.
    - PURPOSE-DRIVEN PEDAGOGY & DIVERSITY:
      * Maintain healthy diversity across lesson formats ("text", "stepper", "sequencer", "scenario", "cards", "cloze", "code_lab", "video").
-     * CRITICAL: Only choose a lesson type when it genuinely achieves the learning goal for that specific module/lesson, rather than uniformly forcing every format into every module. Each module receives its own dedicated generation step and token window for rich, deep context.
+     * CRITICAL: Only choose a lesson type when it genuinely achieves the learning goal for that specific module/lesson. Each lesson receives its own dedicated generation step and token window for rich, deep context.
    - For technical, engineering, operations, or laboratory workflows: Heavily utilize "stepper" and "sequencer" lessons.
    - For business, management, legal, ethics, or leadership topics: Heavily utilize "scenario" lessons with nuanced consequences.
    - For all subjects: Integrate "cloze" and "cards" for active recall vocabulary retention, and "text" for foundational explanations.
@@ -677,8 +687,12 @@ LESSON TYPE CONTENT SPECIFICATIONS:
 2. "cards" (Atomic Flashcard Deck):
    - Populate `cards`: a list of 4 to 8 standalone, memorable facts, definitions, distinctions, or formulas.
 
-3. "scenario" (Situational Decision Challenge):
-   - Populate `scenario`: Must be situational, dynamic, and realistic to make students genuinely think—NEVER just a single sentence!
+3. "scenario" (Situational Decision Challenge / Decision Matrix):
+   - ANTI-LAZINESS MANDATE:
+     * NEVER use a Decision Matrix ("scenario") for previously unexplained concepts, platforms, or tools!
+     * DO NOT use a Decision Matrix as a lazy substitute for substantive instructional teaching.
+     * The student must ALREADY have learned the tools, concepts, or architectural patterns evaluated in this dilemma from preceding explanative lessons.
+     * Must be situational, dynamic, and realistic to make students genuinely think—NEVER just a single generic sentence!
      * Establish an authentic, multi-paragraph engineering, operational, or architectural dilemma with concrete stakes, systems, and metrics.
      * Integrate competing constraints (e.g. strict latency budgets, offline reliability requirements, resource constraints, legacy dependencies, security risks).
      * Clearly frame the trade-offs so that no choice is trivial or obvious.
@@ -964,6 +978,95 @@ Conclude the final module with a comprehensive final assessment.
     return response.choices[0].message.parsed
 
 
+async def synthesize_single_lesson(
+    course_name: str,
+    course_desc: str,
+    context: str,
+    module_title: str,
+    module_focus: str,
+    module_index: int,
+    total_modules: int,
+    lesson_bp: AILessonBlueprint,
+    lesson_index: int,
+    total_lessons_in_module: int,
+    prior_lessons_context: str,
+    sem: asyncio.Semaphore,
+) -> dict:
+    """
+    Dedicated Stage 2 Generator: Synthesizes complete, university-grade educational
+    content for a single lesson in its own dedicated LLM call with 100% token focus.
+    """
+    is_explanative = lesson_bp.type in ("text", "video")
+
+    if is_explanative:
+        role_instruction = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ROLE: EXPLANATIVE / INTRODUCTORY LESSON (Foundational Grounding)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "- Core Responsibility: Introduce, define, break down, and systematically explain brand-new concepts, theories, platforms, mechanisms, syntax, tools, or architectures from first principles.\n"
+            "- Ground the student in fundamental mechanics and principles before subsequent supportive lessons challenge them.\n"
+            "- For 'text': Deliver high-density, structured Markdown (350-500 words). Include real-world hooks, deep technical prose, comparison tables, and at least ONE deterministic Mermaid diagram (`![Caption](DIAGRAM:mermaid_code)`).\n"
+            "- For 'video': Provide an exact tutorial search query (`YOUTUBE: ...`) and 2-3 concise paragraphs of conceptual takeaways."
+        )
+    else:
+        role_instruction = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "ROLE: SUPPORTIVE / REINFORCERY LESSON (Deepen, Exercise & Challenge)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "- STRICT ANTI-LAZINESS RULE: DO NOT use this lesson to introduce unexplained platforms, tools, or concepts from scratch!\n"
+            "- A Decision Matrix ('scenario'), code lab, stepper, or sequencer must NEVER ask the student to evaluate, choose between, or use unfamiliar tools or concepts that have not already been taught.\n"
+            "- This lesson exists EXCLUSIVELY to enforce, challenge, apply, and deepen the student's existing understanding of the concepts previously introduced:\n"
+            f"{prior_lessons_context or '  (Foundational concepts established in this module)'}\n"
+            "- For 'scenario' (Decision Matrix): DO NOT be lazy. Build an authentic, multi-paragraph operational or engineering dilemma with concrete stakes, specific numbers/metrics, real-world constraints (e.g. strict latency budgets, offline reliability requirements, resource constraints, legacy systems, compliance), and subtle traps where standard textbook answers fail in real production.\n"
+            "- For 'code_lab': Provide production-grade starter code, complete solution code, and comprehensive test cases. For Service Workers, use importScripts() or native Cache API. Do not use bare npm imports.\n"
+            "- For 'stepper' / 'sequencer': Provide full procedural rigor explaining the 'why' behind each step."
+        )
+
+    user_prompt = f"""
+COURSE: {course_name}
+COURSE DESCRIPTION: {course_desc}
+TARGET AUDIENCE: {context}
+
+MODULE ({module_index + 1} of {total_modules}): {module_title}
+MODULE PEDAGOGICAL FOCUS: {module_focus}
+
+TARGET LESSON ({lesson_index + 1} of {total_lessons_in_module}):
+TITLE: {lesson_bp.title}
+TYPE: {lesson_bp.type}
+PEDAGOGICAL GOAL: {lesson_bp.pedagogical_goal}
+
+{role_instruction}
+
+Synthesize complete, production-ready, university-grade educational content for this specific lesson.
+Follow the exact field rules for lesson type '{lesson_bp.type}'.
+""".strip()
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            async with sem:
+                response = await asyncio.wait_for(
+                    client.beta.chat.completions.parse(
+                        model=OPENAI_MODEL,
+                        messages=[
+                            {"role": "system", "content": STAGE_2_SYNTHESIZER_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        response_format=AILesson,
+                        temperature=0.35,
+                    ),
+                    timeout=120.0,
+                )
+                parsed: AILesson = response.choices[0].message.parsed
+                return normalize_lesson(parsed)
+        except Exception as e:
+            last_error = e
+            print(f"[WARNING] Lesson '{lesson_bp.title}' (Module '{module_title}') attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(1.0 + attempt * 1.5)
+
+    raise RuntimeError(f"Failed to generate content for lesson '{lesson_bp.title}': {last_error}")
+
+
 async def synthesize_module_content(
     course_name: str,
     course_desc: str,
@@ -971,57 +1074,40 @@ async def synthesize_module_content(
     module_bp: AIModuleBlueprint,
     module_index: int,
     total_modules: int,
+    sem: asyncio.Semaphore,
+    prior_modules_summary: str = "",
 ) -> dict:
-    """Stage 2: Synthesizes rich educational content for a single module with retries."""
-    lessons_manifest = "\n".join([
-        f"- Lesson {i+1}: '{l.title}' | Type: '{l.type}' | Goal: {l.pedagogical_goal}"
-        for i, l in enumerate(module_bp.lessons)
-    ])
+    """Stage 2: Synthesizes rich educational content by executing each lesson in its own dedicated LLM step."""
+    lesson_tasks = []
+    accumulated_prior = [prior_modules_summary] if prior_modules_summary else []
 
-    user_prompt = f"""
-COURSE: {course_name}
-COURSE DESCRIPTION: {course_desc}
-TARGET AUDIENCE: {context}
+    for l_idx, l_bp in enumerate(module_bp.lessons):
+        prior_context_str = "\n".join(accumulated_prior) if accumulated_prior else "  (Opening lesson of the module)"
 
-MODULE ({module_index + 1} of {total_modules}): {module_bp.title}
-PEDAGOGICAL FOCUS: {module_bp.pedagogical_focus}
-
-LESSONS TO GENERATE FOR THIS MODULE:
-{lessons_manifest}
-
-Synthesize complete, production-ready educational content for every single lesson listed above.
-Follow the exact field rules for each lesson type.
-""".strip()
-
-    # Retry up to 2 times on transient API issues
-    last_error = None
-    for attempt in range(2):
-        try:
-            response = await asyncio.wait_for(
-                client.beta.chat.completions.parse(
-                    model=OPENAI_MODEL,
-                    messages=[
-                        {"role": "system", "content": STAGE_2_SYNTHESIZER_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    response_format=AIModuleContent,
-                    temperature=0.35,
-                ),
-                timeout=160.0,
+        lesson_tasks.append(
+            synthesize_single_lesson(
+                course_name=course_name,
+                course_desc=course_desc,
+                context=context,
+                module_title=module_bp.title,
+                module_focus=module_bp.pedagogical_focus,
+                module_index=module_index,
+                total_modules=total_modules,
+                lesson_bp=l_bp,
+                lesson_index=l_idx,
+                total_lessons_in_module=len(module_bp.lessons),
+                prior_lessons_context=prior_context_str,
+                sem=sem,
             )
-            parsed: AIModuleContent = response.choices[0].message.parsed
-            normalized_lessons = [normalize_lesson(l) for l in parsed.lessons]
-            return {
-                "id": "new_module",
-                "title": module_bp.title,
-                "lessons": normalized_lessons,
-            }
-        except Exception as e:
-            last_error = e
-            print(f"[WARNING] Module '{module_bp.title}' generation attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(1.5)
+        )
+        accumulated_prior.append(f"  - Covered in Lesson {l_idx + 1}: '{l_bp.title}' ({l_bp.type}) -> {l_bp.pedagogical_goal}")
 
-    raise RuntimeError(f"Failed to generate content for module '{module_bp.title}': {last_error}")
+    normalized_lessons = await asyncio.gather(*lesson_tasks)
+    return {
+        "id": "new_module",
+        "title": module_bp.title,
+        "lessons": list(normalized_lessons),
+    }
 
 
 FINAL_EXAM_PROMPT = """
@@ -1111,19 +1197,22 @@ async def draft_course_curriculum(topic: str, context: str) -> dict:
             f"'{blueprint.course_name}' with {len(blueprint.modules)} modules."
         )
 
-        # 2. Stage 2: Concurrently synthesize all modules
-        semaphore = asyncio.Semaphore(3)
+        # 2. Stage 2: Concurrently synthesize all modules with dedicated per-lesson steps
+        lesson_semaphore = asyncio.Semaphore(8)
 
         async def synthesize_one(idx: int, mbp: AIModuleBlueprint) -> dict:
-            async with semaphore:
-                return await synthesize_module_content(
-                    course_name=blueprint.course_name,
-                    course_desc=blueprint.description,
-                    context=context,
-                    module_bp=mbp,
-                    module_index=idx,
-                    total_modules=len(blueprint.modules),
-                )
+            prior_mods = [f"Module {m_i + 1}: '{m.title}' ({m.pedagogical_focus})" for m_i, m in enumerate(blueprint.modules[:idx])]
+            prior_summary = "PRIOR MODULES IN SYLLABUS:\n" + "\n".join(prior_mods) if prior_mods else ""
+            return await synthesize_module_content(
+                course_name=blueprint.course_name,
+                course_desc=blueprint.description,
+                context=context,
+                module_bp=mbp,
+                module_index=idx,
+                total_modules=len(blueprint.modules),
+                sem=lesson_semaphore,
+                prior_modules_summary=prior_summary,
+            )
 
         tasks = [synthesize_one(i, mbp) for i, mbp in enumerate(blueprint.modules)]
         modules_data = await asyncio.gather(*tasks)
