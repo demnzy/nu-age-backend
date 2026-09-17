@@ -743,22 +743,32 @@ LESSON TYPE CONTENT SPECIFICATIONS:
 """.strip()
 
 
-def _normalize_service_worker_code(text: str) -> str:
+def _normalize_code_lab_code(text: str, language: str = "javascript") -> str:
     """
-    Transforms bare ES module imports of Workbox into standard Service Worker
-    `importScripts(...)` CDN imports and destructuring, preventing `SyntaxError: Cannot use import statement outside a module`.
+    Normalizes code lab code to eliminate fatal runtime syntax errors:
+    1. Transforms bare ES module imports of Workbox into standard Service Worker
+       `importScripts(...)` CDN imports and destructuring.
+    2. Transforms any generic ES module imports into Node.js CommonJS `require(...)`
+       and `module.exports`, preventing `SyntaxError: Cannot use import statement outside a module`.
     """
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not text.strip():
         return text
-    if "workbox-routing" in text or "workbox-strategies" in text:
+
+    lang = (language or "javascript").lower().strip()
+    if lang not in ("javascript", "js", "typescript", "ts", ""):
+        return text
+
+    # 1. Handle Workbox Service Worker imports (all submodules: routing, strategies, precaching, core, etc.)
+    if "workbox" in text.lower():
+        def _replace_wb(m: re.Match) -> str:
+            items = m.group(1).strip()
+            pkg = m.group(2).strip()
+            submod = pkg.replace("workbox-", "").replace("-", "_")
+            return f"const {{ {items} }} = workbox.{submod};"
+
         text = re.sub(
-            r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"]workbox-routing['\"];?",
-            r"const { \1 } = workbox.routing;",
-            text
-        )
-        text = re.sub(
-            r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"]workbox-strategies['\"];?",
-            r"const { \1 } = workbox.strategies;",
+            r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"](workbox-[a-z0-9\-]+)['\"];?",
+            _replace_wb,
             text
         )
         if "workbox-sw.js" not in text:
@@ -767,6 +777,29 @@ def _normalize_service_worker_code(text: str) -> str:
                 "importScripts('https://storage.googleapis.com/workbox-cdn/releases/6.4.1/workbox-sw.js');\n\n"
                 + text.lstrip()
             )
+
+    # 2. Handle generic ES module imports: convert to CommonJS require
+    # Case a: import { a, b } from 'mod'
+    text = re.sub(
+        r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"]([^'\"]+)['\"];?",
+        r"const { \1 } = require('\2');",
+        text
+    )
+    # Case b: import * as name from 'mod'
+    text = re.sub(
+        r"import\s*\*\s*as\s+([a-zA-Z0-9_$]+)\s+from\s*['\"]([^'\"]+)['\"];?",
+        r"const \1 = require('\2');",
+        text
+    )
+    # Case c: import name from 'mod'
+    text = re.sub(
+        r"import\s+([a-zA-Z0-9_$]+)\s+from\s*['\"]([^'\"]+)['\"];?",
+        r"const \1 = require('\2');",
+        text
+    )
+    # Case d: export default
+    text = re.sub(r"export\s+default\s+", "module.exports = ", text)
+
     return text
 
 
@@ -868,10 +901,11 @@ def normalize_lesson(lesson: AILesson) -> dict:
             content["explanation"] = "Review the context of the sentence to determine the correct technical term."
 
     elif t == "code_lab":
+        code_lang = content.get("language") or "javascript"
         if content.get("starter_code"):
-            content["starter_code"] = _normalize_service_worker_code(content["starter_code"])
+            content["starter_code"] = _normalize_code_lab_code(content["starter_code"], code_lang)
         if content.get("solution_code"):
-            content["solution_code"] = _normalize_service_worker_code(content["solution_code"])
+            content["solution_code"] = _normalize_code_lab_code(content["solution_code"], code_lang)
 
         if not content.get("instructions", "").strip():
             content["instructions"] = f"Implement the required functionality for {lesson.title}."
