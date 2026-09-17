@@ -26,9 +26,9 @@ async def test():
     print(lesson_text)
 
     assert "mermaid.ink" in lesson_text, "Mermaid diagram failed to resolve"
-    assert "pollinations.ai" in lesson_text, "Educational diagram illustration failed to resolve"
+    assert "pollinations.ai" not in lesson_text, "Pollinations AI should NEVER appear in output!"
     assert "unsplash" not in lesson_text.lower(), "Unsplash should NOT appear anywhere!"
-    print("\n[SUCCESS] Zero Unsplash! All visual placeholders resolve to crisp Mermaid diagrams and educational textbook illustrations.")
+    print("\n[SUCCESS] 100% Deterministic Diagrams! Zero Pollinations and Zero Unsplash. All visual placeholders resolve to crisp vector diagrams.")
 
 if __name__ == "__main__":
     asyncio.run(test())
