@@ -126,6 +126,86 @@ def _convert_query_to_mermaid(query: str, alt: str = "") -> str:
         )
 
 
+def _replace_diagram_placeholders(text: str) -> str:
+    """
+    Replaces `![alt](DIAGRAM:mermaid_code)` placeholders with hotlinkable mermaid.ink URLs.
+    Uses balanced parenthesis tracking so diagram code containing parentheses
+    (e.g., function calls like `register()`, or node brackets like `id([text])`)
+    does not prematurely truncate the match.
+    """
+    start_token = "(DIAGRAM:"
+    idx = 0
+    res = []
+    text_len = len(text)
+
+    while idx < text_len:
+        pos = text.find(start_token, idx)
+        if pos == -1:
+            res.append(text[idx:])
+            break
+
+        # Check for opening '![' before pos
+        bang_pos = text.rfind("![", idx, pos)
+        if bang_pos == -1 or "]" not in text[bang_pos:pos]:
+            res.append(text[idx:pos + len(start_token)])
+            idx = pos + len(start_token)
+            continue
+
+        close_bracket = text.find("]", bang_pos, pos)
+        alt = text[bang_pos + 2:close_bracket]
+
+        # Append text leading up to '!['
+        res.append(text[idx:bang_pos])
+
+        # Scan forward tracking parenthesis depth starting at 1 for the '(' in '(DIAGRAM:'
+        content_start = pos + len(start_token)
+        depth = 1
+        curr = content_start
+        while curr < text_len and depth > 0:
+            ch = text[curr]
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            curr += 1
+
+        if depth == 0:
+            diagram_code = text[content_start:curr].strip()
+            url = _render_mermaid_url(diagram_code)
+            res.append(f"![{alt}]({url})")
+            idx = curr + 1
+        else:
+            res.append(text[bang_pos:pos + len(start_token)])
+            idx = pos + len(start_token)
+
+    return "".join(res)
+
+
+def _heal_truncated_mermaid_diagrams(text: str) -> str:
+    """
+    Repairs legacy or unhealed diagram markdown where a closing parenthesis in Mermaid syntax
+    prematurely terminated the URL, leaving dangling diagram statements followed by ')'.
+    """
+    pattern = re.compile(
+        r'!\[([^\]]*)\]\(https://mermaid\.ink/img/([^?]+)\?bgColor=FFFFFF\)\s*\n((?:[ \t]+[^\n]+\n?)+)\s*\)',
+        re.MULTILINE
+    )
+    def _heal(m: re.Match) -> str:
+        alt = m.group(1)
+        b64_part = m.group(2)
+        dangling = m.group(3).strip()
+        try:
+            padded = b64_part + '=' * (-len(b64_part) % 4)
+            prefix = base64.urlsafe_b64decode(padded.encode('utf-8')).decode('utf-8', errors='ignore')
+            full_code = prefix + ')\n  ' + dangling
+            return f"![{alt}]({_render_mermaid_url(full_code)})"
+        except Exception:
+            return m.group(0)
+    return pattern.sub(_heal, text)
+
+
 async def resolve_image_placeholders(data: dict) -> dict:
     """
     Walk the parsed course draft:
@@ -134,15 +214,13 @@ async def resolve_image_placeholders(data: dict) -> dict:
     Zero reliance on Pollinations.ai or Unsplash stock photography.
     """
     def replace_in_text(text: str) -> str:
-        # 1. Resolve Mermaid diagram placeholders
-        def _sub_diag(m: re.Match) -> str:
-            alt, code = m.group(1), m.group(2)
-            url = _render_mermaid_url(code)
-            return f"![{alt}]({url})"
+        # 1. Resolve Mermaid diagram placeholders using balanced parenthesis parsing
+        text = _replace_diagram_placeholders(text)
 
-        text = DIAGRAM_PLACEHOLDER_RE.sub(_sub_diag, text)
+        # 2. Heal any previously truncated Mermaid URLs
+        text = _heal_truncated_mermaid_diagrams(text)
 
-        # 2. Resolve image placeholders into structured deterministic diagrams
+        # 3. Resolve image placeholders into structured deterministic diagrams
         def _sub_img(m: re.Match) -> str:
             alt, query = m.group(1), m.group(2)
             mermaid_code = _convert_query_to_mermaid(query, alt)
@@ -153,7 +231,7 @@ async def resolve_image_placeholders(data: dict) -> dict:
 
     def walk(node):
         if isinstance(node, str):
-            if IMAGE_PLACEHOLDER_RE.search(node) or DIAGRAM_PLACEHOLDER_RE.search(node):
+            if "(DIAGRAM:" in node or IMAGE_PLACEHOLDER_RE.search(node) or "mermaid.ink" in node:
                 return replace_in_text(node)
             return node
         elif isinstance(node, dict):
@@ -645,8 +723,11 @@ LESSON TYPE CONTENT SPECIFICATIONS:
      * "html": For web, frontend, PWA, and DOM exercises. Renders with live browser preview and offline markup analysis. Starter code can include full HTML structure (`<!DOCTYPE html>`), `<style>`, `<script>`, Service Worker registrations, and offline caching logic. Test cases check for key tags, attributes, or code tokens.
      * "python": Sandboxed local CPython environment with AST checks. Reads stdin, writes stdout.
      * "sql": In-memory SQLite database. Provide DDL schema and seed rows in `setup_sql`; students write SQL queries.
-     * "javascript" / "typescript": Headless Node.js runtime for backend logic and data processing.
-     * "cpp", "c", "java", "rust", "go": Containerized CLI execution environments.
+      * "javascript" / "typescript": Headless Node.js runtime for backend logic and data processing.
+        IMPORTANT: Standard sandboxes execute code as Node.js CLI scripts without npm modules installed. NEVER output bare ES module imports (e.g. `import ... from 'workbox-...'` or `import ... from 'package'`). For Service Worker / PWA caching exercises, either:
+        (a) Use `language: "html"` with browser preview and `<script>`, or
+        (b) For standalone Service Worker JS, use `importScripts('https://storage.googleapis.com/workbox-cdn/releases/6.4.1/workbox-sw.js')` with `const { registerRoute } = workbox.routing;`, or native Service Worker Cache APIs (`self.addEventListener('fetch', ...)`, `caches.open(...)`).
+      * "cpp", "c", "java", "rust", "go": Containerized CLI execution environments.
    - Populate `language`: Select the matching language: "html", "python", "sql", "javascript", "typescript", "cpp", "c", or "java".
    - Populate `instructions`: Comprehensive problem statement, input/output requirements, and constraints designed to build real student understanding.
    - Populate `starter_code`: Clean, idiomatic boilerplate with proper structure, signatures, docstrings, and `# TODO` / `// TODO` / `<!-- TODO -->` markers. Must never be empty.
@@ -660,6 +741,33 @@ LESSON TYPE CONTENT SPECIFICATIONS:
      Example: `YOUTUBE: binary search algorithm explained in 3 minutes`
    - Populate `accompanying_text`: 2 to 3 concise paragraphs of lecture summary, key principles demonstrated in the video, and practical takeaways.
 """.strip()
+
+
+def _normalize_service_worker_code(text: str) -> str:
+    """
+    Transforms bare ES module imports of Workbox into standard Service Worker
+    `importScripts(...)` CDN imports and destructuring, preventing `SyntaxError: Cannot use import statement outside a module`.
+    """
+    if not isinstance(text, str):
+        return text
+    if "workbox-routing" in text or "workbox-strategies" in text:
+        text = re.sub(
+            r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"]workbox-routing['\"];?",
+            r"const { \1 } = workbox.routing;",
+            text
+        )
+        text = re.sub(
+            r"import\s*\{\s*([^}]+)\s*\}\s*from\s*['\"]workbox-strategies['\"];?",
+            r"const { \1 } = workbox.strategies;",
+            text
+        )
+        if "workbox-sw.js" not in text:
+            text = (
+                "// Load Workbox from Google CDN for standalone service worker\n"
+                "importScripts('https://storage.googleapis.com/workbox-cdn/releases/6.4.1/workbox-sw.js');\n\n"
+                + text.lstrip()
+            )
+    return text
 
 
 def normalize_lesson(lesson: AILesson) -> dict:
@@ -760,6 +868,11 @@ def normalize_lesson(lesson: AILesson) -> dict:
             content["explanation"] = "Review the context of the sentence to determine the correct technical term."
 
     elif t == "code_lab":
+        if content.get("starter_code"):
+            content["starter_code"] = _normalize_service_worker_code(content["starter_code"])
+        if content.get("solution_code"):
+            content["solution_code"] = _normalize_service_worker_code(content["solution_code"])
+
         if not content.get("instructions", "").strip():
             content["instructions"] = f"Implement the required functionality for {lesson.title}."
         if not content.get("language"):
