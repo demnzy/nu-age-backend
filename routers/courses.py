@@ -580,7 +580,6 @@ def bulk_sync_progress(
         completed_lessons = db.query(models.LessonProgress).filter(
             models.LessonProgress.course_id == course_id,
             models.LessonProgress.student_id == user.id,
-            models.LessonProgress.status == "completed",
         ).count()
 
         if total_lessons > 0:
@@ -645,23 +644,34 @@ async def rate_course(
     if not enrollment:
         raise HTTPException(status_code=403, detail="You must be enrolled to rate this course.")
         
-    if enrollment.progress < 99.0 and enrollment.completed_at is None:
+    # Check if user has concluded the course:
+    # 1. certificate_url is already present, OR
+    # 2. completed_at is set, OR
+    # 3. progress >= 99.0, OR
+    # 4. all lessons have been recorded in LessonProgress
+    is_concluded = False
+    if enrollment.certificate_url is not None or enrollment.completed_at is not None or (enrollment.progress and enrollment.progress >= 99.0):
+        is_concluded = True
+    else:
         total_l = db.query(func.count(models.Lesson.id)).join(
             models.Module, models.Module.id == models.Lesson.module_id
         ).filter(models.Module.course_id == c_uuid).scalar() or 0
         
-        comp_l = db.query(func.count(models.LessonProgress.id)).filter(
+        comp_l = db.query(func.count(func.distinct(models.LessonProgress.lesson_id))).filter(
             models.LessonProgress.course_id == c_uuid,
             models.LessonProgress.student_id == user.id
         ).scalar() or 0
         
-        if total_l > 0 and comp_l >= total_l:
-            enrollment.progress = 100.0
-            if not enrollment.completed_at:
-                enrollment.completed_at = func.now()
-            db.flush()
-        else:
-            raise HTTPException(status_code=403, detail="You must complete the course before rating it.")
+        if total_l == 0 or comp_l >= total_l:
+            is_concluded = True
+
+    if is_concluded:
+        enrollment.progress = 100.0
+        if not enrollment.completed_at:
+            enrollment.completed_at = func.now()
+        db.flush()
+    else:
+        raise HTTPException(status_code=403, detail="You must complete the course before rating it.")
         
     course = db.query(models.Course).filter(models.Course.id == c_uuid).first()
     if not course:

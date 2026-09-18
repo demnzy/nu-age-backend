@@ -31,6 +31,11 @@ async def generate_and_upload_certificate(
         
     if enrollment.certificate_url:
         print(f"[DEBUG] EARLY RETURN: Certificate already exists in DB: {enrollment.certificate_url}")
+        if (enrollment.progress or 0) < 100.0 or not enrollment.completed_at:
+            enrollment.progress = 100.0
+            if not enrollment.completed_at:
+                enrollment.completed_at = func.now()
+            db.commit()
         return {
             "message": "Certificate already generated", 
             "url": enrollment.certificate_url, 
@@ -99,6 +104,9 @@ async def generate_and_upload_certificate(
         print("[DEBUG] Attempting to save to Database...")
         enrollment.certificate_url = cert_url
         enrollment.credential_id = credential_id
+        enrollment.progress = 100.0
+        if not enrollment.completed_at:
+            enrollment.completed_at = func.now()
         db.commit()
         
         # Force SQLAlchemy to reload the row to verify it actually saved
