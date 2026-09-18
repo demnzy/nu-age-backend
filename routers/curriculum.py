@@ -246,15 +246,15 @@ def mark_lesson_complete(
         .scalar()
     )
 
-    # Count lessons completed by THIS student
-    completed_lessons = db.query(func.count(models.LessonProgress.id)).filter_by(
+    # Count distinct lessons completed by THIS student
+    completed_lessons = db.query(func.count(func.distinct(models.LessonProgress.lesson_id))).filter_by(
         course_id=course_id, student_id=user.id
-    ).scalar()
+    ).scalar() or 0
 
     # Calculate percentage safely
     if total_lessons > 0:
         new_percentage = round((completed_lessons / total_lessons) * 100.0, 2)
-        if completed_lessons >= total_lessons or new_percentage >= 99.9:
+        if completed_lessons >= total_lessons or new_percentage >= 99.0:
             enrollment.progress = 100.0
             if enrollment.completed_at is None:
                 enrollment.completed_at = func.now()
