@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
@@ -36,6 +36,7 @@ app.include_router(courses.router, tags=["Courses"])
 app.include_router(categories.router, tags=["Categories"])
 app.include_router(enrollments.router,tags=["enrollments"])
 app.include_router(organisations.router,tags=["organisations"])
+app.include_router(cohorts.router, tags=["Cohorts & Trainings"])
 app.include_router(media.router, tags=["Media Handling"])
 app.include_router(curriculum.router, tags=["Curriculum Management"])
 app.include_router(playlists.router, tags=["Playlists"])

@@ -4,7 +4,7 @@ from database import Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from schemas import Roles, Gender
@@ -85,6 +85,7 @@ class Organisation(Base):
     owner = relationship("User", foreign_keys=[owner_id], backref="owns")
     plan = relationship("Plan", back_populates="organisations", lazy="joined")
     courses = relationship("Course", back_populates="organisation")
+    cohorts = relationship("Cohort", back_populates="organisation", cascade="all, delete-orphan")
     
 class Plan(Base):
     __tablename__ = "plans"
@@ -551,3 +552,148 @@ class RefreshToken(Base):
     device_label = Column(String, nullable=True)
  
     user = relationship("models.User", backref="refresh_tokens")
+
+
+# =========================================================================
+# COHORTS, TRAININGS & SCHEDULED EXAMS
+# =========================================================================
+
+class Cohort(Base):
+    __tablename__ = "cohorts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    start_date = Column(DateTime(timezone=True), nullable=False)
+    end_date = Column(DateTime(timezone=True), nullable=False)
+    status = Column(String, nullable=False, default="upcoming")  # upcoming, active, completed, archived
+    banner_url = Column(String, nullable=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    organisation = relationship("Organisation", back_populates="cohorts")
+    creator = relationship("User", foreign_keys=[created_by])
+    members = relationship("CohortMember", back_populates="cohort", cascade="all, delete-orphan")
+    courses = relationship("CohortCourse", back_populates="cohort", cascade="all, delete-orphan", order_by="CohortCourse.order_index")
+    exams = relationship("CohortExam", back_populates="cohort", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_cohorts_org_status", "organisation_id", "status"),
+        Index("ix_cohorts_dates", "organisation_id", "start_date", "end_date"),
+    )
+
+
+class CohortMember(Base):
+    __tablename__ = "cohort_members"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    cohort_id = Column(UUID(as_uuid=True), ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String, nullable=False, default="enrolled")  # enrolled, active, completed, dropped
+    enrolled_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    cohort = relationship("Cohort", back_populates="members")
+    user = relationship("User", backref="cohort_memberships")
+
+    __table_args__ = (
+        UniqueConstraint("cohort_id", "user_id", name="uq_cohort_member"),
+        Index("ix_cohort_members_user", "user_id", "cohort_id"),
+    )
+
+
+class CohortCourse(Base):
+    __tablename__ = "cohort_courses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    cohort_id = Column(UUID(as_uuid=True), ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    cohort = relationship("Cohort", back_populates="courses")
+    course = relationship("Course")
+
+    __table_args__ = (
+        UniqueConstraint("cohort_id", "course_id", name="uq_cohort_course"),
+        Index("ix_cohort_courses_cohort", "cohort_id", "order_index"),
+    )
+
+
+class CohortExam(Base):
+    __tablename__ = "cohort_exams"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    cohort_id = Column(UUID(as_uuid=True), ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    instructions = Column(Text, nullable=True)
+    opens_at = Column(DateTime(timezone=True), nullable=False)
+    closes_at = Column(DateTime(timezone=True), nullable=False)
+    duration_minutes = Column(Integer, nullable=False, default=60)
+    pass_percentage = Column(Float, nullable=False, default=70.0)
+    max_attempts = Column(Integer, nullable=False, default=1)
+    shuffle_questions = Column(Boolean, nullable=False, default=True)
+    show_immediate_results = Column(Boolean, nullable=False, default=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    cohort = relationship("Cohort", back_populates="exams")
+    creator = relationship("User", foreign_keys=[created_by])
+    questions = relationship("CohortExamQuestion", back_populates="exam", cascade="all, delete-orphan", order_by="CohortExamQuestion.order_index")
+    submissions = relationship("CohortExamSubmission", back_populates="exam", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_cohort_exams_cohort_window", "cohort_id", "opens_at", "closes_at"),
+    )
+
+
+class CohortExamQuestion(Base):
+    __tablename__ = "cohort_exam_questions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    exam_id = Column(UUID(as_uuid=True), ForeignKey("cohort_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    question_text = Column(Text, nullable=False)
+    options = Column(JSONB, nullable=False)  # List of strings e.g. ["Option A", "Option B", "Option C", "Option D"]
+    correct_index = Column(Integer, nullable=False, default=0)  # 0-indexed correct option
+    explanation = Column(Text, nullable=True)
+    points = Column(Float, nullable=False, default=1.0)
+    order_index = Column(Integer, nullable=False, default=0)
+
+    # Relationships
+    exam = relationship("CohortExam", back_populates="questions")
+
+
+class CohortExamSubmission(Base):
+    __tablename__ = "cohort_exam_submissions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    exam_id = Column(UUID(as_uuid=True), ForeignKey("cohort_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    cohort_id = Column(UUID(as_uuid=True), ForeignKey("cohorts.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    attempt_number = Column(Integer, nullable=False, default=1)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Integer, default=0)
+    score = Column(Float, default=0.0)
+    max_score = Column(Float, default=0.0)
+    percentage = Column(Float, default=0.0)
+    passed = Column(Boolean, default=False)
+    answers = Column(JSONB, nullable=True)  # List of {question_id, chosen_index, correct_index, is_correct, points}
+    status = Column(String, default="in_progress")  # in_progress, submitted, timed_out, graded
+
+    # Relationships
+    exam = relationship("CohortExam", back_populates="submissions")
+    user = relationship("User", backref="cohort_exam_submissions")
+
+    __table_args__ = (
+        Index("ix_cohort_exam_sub_user_exam", "exam_id", "user_id"),
+        Index("ix_cohort_exam_sub_cohort", "cohort_id", "user_id"),
+    )

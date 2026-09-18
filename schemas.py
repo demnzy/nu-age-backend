@@ -692,3 +692,68 @@ class PlaylistEnrollmentOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# =========================================================================
+# COHORT & EXAM SCHEMAS
+# =========================================================================
+
+class CohortCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    start_date: datetime
+    end_date: datetime
+    status: Optional[str] = "upcoming"
+    banner_url: Optional[str] = None
+    course_ids: Optional[List[UUID]] = []
+    member_ids: Optional[List[UUID]] = []
+
+class CohortUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status: Optional[str] = None
+    banner_url: Optional[str] = None
+
+class CohortCourseAdd(BaseModel):
+    course_ids: List[UUID]
+
+class CohortMemberAdd(BaseModel):
+    user_ids: List[UUID]
+
+class CohortExamCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    opens_at: datetime
+    closes_at: datetime
+    duration_minutes: int = 60
+    pass_percentage: float = 70.0
+    max_attempts: int = 1
+    shuffle_questions: bool = True
+    show_immediate_results: bool = True
+
+class CohortExamUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    opens_at: Optional[datetime] = None
+    closes_at: Optional[datetime] = None
+    duration_minutes: Optional[int] = None
+    pass_percentage: Optional[float] = None
+    max_attempts: Optional[int] = None
+    shuffle_questions: Optional[bool] = None
+    show_immediate_results: Optional[bool] = None
+
+class CohortExamQuestionCreate(BaseModel):
+    question_text: str
+    options: List[str]
+    correct_index: int = 0
+    explanation: Optional[str] = None
+    points: float = 1.0
+    order_index: int = 0
+
+class CohortExamSubmissionCreate(BaseModel):
+    answers: List[dict]  # [{"question_id": str, "chosen_index": int}]
+    duration_seconds: int = 0
