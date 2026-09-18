@@ -733,6 +733,8 @@ class CohortExamCreate(BaseModel):
     max_attempts: int = 1
     shuffle_questions: bool = True
     show_immediate_results: bool = True
+    security_mode: Optional[str] = "monitored"  # strict, monitored, relaxed
+    max_violations: Optional[int] = 2
 
 class CohortExamUpdate(BaseModel):
     title: Optional[str] = None
@@ -745,6 +747,8 @@ class CohortExamUpdate(BaseModel):
     max_attempts: Optional[int] = None
     shuffle_questions: Optional[bool] = None
     show_immediate_results: Optional[bool] = None
+    security_mode: Optional[str] = None
+    max_violations: Optional[int] = None
 
 class CohortExamQuestionCreate(BaseModel):
     question_text: str
@@ -757,3 +761,6 @@ class CohortExamQuestionCreate(BaseModel):
 class CohortExamSubmissionCreate(BaseModel):
     answers: List[dict]  # [{"question_id": str, "chosen_index": int}]
     duration_seconds: int = 0
+    violations_count: Optional[int] = 0
+    violation_log: Optional[List[dict]] = []
+    session_token: Optional[str] = None

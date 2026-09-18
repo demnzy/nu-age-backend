@@ -640,6 +640,8 @@ class CohortExam(Base):
     max_attempts = Column(Integer, nullable=False, default=1)
     shuffle_questions = Column(Boolean, nullable=False, default=True)
     show_immediate_results = Column(Boolean, nullable=False, default=True)
+    security_mode = Column(String, nullable=False, default="monitored")  # strict (immediate auto-submit), monitored (warnings counter), relaxed
+    max_violations = Column(Integer, nullable=False, default=2)
     created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -687,7 +689,10 @@ class CohortExamSubmission(Base):
     percentage = Column(Float, default=0.0)
     passed = Column(Boolean, default=False)
     answers = Column(JSONB, nullable=True)  # List of {question_id, chosen_index, correct_index, is_correct, points}
-    status = Column(String, default="in_progress")  # in_progress, submitted, timed_out, graded
+    status = Column(String, default="in_progress")  # in_progress, submitted, timed_out, graded, flagged_violation
+    violations_count = Column(Integer, default=0)
+    violation_log = Column(JSONB, nullable=True)  # List of {"timestamp": str, "type": str, "details": str}
+    session_token = Column(String, nullable=True)  # Single-device active session binding
 
     # Relationships
     exam = relationship("CohortExam", back_populates="submissions")

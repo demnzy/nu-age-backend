@@ -507,6 +507,8 @@ def create_cohort_exam(
         max_attempts=data.max_attempts,
         shuffle_questions=data.shuffle_questions,
         show_immediate_results=data.show_immediate_results,
+        security_mode=data.security_mode or "monitored",
+        max_violations=data.max_violations or 2,
         created_by=user.id,
     )
     db.add(exam)
@@ -572,6 +574,8 @@ def get_cohort_exam(
         "max_attempts": exam.max_attempts,
         "shuffle_questions": exam.shuffle_questions,
         "show_immediate_results": exam.show_immediate_results,
+        "security_mode": exam.security_mode or "monitored",
+        "max_violations": exam.max_violations or 2,
         "status": ex_status,
         "questions": questions_payload,
         "is_admin": is_admin,
@@ -932,6 +936,7 @@ def start_or_resume_exam(
         exam_id=exam_id, user_id=user.id, status="in_progress"
     ).first()
 
+    session_token = str(uuid.uuid4())
     if not active_sub:
         active_sub = models.CohortExamSubmission(
             exam_id=exam_id,
@@ -940,10 +945,14 @@ def start_or_resume_exam(
             attempt_number=completed_attempts + 1,
             started_at=now,
             status="in_progress",
+            session_token=session_token,
         )
         db.add(active_sub)
         db.commit()
         db.refresh(active_sub)
+    else:
+        active_sub.session_token = session_token
+        db.commit()
 
     # Fetch questions with correct answers HIDDEN
     query = db.query(models.CohortExamQuestion).filter_by(exam_id=exam_id)
@@ -979,6 +988,9 @@ def start_or_resume_exam(
         "remaining_seconds": remaining_seconds,
         "attempt_number": active_sub.attempt_number,
         "max_attempts": exam.max_attempts,
+        "security_mode": exam.security_mode or "monitored",
+        "max_violations": exam.max_violations or 2,
+        "session_token": active_sub.session_token,
         "questions": questions_payload,
     }
 
@@ -1056,7 +1068,15 @@ def submit_exam(
     sub.passed = passed
     sub.duration_seconds = data.duration_seconds
     sub.submitted_at = now
-    sub.status = "submitted"
+    sub.violations_count = data.violations_count or 0
+    sub.violation_log = data.violation_log or []
+
+    # Flag if violations exceeded allowance or strict mode was violated
+    if (exam.security_mode == "strict" and sub.violations_count > 0) or (sub.violations_count > (exam.max_violations or 2)):
+        sub.status = "flagged_violation"
+    else:
+        sub.status = "submitted"
+
     sub.answers = detailed_results
 
     db.commit()
@@ -1123,9 +1143,11 @@ def get_exam_gradebook(
         u_id = str(u.id)
         sub = sub_map.get(u_id)
 
-        if sub and sub.status in ("submitted", "graded", "timed_out"):
+        if sub and sub.status in ("submitted", "graded", "timed_out", "flagged_violation"):
             status = "PASSED" if sub.passed else "FAILED"
-            if sub.passed: passed_count += 1
+            if sub.status == "flagged_violation":
+                status = "FLAGGED_VIOLATION"
+            if sub.passed and sub.status != "flagged_violation": passed_count += 1
             scores.append(sub.percentage)
             roster.append({
                 "user_id": u_id,
@@ -1136,6 +1158,8 @@ def get_exam_gradebook(
                 "max_score": sub.max_score,
                 "percentage": sub.percentage,
                 "passed": sub.passed,
+                "violations_count": sub.violations_count or 0,
+                "violation_log": sub.violation_log or [],
                 "duration_seconds": sub.duration_seconds,
                 "submitted_at": sub.submitted_at.isoformat() if sub.submitted_at else None,
                 "submission_id": str(sub.id),
@@ -1238,3 +1262,122 @@ def export_exam_gradebook(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# =========================================================================
+# 7. LEARNER-FACING COHORTS & EXAMS AGGREGATION
+# =========================================================================
+
+learner_router = APIRouter(prefix="/organisations/learner", tags=["Learner Cohorts"])
+
+@learner_router.get("/my-cohorts")
+def get_learner_cohorts(
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    cohort_members = (
+        db.query(models.CohortMember)
+        .filter(models.CohortMember.user_id == user.id)
+        .all()
+    )
+    if not cohort_members:
+        return {"cohorts": [], "active_urgent_exams": []}
+
+    cohort_ids = [cm.cohort_id for cm in cohort_members]
+    cohorts = (
+        db.query(models.Cohort)
+        .options(joinedload(models.Cohort.organisation))
+        .filter(models.Cohort.id.in_(cohort_ids))
+        .all()
+    )
+
+    now = datetime.now(timezone.utc)
+    cohorts_list = []
+    active_urgent_exams = []
+
+    for c in cohorts:
+        org_name = c.organisation.name if c.organisation else "Organisation"
+        org_logo = c.organisation.logo if c.organisation else None
+
+        cohort_courses = (
+            db.query(models.CohortCourse)
+            .options(joinedload(models.CohortCourse.course))
+            .filter_by(cohort_id=c.id)
+            .order_by(models.CohortCourse.order_index.asc())
+            .all()
+        )
+        courses_data = []
+        for cc in cohort_courses:
+            if cc.course:
+                enr = db.query(models.Enrollment.progress).filter_by(student_id=user.id, course_id=cc.course.id).first()
+                prog = enr[0] if enr else 0.0
+                courses_data.append({
+                    "id": str(cc.course.id),
+                    "name": cc.course.name,
+                    "description": cc.course.description,
+                    "image_url": cc.course.image_url,
+                    "progress": prog,
+                })
+
+        exams = db.query(models.CohortExam).filter_by(cohort_id=c.id).order_by(models.CohortExam.opens_at.asc()).all()
+        exams_data = []
+        for ex in exams:
+            if ex.closes_at < now:
+                ex_st = "CLOSED"
+            elif ex.opens_at <= now <= ex.closes_at:
+                ex_st = "OPEN_NOW"
+            else:
+                ex_st = "SCHEDULED"
+
+            user_sub = db.query(models.CohortExamSubmission).filter_by(exam_id=ex.id, user_id=user.id).first()
+            is_completed = user_sub is not None and user_sub.status in ("submitted", "graded", "flagged_violation", "timed_out")
+
+            ex_item = {
+                "id": str(ex.id),
+                "cohort_id": str(c.id),
+                "org_id": str(c.organisation_id),
+                "org_name": org_name,
+                "title": ex.title,
+                "description": ex.description,
+                "instructions": ex.instructions,
+                "opens_at": ex.opens_at.isoformat(),
+                "closes_at": ex.closes_at.isoformat(),
+                "duration_minutes": ex.duration_minutes,
+                "pass_percentage": ex.pass_percentage,
+                "security_mode": ex.security_mode or "monitored",
+                "max_violations": ex.max_violations or 2,
+                "status": ex_st,
+                "is_completed": is_completed,
+                "submission": {
+                    "score": user_sub.score,
+                    "percentage": user_sub.percentage,
+                    "passed": user_sub.passed,
+                    "status": user_sub.status,
+                    "violations_count": user_sub.violations_count or 0,
+                } if user_sub else None,
+            }
+            exams_data.append(ex_item)
+
+            if ex_st == "OPEN_NOW" and not is_completed:
+                active_urgent_exams.append(ex_item)
+            elif ex_st == "SCHEDULED" and (ex.opens_at - now).total_seconds() <= 172800:
+                active_urgent_exams.append(ex_item)
+
+        cohorts_list.append({
+            "id": str(c.id),
+            "organisation_id": str(c.organisation_id),
+            "organisation_name": org_name,
+            "organisation_logo": org_logo,
+            "name": c.name,
+            "description": c.description,
+            "start_date": c.start_date.isoformat() if c.start_date else None,
+            "end_date": c.end_date.isoformat() if c.end_date else None,
+            "status": c.status,
+            "courses": courses_data,
+            "exams": exams_data,
+        })
+
+    return {
+        "cohorts": cohorts_list,
+        "active_urgent_exams": active_urgent_exams,
+    }
