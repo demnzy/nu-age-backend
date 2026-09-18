@@ -5,6 +5,27 @@ from routers import enrollments, media, users,courses,categories, organisations,
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
+
+# Auto-heal missing columns on existing tables
+def _run_migrations():
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            migration_statements = [
+                "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS security_mode VARCHAR DEFAULT 'monitored';",
+                "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS max_violations INTEGER DEFAULT 2;",
+                "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS violations_count INTEGER DEFAULT 0;",
+                "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS violation_log JSONB DEFAULT '[]'::jsonb;",
+                "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS session_token VARCHAR;",
+            ]
+            for stmt in migration_statements:
+                conn.execute(text(stmt))
+            conn.commit()
+    except Exception as e:
+        print(f"Auto-migration notice: {e}")
+
+_run_migrations()
+
 from fastapi.middleware.cors import CORSMiddleware
 
 tags_metadata = [
