@@ -758,6 +758,14 @@ class CohortExamQuestionCreate(BaseModel):
     points: float = 1.0
     order_index: int = 0
 
+class CohortExamQuestionUpdate(BaseModel):
+    question_text: Optional[str] = None
+    options: Optional[List[str]] = None
+    correct_index: Optional[int] = None
+    explanation: Optional[str] = None
+    points: Optional[float] = None
+    order_index: Optional[int] = None
+
 class CohortExamSubmissionCreate(BaseModel):
     answers: List[dict]  # [{"question_id": str, "chosen_index": int}]
     duration_seconds: int = 0

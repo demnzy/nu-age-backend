@@ -755,6 +755,84 @@ def delete_exam_question(
     return {"message": "Question deleted successfully"}
 
 
+@router.put("/{cohort_id}/exams/{exam_id}/questions/{q_id}")
+def update_exam_question(
+    org_id: uuid.UUID,
+    cohort_id: uuid.UUID,
+    exam_id: uuid.UUID,
+    q_id: uuid.UUID,
+    data: schemas.CohortExamQuestionUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    _require_org_admin_or_teacher(db, org_id, user.id)
+
+    q = db.query(models.CohortExamQuestion).filter_by(id=q_id, exam_id=exam_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found.")
+
+    if data.question_text is not None:
+        q.question_text = data.question_text.strip()
+    if data.options is not None:
+        if len(data.options) < 2:
+            raise HTTPException(status_code=400, detail="A question must have at least 2 options.")
+        q.options = [opt.strip() for opt in data.options]
+    if data.correct_index is not None:
+        opts_len = len(data.options) if data.options is not None else len(q.options)
+        if data.correct_index < 0 or data.correct_index >= opts_len:
+            raise HTTPException(status_code=400, detail="Correct answer index is out of range.")
+        q.correct_index = data.correct_index
+    if data.explanation is not None:
+        q.explanation = data.explanation.strip() if data.explanation else None
+    if data.points is not None:
+        q.points = max(0.5, float(data.points))
+    if data.order_index is not None:
+        q.order_index = data.order_index
+
+    db.commit()
+    db.refresh(q)
+    return {
+        "message": "Question updated successfully",
+        "question": {
+            "id": str(q.id),
+            "question_text": q.question_text,
+            "options": q.options,
+            "correct_index": q.correct_index,
+            "explanation": q.explanation,
+            "points": q.points,
+            "order_index": q.order_index,
+        }
+    }
+
+
+@router.get("/{cohort_id}/exams/template")
+def get_exam_question_template(
+    org_id: uuid.UUID,
+    cohort_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    _require_org_admin_or_teacher(db, org_id, user.id)
+
+    sample_rows = [
+        ["Question", "Option A", "Option B", "Option C", "Option D", "Correct Answer", "Explanation", "Points"],
+        ["What is the output of print(type([])) in Python?", "<class 'list'>", "<class 'dict'>", "<class 'tuple'>", "<class 'set'>", "A", "Square brackets define a list.", "1.0"],
+        ["Which HTTP status code signifies that a resource was successfully created?", "201 Created", "200 OK", "204 No Content", "400 Bad Request", "A", "201 Created is the standard REST status.", "1.0"],
+        ["What data structure operates on a Last-In, First-Out (LIFO) basis?", "Stack", "Queue", "Array", "Linked List", "A", "A stack operates on LIFO order.", "1.0"],
+    ]
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerows(sample_rows)
+    csv_bytes = output.getvalue().encode("utf-8")
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=exam_questions_template.csv"},
+    )
+
+
+
 
 
 @router.post("/{cohort_id}/exams/{exam_id}/upload-questions")
