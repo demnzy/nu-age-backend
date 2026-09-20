@@ -253,9 +253,16 @@ def get_cohort_details(
     exams_payload = []
     now = datetime.now(timezone.utc)
     for ex in exams:
-        if ex.closes_at < now:
+        o_at = ex.opens_at
+        c_at = ex.closes_at
+        if o_at and o_at.tzinfo is None:
+            o_at = o_at.replace(tzinfo=timezone.utc)
+        if c_at and c_at.tzinfo is None:
+            c_at = c_at.replace(tzinfo=timezone.utc)
+
+        if c_at and c_at < now:
             ex_status = "CLOSED"
-        elif ex.opens_at <= now <= ex.closes_at:
+        elif o_at and c_at and o_at <= now <= c_at:
             ex_status = "OPEN_NOW"
         else:
             ex_status = "SCHEDULED"
@@ -285,6 +292,22 @@ def get_cohort_details(
             } if user_sub else None,
         })
 
+    # Dynamic status adjustment for cohort
+    c_status = cohort.status
+    if cohort.status != "archived":
+        s_dt = cohort.start_date
+        e_dt = cohort.end_date
+        if s_dt and s_dt.tzinfo is None:
+            s_dt = s_dt.replace(tzinfo=timezone.utc)
+        if e_dt and e_dt.tzinfo is None:
+            e_dt = e_dt.replace(tzinfo=timezone.utc)
+        if e_dt and e_dt < now:
+            c_status = "completed"
+        elif s_dt and e_dt and s_dt <= now <= e_dt:
+            c_status = "active"
+        else:
+            c_status = "upcoming"
+
     return {
         "id": str(cohort.id),
         "organisation_id": str(cohort.organisation_id),
@@ -292,7 +315,7 @@ def get_cohort_details(
         "description": cohort.description,
         "start_date": cohort.start_date.isoformat() if cohort.start_date else None,
         "end_date": cohort.end_date.isoformat() if cohort.end_date else None,
-        "status": cohort.status,
+        "status": c_status,
         "banner_url": cohort.banner_url,
         "courses": courses_payload,
         "members": members_payload if is_admin else [],
@@ -506,7 +529,8 @@ def create_cohort_exam(
         pass_percentage=data.pass_percentage,
         max_attempts=data.max_attempts,
         shuffle_questions=data.shuffle_questions,
-        show_immediate_results=data.show_immediate_results,
+        show_immediate_results=data.show_immediate_results if data.show_immediate_results is not None else False,
+        calculator_type=data.calculator_type or "none",
         security_mode=data.security_mode or "monitored",
         max_violations=data.max_violations or 2,
         created_by=user.id,
@@ -622,6 +646,7 @@ def get_cohort_exam(
         "max_attempts": exam.max_attempts,
         "shuffle_questions": exam.shuffle_questions,
         "show_immediate_results": exam.show_immediate_results,
+        "calculator_type": getattr(exam, "calculator_type", "none") or "none",
         "security_mode": exam.security_mode or "monitored",
         "max_violations": exam.max_violations or 2,
         "status": ex_status,
@@ -665,6 +690,12 @@ def update_cohort_exam(
         exam.shuffle_questions = data.shuffle_questions
     if data.show_immediate_results is not None:
         exam.show_immediate_results = data.show_immediate_results
+    if data.calculator_type is not None:
+        exam.calculator_type = data.calculator_type
+    if data.security_mode is not None:
+        exam.security_mode = data.security_mode
+    if data.max_violations is not None:
+        exam.max_violations = data.max_violations
 
     if exam.closes_at <= exam.opens_at:
         raise HTTPException(status_code=400, detail="Exam close time must be after open time.")
@@ -1069,8 +1100,11 @@ def start_or_resume_exam(
         "remaining_seconds": remaining_seconds,
         "attempt_number": active_sub.attempt_number,
         "max_attempts": exam.max_attempts,
+        "pass_percentage": exam.pass_percentage,
         "security_mode": exam.security_mode or "monitored",
         "max_violations": exam.max_violations or 2,
+        "calculator_type": getattr(exam, "calculator_type", "none") or "none",
+        "show_immediate_results": exam.show_immediate_results,
         "session_token": active_sub.session_token,
         "questions": questions_payload,
     }
@@ -1162,20 +1196,30 @@ def submit_exam(
 
     db.commit()
 
-    response_data = {
-        "message": "Exam submitted and graded successfully.",
-        "score": sub.score,
-        "max_score": sub.max_score,
-        "percentage": sub.percentage,
-        "passed": sub.passed,
-        "duration_seconds": sub.duration_seconds,
-        "submitted_at": sub.submitted_at.isoformat(),
-    }
-
     if exam.show_immediate_results:
-        response_data["breakdown"] = detailed_results
+        response_data = {
+            "message": "Exam submitted and graded successfully.",
+            "status": sub.status,
+            "show_immediate_results": True,
+            "score": sub.score,
+            "max_score": sub.max_score,
+            "percentage": sub.percentage,
+            "passed": sub.passed,
+            "duration_seconds": sub.duration_seconds,
+            "submitted_at": sub.submitted_at.isoformat(),
+            "breakdown": detailed_results,
+        }
     else:
-        response_data["note"] = "Results have been recorded. Detailed answers will be published after the exam window concludes."
+        response_data = {
+            "message": "Exam submitted successfully.",
+            "status": sub.status,
+            "show_immediate_results": False,
+            "duration_seconds": sub.duration_seconds,
+            "submitted_at": sub.submitted_at.isoformat(),
+            "questions_answered": sum(1 for a in data.answers if a.get("chosen_index") is not None),
+            "total_questions": len(all_questions),
+            "note": "Your assessment has been securely recorded. Official evaluation, scores, and feedback will be published following instructor review.",
+        }
 
     return response_data
 

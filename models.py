@@ -639,7 +639,8 @@ class CohortExam(Base):
     pass_percentage = Column(Float, nullable=False, default=70.0)
     max_attempts = Column(Integer, nullable=False, default=1)
     shuffle_questions = Column(Boolean, nullable=False, default=True)
-    show_immediate_results = Column(Boolean, nullable=False, default=True)
+    show_immediate_results = Column(Boolean, nullable=False, default=False)
+    calculator_type = Column(String, nullable=False, default="none")  # "none", "basic", "scientific"
     security_mode = Column(String, nullable=False, default="monitored")  # strict (immediate auto-submit), monitored (warnings counter), relaxed
     max_violations = Column(Integer, nullable=False, default=2)
     created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)

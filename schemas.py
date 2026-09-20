@@ -732,7 +732,8 @@ class CohortExamCreate(BaseModel):
     pass_percentage: float = 70.0
     max_attempts: int = 1
     shuffle_questions: bool = True
-    show_immediate_results: bool = True
+    show_immediate_results: bool = False
+    calculator_type: Optional[str] = "none"  # none, basic, scientific
     security_mode: Optional[str] = "monitored"  # strict, monitored, relaxed
     max_violations: Optional[int] = 2
 
@@ -747,6 +748,7 @@ class CohortExamUpdate(BaseModel):
     max_attempts: Optional[int] = None
     shuffle_questions: Optional[bool] = None
     show_immediate_results: Optional[bool] = None
+    calculator_type: Optional[str] = None
     security_mode: Optional[str] = None
     max_violations: Optional[int] = None
 
