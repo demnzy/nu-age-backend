@@ -522,6 +522,54 @@ def create_cohort_exam(
     }
 
 
+@router.get("/exams/template")
+@router.get("/{cohort_id}/exams/template")
+def download_exam_question_template(cohort_id: Optional[uuid.UUID] = None):
+    """Generates a downloadable CSV template for bulk question upload."""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Question",
+        "Option A",
+        "Option B",
+        "Option C",
+        "Option D",
+        "Option E",
+        "Correct Answer",
+        "Explanation",
+        "Points"
+    ])
+    writer.writerow([
+        "What is the primary function of DNS in computer networking?",
+        "Translate domain names to IP addresses",
+        "Encrypt network packets end-to-end",
+        "Assign physical MAC addresses to NICs",
+        "Filter malicious traffic at the gateway",
+        "",
+        "A",
+        "DNS translates human-readable domain names into machine-readable IP addresses.",
+        "1"
+    ])
+    writer.writerow([
+        "Which of the following data structures operates on a FIFO basis?",
+        "Stack",
+        "Queue",
+        "Binary Search Tree",
+        "Max Heap",
+        "",
+        "B",
+        "Queue follows the First-In, First-Out (FIFO) principle.",
+        "2"
+    ])
+
+    csv_data = output.getvalue()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=exam_questions_template.csv"}
+    )
+
+
 @router.get("/{cohort_id}/exams/{exam_id}")
 def get_cohort_exam(
     org_id: uuid.UUID,
@@ -707,51 +755,6 @@ def delete_exam_question(
     return {"message": "Question deleted successfully"}
 
 
-@router.get("/exams/template")
-def download_exam_question_template():
-    """Generates a downloadable CSV template for bulk question upload."""
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Question",
-        "Option A",
-        "Option B",
-        "Option C",
-        "Option D",
-        "Option E",
-        "Correct Answer",
-        "Explanation",
-        "Points"
-    ])
-    writer.writerow([
-        "What is the primary function of DNS in computer networking?",
-        "Translate domain names to IP addresses",
-        "Encrypt network packets end-to-end",
-        "Assign physical MAC addresses to NICs",
-        "Filter malicious traffic at the gateway",
-        "",
-        "A",
-        "DNS translates human-readable domain names into machine-readable IP addresses.",
-        "1"
-    ])
-    writer.writerow([
-        "Which of the following data structures operates on a FIFO basis?",
-        "Stack",
-        "Queue",
-        "Binary Search Tree",
-        "Max Heap",
-        "",
-        "B",
-        "Queue follows the First-In, First-Out (FIFO) principle.",
-        "2"
-    ])
-
-    csv_data = output.getvalue()
-    return Response(
-        content=csv_data,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=exam_questions_template.csv"}
-    )
 
 
 @router.post("/{cohort_id}/exams/{exam_id}/upload-questions")

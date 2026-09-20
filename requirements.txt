@@ -182,3 +182,4 @@ google-cloud-firestore
 google-cloud-storage
 pyjwt
 instructor
+openpyxl>=3.1.2
