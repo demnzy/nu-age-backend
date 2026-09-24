@@ -277,7 +277,8 @@ def get_cohort_details(
             )
             .all()
         )
-        user_sub = user_subs[0] if user_subs else None
+        in_progress_sub = next((s for s in user_subs if s.status == "in_progress"), None)
+        is_in_progress = (in_progress_sub is not None)
         completed_attempts_count = sum(
             1 for s in user_subs if s.status in ("submitted", "graded", "timed_out", "flagged_violation")
         )
@@ -292,6 +293,14 @@ def get_cohort_details(
             "duration_minutes": ex.duration_minutes,
             "pass_percentage": ex.pass_percentage,
             "max_attempts": ex.max_attempts,
+            "completed_attempts": completed_attempts_count,
+            "attempts_left": max(0, ex.max_attempts - completed_attempts_count),
+            "is_in_progress": is_in_progress,
+            "in_progress_submission": {
+                "id": str(in_progress_sub.id),
+                "started_at": in_progress_sub.started_at.isoformat() if in_progress_sub.started_at else None,
+                "attempt_number": in_progress_sub.attempt_number,
+            } if in_progress_sub else None,
             "calculator_type": getattr(ex, "calculator_type", "none") or "none",
             "security_mode": ex.security_mode or "monitored",
             "max_violations": ex.max_violations or 2,
@@ -1083,7 +1092,7 @@ def start_or_resume_exam(
     completed_attempts = db.query(models.CohortExamSubmission).filter(
         models.CohortExamSubmission.exam_id == exam_id,
         models.CohortExamSubmission.user_id == user.id,
-        models.CohortExamSubmission.status.in_(["submitted", "graded", "timed_out"])
+        models.CohortExamSubmission.status.in_(["submitted", "graded", "timed_out", "flagged_violation"])
     ).count()
 
     if completed_attempts >= exam.max_attempts:
@@ -1136,13 +1145,13 @@ def start_or_resume_exam(
             questions = all_q
 
     # Calculate remaining time in seconds
-    elapsed_seconds = int((now - active_sub.started_at).total_seconds())
-    total_allowed_seconds = exam.duration_minutes * 60
-    remaining_seconds = max(0, total_allowed_seconds - elapsed_seconds)
+    sub_started = active_sub.started_at
+    if sub_started and sub_started.tzinfo is None:
+        sub_started = sub_started.replace(tzinfo=timezone.utc)
 
-    # Also bound by exam closes_at
-    window_remaining_seconds = int((exam.closes_at - now).total_seconds())
-    remaining_seconds = min(remaining_seconds, max(0, window_remaining_seconds))
+    total_allowed_seconds = max(60, (exam.duration_minutes or 60) * 60)
+    elapsed_seconds = max(0, int((now - sub_started).total_seconds())) if sub_started else 0
+    remaining_seconds = max(0, total_allowed_seconds - elapsed_seconds)
 
     ans_map = {}
     if active_sub.answers and isinstance(active_sub.answers, list):
@@ -1165,6 +1174,8 @@ def start_or_resume_exam(
         "submission_id": str(active_sub.id),
         "exam_title": exam.title,
         "instructions": exam.instructions,
+        "duration_minutes": exam.duration_minutes,
+        "total_duration_minutes": exam.duration_minutes,
         "total_duration_seconds": total_allowed_seconds,
         "remaining_seconds": remaining_seconds,
         "attempt_number": active_sub.attempt_number,
@@ -1614,6 +1625,11 @@ def get_learner_cohorts(
                 "closes_at": ex.closes_at.isoformat(),
                 "duration_minutes": ex.duration_minutes,
                 "pass_percentage": ex.pass_percentage,
+                "max_attempts": ex.max_attempts,
+                "completed_attempts": completed_attempts_count,
+                "attempts_left": max(0, ex.max_attempts - completed_attempts_count),
+                "calculator_type": getattr(ex, "calculator_type", "none") or "none",
+                "question_count": len(ex.questions) if hasattr(ex, "questions") and ex.questions is not None else 0,
                 "security_mode": ex.security_mode or "monitored",
                 "max_violations": ex.max_violations or 2,
                 "status": ex_st,
@@ -1636,7 +1652,7 @@ def get_learner_cohorts(
             }
             exams_data.append(ex_item)
 
-            if (ex_st == "OPEN_NOW" and not is_completed) or is_in_progress:
+            if (ex_st == "OPEN_NOW" and (completed_attempts_count < ex.max_attempts or is_in_progress)) or is_in_progress:
                 active_urgent_exams.append(ex_item)
             elif ex_st == "SCHEDULED" and (ex.opens_at - now).total_seconds() <= 172800:
                 active_urgent_exams.append(ex_item)
