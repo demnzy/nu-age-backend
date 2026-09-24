@@ -753,6 +753,7 @@ class CohortExamUpdate(BaseModel):
     max_violations: Optional[int] = None
 
 class CohortExamQuestionCreate(BaseModel):
+    scenario_text: Optional[str] = None
     question_text: str
     options: List[str]
     correct_index: int = 0
@@ -761,6 +762,7 @@ class CohortExamQuestionCreate(BaseModel):
     order_index: int = 0
 
 class CohortExamQuestionUpdate(BaseModel):
+    scenario_text: Optional[str] = None
     question_text: Optional[str] = None
     options: Optional[List[str]] = None
     correct_index: Optional[int] = None
@@ -774,3 +776,9 @@ class CohortExamSubmissionCreate(BaseModel):
     violations_count: Optional[int] = 0
     violation_log: Optional[List[dict]] = []
     session_token: Optional[str] = None
+
+
+class CohortExamProgressSave(BaseModel):
+    answers: List[dict]  # [{"question_id": str, "chosen_index": int}]
+    violations_count: Optional[int] = 0
+    violation_log: Optional[List[dict]] = []

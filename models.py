@@ -663,6 +663,7 @@ class CohortExamQuestion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     exam_id = Column(UUID(as_uuid=True), ForeignKey("cohort_exams.id", ondelete="CASCADE"), nullable=False, index=True)
+    scenario_text = Column(Text, nullable=True)  # Optional preceding case study, vignette, or passage
     question_text = Column(Text, nullable=False)
     options = Column(JSONB, nullable=False)  # List of strings e.g. ["Option A", "Option B", "Option C", "Option D"]
     correct_index = Column(Integer, nullable=False, default=0)  # 0-indexed correct option

@@ -268,7 +268,19 @@ def get_cohort_details(
             ex_status = "SCHEDULED"
 
         question_count = db.query(func.count(models.CohortExamQuestion.id)).filter_by(exam_id=ex.id).scalar() or 0
-        user_sub = db.query(models.CohortExamSubmission).filter_by(exam_id=ex.id, user_id=user.id).first()
+        user_subs = (
+            db.query(models.CohortExamSubmission)
+            .filter_by(exam_id=ex.id, user_id=user.id)
+            .order_by(
+                models.CohortExamSubmission.score.desc(),
+                models.CohortExamSubmission.submitted_at.desc(),
+            )
+            .all()
+        )
+        user_sub = user_subs[0] if user_subs else None
+        completed_attempts_count = sum(
+            1 for s in user_subs if s.status in ("submitted", "graded", "timed_out", "flagged_violation")
+        )
 
         exams_payload.append({
             "id": str(ex.id),
@@ -280,6 +292,11 @@ def get_cohort_details(
             "duration_minutes": ex.duration_minutes,
             "pass_percentage": ex.pass_percentage,
             "max_attempts": ex.max_attempts,
+            "calculator_type": getattr(ex, "calculator_type", "none") or "none",
+            "security_mode": ex.security_mode or "monitored",
+            "max_violations": ex.max_violations or 2,
+            "shuffle_questions": ex.shuffle_questions if ex.shuffle_questions is not None else True,
+            "show_immediate_results": ex.show_immediate_results if ex.show_immediate_results is not None else False,
             "question_count": question_count,
             "status": ex_status,
             "user_submission": {
@@ -289,6 +306,8 @@ def get_cohort_details(
                 "percentage": user_sub.percentage,
                 "passed": user_sub.passed,
                 "submitted_at": user_sub.submitted_at.isoformat() if user_sub.submitted_at else None,
+                "attempt_number": user_sub.attempt_number,
+                "total_attempts": completed_attempts_count,
             } if user_sub else None,
         })
 
@@ -553,6 +572,7 @@ def download_exam_question_template(cohort_id: Optional[uuid.UUID] = None):
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
+        "Scenario (Optional)",
         "Question",
         "Option A",
         "Option B",
@@ -564,26 +584,28 @@ def download_exam_question_template(cohort_id: Optional[uuid.UUID] = None):
         "Points"
     ])
     writer.writerow([
-        "What is the primary function of DNS in computer networking?",
-        "Translate domain names to IP addresses",
-        "Encrypt network packets end-to-end",
-        "Assign physical MAC addresses to NICs",
-        "Filter malicious traffic at the gateway",
+        "A 48-year-old patient presents with acute episodic vertigo, fluctuating sensorineural hearing loss, and tinnitus lasting 2 hours. Audiometry reveals low-frequency sensorineural deficit in the left ear.",
+        "Which of the following is the most likely initial diagnosis?",
+        "Meniere's Disease",
+        "Benign Paroxysmal Positional Vertigo",
+        "Vestibular Neuritis",
+        "Acoustic Neuroma",
         "",
         "A",
-        "DNS translates human-readable domain names into machine-readable IP addresses.",
-        "1"
+        "The triad of episodic vertigo, low-frequency sensorineural hearing loss, and tinnitus is classic for Meniere's Disease.",
+        "2.0"
     ])
     writer.writerow([
-        "Which of the following data structures operates on a FIFO basis?",
-        "Stack",
-        "Queue",
-        "Binary Search Tree",
-        "Max Heap",
         "",
-        "B",
-        "Queue follows the First-In, First-Out (FIFO) principle.",
-        "2"
+        "What is the standard port number used for secure HTTPS traffic?",
+        "443",
+        "80",
+        "22",
+        "8080",
+        "",
+        "A",
+        "Port 443 is the standard port allocated for encrypted HTTPS traffic.",
+        "1.0"
     ])
 
     csv_data = output.getvalue()
@@ -615,6 +637,7 @@ def get_cohort_exam(
     for q in questions:
         item = {
             "id": str(q.id),
+            "scenario_text": getattr(q, "scenario_text", None),
             "question_text": q.question_text,
             "options": q.options,
             "points": q.points,
@@ -750,8 +773,11 @@ def add_exam_question(
 
     current_count = db.query(func.count(models.CohortExamQuestion.id)).filter_by(exam_id=exam_id).scalar() or 0
 
+    sc_text = data.scenario_text.strip() if data.scenario_text and data.scenario_text.strip() else None
+
     q = models.CohortExamQuestion(
         exam_id=exam_id,
+        scenario_text=sc_text,
         question_text=data.question_text.strip(),
         options=[opt.strip() for opt in data.options],
         correct_index=data.correct_index,
@@ -802,6 +828,8 @@ def update_exam_question(
     if not q:
         raise HTTPException(status_code=404, detail="Question not found.")
 
+    if "scenario_text" in data.model_fields_set:
+        q.scenario_text = data.scenario_text.strip() if data.scenario_text and data.scenario_text.strip() else None
     if data.question_text is not None:
         q.question_text = data.question_text.strip()
     if data.options is not None:
@@ -813,8 +841,8 @@ def update_exam_question(
         if data.correct_index < 0 or data.correct_index >= opts_len:
             raise HTTPException(status_code=400, detail="Correct answer index is out of range.")
         q.correct_index = data.correct_index
-    if data.explanation is not None:
-        q.explanation = data.explanation.strip() if data.explanation else None
+    if "explanation" in data.model_fields_set:
+        q.explanation = data.explanation.strip() if data.explanation and data.explanation.strip() else None
     if data.points is not None:
         q.points = max(0.5, float(data.points))
     if data.order_index is not None:
@@ -826,6 +854,7 @@ def update_exam_question(
         "message": "Question updated successfully",
         "question": {
             "id": str(q.id),
+            "scenario_text": q.scenario_text,
             "question_text": q.question_text,
             "options": q.options,
             "correct_index": q.correct_index,
@@ -846,10 +875,10 @@ def get_exam_question_template(
     _require_org_admin_or_teacher(db, org_id, user.id)
 
     sample_rows = [
-        ["Question", "Option A", "Option B", "Option C", "Option D", "Correct Answer", "Explanation", "Points"],
-        ["What is the output of print(type([])) in Python?", "<class 'list'>", "<class 'dict'>", "<class 'tuple'>", "<class 'set'>", "A", "Square brackets define a list.", "1.0"],
-        ["Which HTTP status code signifies that a resource was successfully created?", "201 Created", "200 OK", "204 No Content", "400 Bad Request", "A", "201 Created is the standard REST status.", "1.0"],
-        ["What data structure operates on a Last-In, First-Out (LIFO) basis?", "Stack", "Queue", "Array", "Linked List", "A", "A stack operates on LIFO order.", "1.0"],
+        ["Scenario (Optional)", "Question", "Option A", "Option B", "Option C", "Option D", "Correct Answer", "Explanation", "Points"],
+        ["A 45-year-old patient presents to the clinic with sudden onset severe retrosternal chest pain radiating to the left jaw. Blood pressure is 85/50 mmHg, heart rate is 112 bpm, and oxygen saturation is 92% on room air. ECG reveals ST-elevation in leads II, III, and aVF.", "Which coronary artery is most likely occluded based on the clinical presentation and ECG findings?", "Right Coronary Artery (RCA)", "Left Anterior Descending (LAD)", "Left Circumflex (LCx)", "Left Main Coronary Artery", "A", "ST-elevation in leads II, III, and aVF indicates an inferior wall myocardial infarction, typically supplied by the RCA.", "2.0"],
+        ["", "What is the primary time complexity of binary search on a sorted array of length N?", "O(log N)", "O(N)", "O(1)", "O(N log N)", "A", "Binary search repeatedly divides the search interval in half, achieving logarithmic time complexity.", "1.0"],
+        ["A financial analyst is evaluating two mutually exclusive projects. Project Alpha has an NPV of $45,000 and an IRR of 18%. Project Beta has an NPV of $52,000 and an IRR of 14%. The company's cost of capital is 10%.", "Assuming no capital rationing, which project should the firm select and why?", "Project Beta, because it yields the higher Net Present Value (NPV)", "Project Alpha, because it has a superior Internal Rate of Return (IRR)", "Both projects simultaneously", "Neither project, since their metrics conflict", "A", "Under mutually exclusive conditions without capital rationing, NPV is the preferred criterion as it maximizes total shareholder value.", "1.5"],
     ]
     output = io.StringIO()
     writer = csv.writer(output)
@@ -923,6 +952,7 @@ async def upload_exam_questions(
             detail="Spreadsheet must include at least 2 options (e.g. 'Option A' and 'Option B')."
         )
 
+    scenario_col = next((c for c in df.columns if any(k in c for k in ("scenario", "context", "passage", "case", "vignette"))), None)
     explanation_col = next((c for c in df.columns if "explanation" in c), None)
     points_col = next((c for c in df.columns if "point" in c), None)
 
@@ -933,18 +963,22 @@ async def upload_exam_questions(
 
     for row_idx, row in df.iterrows():
         row_num = row_idx + 2  # Excel 1-based header
+        if pd.isna(row[q_col]):
+            continue
         q_text = str(row[q_col]).strip()
-        if not q_text or q_text.lower() == "nan":
+        if not q_text or q_text.lower() in ("nan", "none"):
             continue
 
         # Gather non-empty options
         row_options = []
         option_letter_map = {}
         for idx, (letter, col_name) in enumerate(option_cols):
-            val = str(row.get(col_name, "")).strip()
-            if val and val.lower() != "nan":
-                row_options.append(val)
-                option_letter_map[letter.upper()] = len(row_options) - 1
+            raw_val = row.get(col_name)
+            if not pd.isna(raw_val):
+                val = str(raw_val).strip()
+                if val and val.lower() not in ("nan", "none"):
+                    row_options.append(val)
+                    option_letter_map[letter.upper()] = len(row_options) - 1
 
         if len(row_options) < 2:
             errors.append(f"Row {row_num}: Must have at least 2 valid options.")
@@ -973,20 +1007,32 @@ async def upload_exam_questions(
             errors.append(f"Row {row_num}: Correct answer '{raw_ans}' does not match any provided options.")
             continue
 
+        # Scenario
+        scen = None
+        if scenario_col and not pd.isna(row[scenario_col]):
+            raw_scen = str(row[scenario_col]).strip()
+            if raw_scen and raw_scen.lower() not in ("nan", "none"):
+                scen = raw_scen
+
         # Points
         pts = 1.0
-        if points_col:
+        if points_col and not pd.isna(row[points_col]):
             try:
                 pts = float(row[points_col])
                 if pts <= 0: pts = 1.0
             except Exception:
                 pts = 1.0
 
-        expl = str(row[explanation_col]).strip() if explanation_col and str(row[explanation_col]).lower() != "nan" else None
+        expl = None
+        if explanation_col and not pd.isna(row[explanation_col]):
+            raw_expl = str(row[explanation_col]).strip()
+            if raw_expl and raw_expl.lower() not in ("nan", "none"):
+                expl = raw_expl
 
         current_order += 1
         q_obj = models.CohortExamQuestion(
             exam_id=exam_id,
+            scenario_text=scen,
             question_text=q_text,
             options=row_options,
             correct_index=correct_idx,
@@ -1050,6 +1096,12 @@ def start_or_resume_exam(
 
     session_token = str(uuid.uuid4())
     if not active_sub:
+        raw_questions = db.query(models.CohortExamQuestion).filter_by(exam_id=exam_id).all()
+        if getattr(exam, "shuffle_questions", True):
+            import random
+            random.shuffle(raw_questions)
+        q_order = [str(q.id) for q in raw_questions]
+
         active_sub = models.CohortExamSubmission(
             exam_id=exam_id,
             cohort_id=cohort_id,
@@ -1058,21 +1110,30 @@ def start_or_resume_exam(
             started_at=now,
             status="in_progress",
             session_token=session_token,
+            answers=[{"question_id": qid, "chosen_index": None} for qid in q_order],
         )
         db.add(active_sub)
         db.commit()
         db.refresh(active_sub)
+        questions = raw_questions
     else:
         active_sub.session_token = session_token
         db.commit()
-
-    # Fetch questions with correct answers HIDDEN
-    query = db.query(models.CohortExamQuestion).filter_by(exam_id=exam_id)
-    if exam.shuffle_questions:
-        query = query.order_by(func.random())
-    else:
-        query = query.order_by(models.CohortExamQuestion.order_index.asc())
-    questions = query.all()
+        # Restore deterministic question order saved for this attempt
+        saved_order = [
+            a.get("question_id")
+            for a in (active_sub.answers or [])
+            if isinstance(a, dict) and a.get("question_id")
+        ]
+        all_q = db.query(models.CohortExamQuestion).filter_by(exam_id=exam_id).all()
+        q_by_id = {str(q.id): q for q in all_q}
+        if saved_order:
+            questions = [q_by_id[qid] for qid in saved_order if qid in q_by_id]
+            for q in all_q:
+                if str(q.id) not in saved_order:
+                    questions.append(q)
+        else:
+            questions = all_q
 
     # Calculate remaining time in seconds
     elapsed_seconds = int((now - active_sub.started_at).total_seconds())
@@ -1083,13 +1144,21 @@ def start_or_resume_exam(
     window_remaining_seconds = int((exam.closes_at - now).total_seconds())
     remaining_seconds = min(remaining_seconds, max(0, window_remaining_seconds))
 
+    ans_map = {}
+    if active_sub.answers and isinstance(active_sub.answers, list):
+        for a in active_sub.answers:
+            if isinstance(a, dict) and a.get("question_id"):
+                ans_map[str(a["question_id"])] = a.get("chosen_index")
+
     questions_payload = []
     for q in questions:
         questions_payload.append({
             "id": str(q.id),
+            "scenario_text": getattr(q, "scenario_text", None),
             "question_text": q.question_text,
             "options": q.options,
             "points": q.points,
+            "chosen_index": ans_map.get(str(q.id)),
         })
 
     return {
@@ -1108,6 +1177,31 @@ def start_or_resume_exam(
         "session_token": active_sub.session_token,
         "questions": questions_payload,
     }
+
+
+@router.post("/{cohort_id}/exams/{exam_id}/save-progress")
+def save_exam_progress(
+    org_id: uuid.UUID,
+    cohort_id: uuid.UUID,
+    exam_id: uuid.UUID,
+    data: schemas.CohortExamProgressSave,
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    sub = db.query(models.CohortExamSubmission).filter_by(
+        exam_id=exam_id, user_id=user.id, status="in_progress"
+    ).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="No active exam submission found.")
+
+    sub.answers = data.answers
+    if data.violations_count is not None:
+        sub.violations_count = data.violations_count
+    if data.violation_log is not None:
+        sub.violation_log = data.violation_log
+    db.commit()
+    return {"status": "saved"}
+
 
 
 @router.post("/{cohort_id}/exams/{exam_id}/submit")
@@ -1164,6 +1258,7 @@ def submit_exam(
 
         detailed_results.append({
             "question_id": q_id,
+            "scenario_text": getattr(q, "scenario_text", None),
             "question_text": q.question_text,
             "options": q.options,
             "chosen_index": chosen,
@@ -1196,6 +1291,21 @@ def submit_exam(
 
     db.commit()
 
+    # Find user's best attempt across all completed submissions (Highest Score Preserved)
+    best_sub = (
+        db.query(models.CohortExamSubmission)
+        .filter(
+            models.CohortExamSubmission.exam_id == exam_id,
+            models.CohortExamSubmission.user_id == user.id,
+            models.CohortExamSubmission.status.in_(["submitted", "graded", "flagged_violation", "timed_out"]),
+        )
+        .order_by(
+            models.CohortExamSubmission.score.desc(),
+            models.CohortExamSubmission.submitted_at.desc(),
+        )
+        .first()
+    ) or sub
+
     if exam.show_immediate_results:
         response_data = {
             "message": "Exam submitted and graded successfully.",
@@ -1205,6 +1315,10 @@ def submit_exam(
             "max_score": sub.max_score,
             "percentage": sub.percentage,
             "passed": sub.passed,
+            "best_score": best_sub.score,
+            "best_percentage": best_sub.percentage,
+            "best_passed": best_sub.passed,
+            "attempt_number": sub.attempt_number,
             "duration_seconds": sub.duration_seconds,
             "submitted_at": sub.submitted_at.isoformat(),
             "breakdown": detailed_results,
@@ -1216,6 +1330,7 @@ def submit_exam(
             "show_immediate_results": False,
             "duration_seconds": sub.duration_seconds,
             "submitted_at": sub.submitted_at.isoformat(),
+            "attempt_number": sub.attempt_number,
             "questions_answered": sum(1 for a in data.answers if a.get("chosen_index") is not None),
             "total_questions": len(all_questions),
             "note": "Your assessment has been securely recorded. Official evaluation, scores, and feedback will be published following instructor review.",
@@ -1250,13 +1365,27 @@ def get_exam_gradebook(
         .all()
     )
 
-    # Submissions for this exam
+    # Submissions for this exam ordered by score desc (highest score preserved)
     submissions = (
         db.query(models.CohortExamSubmission)
         .filter_by(exam_id=exam_id)
+        .order_by(
+            models.CohortExamSubmission.score.desc(),
+            models.CohortExamSubmission.submitted_at.desc(),
+        )
         .all()
     )
-    sub_map = {str(s.user_id): s for s in submissions}
+    # Map each candidate to their highest-scoring completed submission and count completed attempts
+    sub_map = {}
+    attempts_map = {}
+    for s in submissions:
+        uid = str(s.user_id)
+        if s.status in ("submitted", "graded", "timed_out", "flagged_violation"):
+            attempts_map[uid] = attempts_map.get(uid, 0) + 1
+        if uid not in sub_map:
+            sub_map[uid] = s
+        elif sub_map[uid].status == "in_progress" and s.status != "in_progress":
+            sub_map[uid] = s
 
     roster = []
     scores = []
@@ -1283,6 +1412,8 @@ def get_exam_gradebook(
                 "max_score": sub.max_score,
                 "percentage": sub.percentage,
                 "passed": sub.passed,
+                "attempt_number": sub.attempt_number,
+                "total_attempts": attempts_map.get(u_id, 1),
                 "violations_count": sub.violations_count or 0,
                 "violation_log": sub.violation_log or [],
                 "duration_seconds": sub.duration_seconds,
@@ -1454,8 +1585,22 @@ def get_learner_cohorts(
             else:
                 ex_st = "SCHEDULED"
 
-            user_sub = db.query(models.CohortExamSubmission).filter_by(exam_id=ex.id, user_id=user.id).first()
+            user_subs = (
+                db.query(models.CohortExamSubmission)
+                .filter_by(exam_id=ex.id, user_id=user.id)
+                .order_by(
+                    models.CohortExamSubmission.score.desc(),
+                    models.CohortExamSubmission.submitted_at.desc(),
+                )
+                .all()
+            )
+            user_sub = user_subs[0] if user_subs else None
+            in_progress_sub = next((s for s in user_subs if s.status == "in_progress"), None)
+            is_in_progress = (in_progress_sub is not None)
             is_completed = user_sub is not None and user_sub.status in ("submitted", "graded", "flagged_violation", "timed_out")
+            completed_attempts_count = sum(
+                1 for s in user_subs if s.status in ("submitted", "graded", "timed_out", "flagged_violation")
+            )
 
             ex_item = {
                 "id": str(ex.id),
@@ -1473,17 +1618,25 @@ def get_learner_cohorts(
                 "max_violations": ex.max_violations or 2,
                 "status": ex_st,
                 "is_completed": is_completed,
+                "is_in_progress": is_in_progress,
+                "in_progress_submission": {
+                    "id": str(in_progress_sub.id),
+                    "started_at": in_progress_sub.started_at.isoformat() if in_progress_sub.started_at else None,
+                    "attempt_number": in_progress_sub.attempt_number,
+                } if in_progress_sub else None,
                 "submission": {
                     "score": user_sub.score,
                     "percentage": user_sub.percentage,
                     "passed": user_sub.passed,
                     "status": user_sub.status,
+                    "attempt_number": user_sub.attempt_number,
+                    "total_attempts": completed_attempts_count,
                     "violations_count": user_sub.violations_count or 0,
                 } if user_sub else None,
             }
             exams_data.append(ex_item)
 
-            if ex_st == "OPEN_NOW" and not is_completed:
+            if (ex_st == "OPEN_NOW" and not is_completed) or is_in_progress:
                 active_urgent_exams.append(ex_item)
             elif ex_st == "SCHEDULED" and (ex.opens_at - now).total_seconds() <= 172800:
                 active_urgent_exams.append(ex_item)

@@ -14,9 +14,12 @@ def _run_migrations():
             migration_statements = [
                 "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS security_mode VARCHAR DEFAULT 'monitored';",
                 "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS max_violations INTEGER DEFAULT 2;",
+                "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS calculator_type VARCHAR DEFAULT 'none';",
+                "ALTER TABLE cohort_exams ADD COLUMN IF NOT EXISTS show_immediate_results BOOLEAN DEFAULT FALSE;",
                 "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS violations_count INTEGER DEFAULT 0;",
                 "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS violation_log JSONB DEFAULT '[]'::jsonb;",
                 "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS session_token VARCHAR;",
+                "ALTER TABLE cohort_exam_questions ADD COLUMN IF NOT EXISTS scenario_text TEXT;",
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))
