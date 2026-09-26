@@ -282,6 +282,7 @@ def get_cohort_details(
         completed_attempts_count = sum(
             1 for s in user_subs if s.status in ("submitted", "graded", "timed_out", "flagged_violation")
         )
+        user_sub = user_subs[0] if user_subs else None
 
         exams_payload.append({
             "id": str(ex.id),
@@ -1102,6 +1103,7 @@ def start_or_resume_exam(
     active_sub = db.query(models.CohortExamSubmission).filter_by(
         exam_id=exam_id, user_id=user.id, status="in_progress"
     ).first()
+    is_resumed = (active_sub is not None)
 
     session_token = str(uuid.uuid4())
     if not active_sub:
@@ -1185,6 +1187,8 @@ def start_or_resume_exam(
         "max_violations": exam.max_violations or 2,
         "calculator_type": getattr(exam, "calculator_type", "none") or "none",
         "show_immediate_results": exam.show_immediate_results,
+        "is_resumed": is_resumed,
+        "is_in_progress": is_resumed,
         "session_token": active_sub.session_token,
         "questions": questions_payload,
     }
