@@ -114,6 +114,21 @@ class BulkPushRequest(BaseModel):
 # SUPER ADMIN DEPENDENCY GUARD
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_configured_platform_admins() -> List[str]:
+    """
+    Retrieves the list of designated super admin usernames and emails
+    using the codebase Settings() env search pattern in database.py
+    with os.getenv fallback.
+    """
+    try:
+        raw = getattr(Settings(), "PLATFORM_SUPER_ADMINS", "")
+    except Exception:
+        raw = ""
+    if not raw:
+        raw = os.getenv("PLATFORM_SUPER_ADMINS", "")
+    return [s.strip().lower() for s in str(raw).split(",") if s.strip()]
+
+
 def get_current_super_admin(
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
@@ -125,9 +140,7 @@ def get_current_super_admin(
     role_str = str(getattr(current_user, "role", "")).upper()
     is_admin_role = (getattr(current_user, "role", None) == Roles.ADMIN or "ADMIN" in role_str)
 
-    configured_admins = [
-        s.strip().lower() for s in os.getenv("PLATFORM_SUPER_ADMINS", "").split(",") if s.strip()
-    ]
+    configured_admins = get_configured_platform_admins()
     is_designated = (
         current_user.username.lower() in configured_admins
         or (current_user.email and current_user.email.lower() in configured_admins)
@@ -169,9 +182,7 @@ def verify_super_admin_credentials(
 
     role_str = str(getattr(user, "role", "")).upper()
     is_admin_role = (getattr(user, "role", None) == Roles.ADMIN or "ADMIN" in role_str)
-    configured_admins = [
-        s.strip().lower() for s in os.getenv("PLATFORM_SUPER_ADMINS", "").split(",") if s.strip()
-    ]
+    configured_admins = get_configured_platform_admins()
     is_designated = (
         user.username.lower() in configured_admins
         or (user.email and user.email.lower() in configured_admins)
@@ -273,7 +284,7 @@ def list_platform_users(
     """
     query = db.query(models.User)
 
-    if q and q.strip():
+    if isinstance(q, str) and q.strip():
         term = f"%{q.strip().lower()}%"
         query = query.filter(
             or_(
@@ -285,7 +296,7 @@ def list_platform_users(
             )
         )
 
-    if role and role.strip() and role.lower() != "all":
+    if isinstance(role, str) and role.strip() and role.lower() != "all":
         r_clean = role.strip().capitalize()
         for r_enum in Roles:
             if r_enum.value.lower() == r_clean.lower():
@@ -575,7 +586,7 @@ def export_platform_users(
     Exports all current platform users to a formatted Excel workbook (.xlsx) or CSV file.
     """
     query = db.query(models.User).order_by(models.User.created_at.desc())
-    if role and role.strip() and role.lower() != "all":
+    if isinstance(role, str) and role.strip() and role.lower() != "all":
         r_clean = role.strip().capitalize()
         for r_enum in Roles:
             if r_enum.value.lower() == r_clean.lower():
