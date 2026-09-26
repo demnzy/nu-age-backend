@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     AGENT_ROUTER_API_KEY: str = ""
     AI_PROVIDER: str = "agentrouter"
     YOUTUBE_API_KEY: str = ""
+    PLATFORM_SUPER_ADMINS: str = ""
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL
