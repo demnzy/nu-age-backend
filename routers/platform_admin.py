@@ -357,6 +357,162 @@ def list_platform_users(
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 3B. EXCEL (.XLSX) & CSV DATA EXPORT (Declared before {user_id} to prevent 422)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _generate_excel_workbook(users: List[models.User]) -> io.BytesIO:
+    """
+    Generates a beautifully styled Excel workbook containing all user information.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Nu-Age Users"
+
+    # Brand Colors
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")  # Slate 800
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    data_font = Font(name="Calibri", size=10, color="0F172A")
+    border_side = Side(border_style="thin", color="CBD5E1")
+    cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+
+    headers = [
+        "User ID",
+        "Full Name",
+        "First Name",
+        "Last Name",
+        "Username",
+        "Email",
+        "Phone Number",
+        "Role",
+        "Gender",
+        "Verified",
+        "Streak (Days)",
+        "University",
+        "Last Login Date",
+        "Created At (UTC)",
+    ]
+    ws.append(headers)
+
+    # Style Header Row
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = cell_border
+    ws.row_dimensions[1].height = 28
+
+    # Populate Data
+    row_idx = 2
+    for u in users:
+        role_str = str(u.role.value if hasattr(u.role, "value") else u.role)
+        gender_str = str(u.gender.value if hasattr(u.gender, "value") else u.gender)
+        full_name = f"{u.first_name} {u.last_name}".strip()
+
+        row_data = [
+            str(u.id),
+            full_name or u.username,
+            u.first_name,
+            u.last_name,
+            u.username,
+            u.email,
+            u.number or "",
+            role_str,
+            gender_str,
+            "Yes" if u.is_verified else "No",
+            u.streak or 0,
+            u.university or "",
+            u.last_login_date.strftime("%Y-%m-%d") if u.last_login_date else "",
+            u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+        ]
+        ws.append(row_data)
+
+        # Style data cells
+        for col_idx in range(1, len(row_data) + 1):
+            c = ws.cell(row=row_idx, column=col_idx)
+            c.font = data_font
+            c.border = cell_border
+            if col_idx in (1, 8, 9, 10, 11, 13, 14):
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                c.alignment = Alignment(horizontal="left", vertical="center")
+
+        ws.row_dimensions[row_idx].height = 20
+        row_idx += 1
+
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or "")
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+@router.get("/users/export")
+def export_platform_users(
+    format: str = "xlsx",
+    role: Optional[str] = None,
+    current_admin: models.User = Depends(get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Exports all current platform users to a formatted Excel workbook (.xlsx) or CSV file.
+    """
+    query = db.query(models.User).order_by(models.User.created_at.desc())
+    if isinstance(role, str) and role.strip() and role.lower() != "all":
+        r_clean = role.strip().capitalize()
+        for r_enum in Roles:
+            if r_enum.value.lower() == r_clean.lower():
+                query = query.filter(models.User.role == r_enum)
+                break
+
+    users = query.all()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fmt = (format or "xlsx").strip().lower()
+
+    if fmt == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "User ID", "Full Name", "First Name", "Last Name", "Username", "Email",
+            "Phone Number", "Role", "Gender", "Verified", "Streak", "University",
+            "Last Login Date", "Created At"
+        ])
+        for u in users:
+            role_str = str(u.role.value if hasattr(u.role, "value") else u.role)
+            gender_str = str(u.gender.value if hasattr(u.gender, "value") else u.gender)
+            writer.writerow([
+                str(u.id), f"{u.first_name} {u.last_name}".strip(), u.first_name, u.last_name,
+                u.username, u.email, u.number or "", role_str, gender_str,
+                "Yes" if u.is_verified else "No", u.streak or 0, u.university or "",
+                u.last_login_date.strftime("%Y-%m-%d") if u.last_login_date else "",
+                u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+            ])
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode("utf-8")),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=nu_age_users_{timestamp}.csv"},
+        )
+
+    # Default: Excel (.xlsx)
+    excel_stream = _generate_excel_workbook(users)
+    return StreamingResponse(
+        excel_stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=nu_age_users_{timestamp}.xlsx"},
+    )
+
+
 @router.get("/users/{user_id}", response_model=AdminUserItem)
 def get_user_details(
     user_id: UUID,
@@ -475,159 +631,7 @@ def delete_user_account(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. EXCEL (.XLSX) & CSV DATA EXPORT
-# ─────────────────────────────────────────────────────────────────────────────
 
-def _generate_excel_workbook(users: List[models.User]) -> io.BytesIO:
-    """
-    Generates a beautifully styled Excel workbook containing all user information.
-    """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Nu-Age Users"
-
-    # Brand Colors
-    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")  # Slate 800
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    data_font = Font(name="Calibri", size=10, color="0F172A")
-    border_side = Side(border_style="thin", color="CBD5E1")
-    cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
-
-    headers = [
-        "User ID",
-        "Full Name",
-        "First Name",
-        "Last Name",
-        "Username",
-        "Email",
-        "Phone Number",
-        "Role",
-        "Gender",
-        "Verified",
-        "Streak (Days)",
-        "University",
-        "Last Login Date",
-        "Created At (UTC)",
-    ]
-    ws.append(headers)
-
-    # Style Header Row
-    for col_idx in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = cell_border
-    ws.row_dimensions[1].height = 28
-
-    # Populate Data
-    row_idx = 2
-    for u in users:
-        role_str = str(u.role.value if hasattr(u.role, "value") else u.role)
-        gender_str = str(u.gender.value if hasattr(u.gender, "value") else u.gender)
-        full_name = f"{u.first_name} {u.last_name}".strip()
-
-        row_data = [
-            str(u.id),
-            full_name or u.username,
-            u.first_name,
-            u.last_name,
-            u.username,
-            u.email,
-            u.number or "",
-            role_str,
-            gender_str,
-            "Yes" if u.is_verified else "No",
-            u.streak or 0,
-            u.university or "",
-            u.last_login_date.strftime("%Y-%m-%d") if u.last_login_date else "",
-            u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
-        ]
-        ws.append(row_data)
-
-        # Style data cells
-        for col_idx in range(1, len(row_data) + 1):
-            c = ws.cell(row=row_idx, column=col_idx)
-            c.font = data_font
-            c.border = cell_border
-            if col_idx in (1, 8, 9, 10, 11, 13, 14):
-                c.alignment = Alignment(horizontal="center", vertical="center")
-            else:
-                c.alignment = Alignment(horizontal="left", vertical="center")
-
-        ws.row_dimensions[row_idx].height = 20
-        row_idx += 1
-
-    # Auto-adjust column widths
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val_str = str(cell.value or "")
-            if len(val_str) > max_len:
-                max_len = len(val_str)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output
-
-
-@router.get("/users/export")
-def export_platform_users(
-    format: str = Query("xlsx", pattern="^(xlsx|csv)$"),
-    role: Optional[str] = Query(None, description="Optional role filter"),
-    current_admin: models.User = Depends(get_current_super_admin),
-    db: Session = Depends(get_db),
-):
-    """
-    Exports all current platform users to a formatted Excel workbook (.xlsx) or CSV file.
-    """
-    query = db.query(models.User).order_by(models.User.created_at.desc())
-    if isinstance(role, str) and role.strip() and role.lower() != "all":
-        r_clean = role.strip().capitalize()
-        for r_enum in Roles:
-            if r_enum.value.lower() == r_clean.lower():
-                query = query.filter(models.User.role == r_enum)
-                break
-
-    users = query.all()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    if format.lower() == "csv":
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow([
-            "User ID", "Full Name", "First Name", "Last Name", "Username", "Email",
-            "Phone Number", "Role", "Gender", "Verified", "Streak", "University",
-            "Last Login Date", "Created At"
-        ])
-        for u in users:
-            role_str = str(u.role.value if hasattr(u.role, "value") else u.role)
-            gender_str = str(u.gender.value if hasattr(u.gender, "value") else u.gender)
-            writer.writerow([
-                str(u.id), f"{u.first_name} {u.last_name}".strip(), u.first_name, u.last_name,
-                u.username, u.email, u.number or "", role_str, gender_str,
-                "Yes" if u.is_verified else "No", u.streak or 0, u.university or "",
-                u.last_login_date.strftime("%Y-%m-%d") if u.last_login_date else "",
-                u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
-            ])
-        output.seek(0)
-        return StreamingResponse(
-            io.BytesIO(output.getvalue().encode("utf-8")),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=nu_age_users_{timestamp}.csv"},
-        )
-
-    # Default: Excel (.xlsx)
-    excel_stream = _generate_excel_workbook(users)
-    return StreamingResponse(
-        excel_stream,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f"attachment; filename=nu_age_users_{timestamp}.xlsx"},
-    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
