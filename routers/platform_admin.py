@@ -104,10 +104,42 @@ class BulkEmailRequest(BaseModel):
 
 
 class BulkPushRequest(BaseModel):
-    audience: str = "all"  # "all", "students", "teachers", "admins", "unverified"
+    audience: str = "all"  # "all", "students", "teachers", "admins", "unverified", "test_me"
     title: str
     body: str
+    subtitle: Optional[str] = None
+    image_url: Optional[str] = None
     action_route: Optional[str] = None
+    action_button_label: Optional[str] = None
+    priority: int = 10  # 10=high, 5=normal
+    ttl_seconds: int = 86400  # 24h default
+
+
+class BroadcastHistoryItem(BaseModel):
+    id: int
+    sender_username: Optional[str] = None
+    title: str
+    body: str
+    subtitle: Optional[str] = None
+    image_url: Optional[str] = None
+    action_route: Optional[str] = None
+    action_button_label: Optional[str] = None
+    audience: str
+    targeted_devices_count: int = 0
+    delivered_count: int = 0
+    failed_count: int = 0
+    priority: int = 10
+    ttl_seconds: int = 86400
+    status: str
+    created_at: Optional[str] = None
+
+
+class BroadcastHistoryResponse(BaseModel):
+    items: List[BroadcastHistoryItem]
+    total: int
+    page: int
+    limit: int
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -749,17 +781,28 @@ def broadcast_bulk_push_notification(
     db: Session = Depends(get_db),
 ):
     """
-    Dispatches a push notification via Firebase FCM to all devices belonging to users in the audience.
+    Dispatches a rich push notification via OneSignal & Firebase FCM to targeted devices,
+    recording an audit entry in the notification_broadcasts database table.
     """
     if not payload.title.strip() or not payload.body.strip():
         raise HTTPException(status_code=400, detail="Notification title and body are required.")
 
-    target_users = _filter_users_by_audience(db, payload.audience)
-    if not user_ids:
+    # ── 1. Resolve Target Audience ───────────────────────────────────────────
+    is_test_to_me = payload.audience == "test_me"
+    if is_test_to_me:
+        target_users = [current_admin]
+        user_ids = [current_admin.id]
+    else:
+        target_users = _filter_users_by_audience(db, payload.audience)
+        user_ids = [u.id for u in target_users]
+
+    if not user_ids and not is_test_to_me and payload.audience != "all":
         return {"message": "No users found matching audience criteria.", "device_count": 0}
 
-    # ── 1. OneSignal Push Broadcast ───────────────────────────────────────────
+    # ── 2. OneSignal Rich Push Dispatch ──────────────────────────────────────
     onesignal_sent = False
+    onesignal_id = None
+    onesignal_recipients = 0
     try:
         settings = Settings()
         app_id = getattr(settings, "ONESIGNAL_APP_ID", "")
@@ -774,9 +817,28 @@ def broadcast_bulk_push_notification(
                 "app_id": app_id,
                 "headings": {"en": payload.title.strip()},
                 "contents": {"en": payload.body.strip()},
-                "data": {"route": payload.action_route} if payload.action_route else {},
+                "data": {"route": payload.action_route or "/notifications"},
+                "priority": payload.priority,
+                "ttl": payload.ttl_seconds,
             }
-            if payload.audience == "all":
+
+            if payload.subtitle and payload.subtitle.strip():
+                onesignal_payload["subtitle"] = {"en": payload.subtitle.strip()}
+
+            if payload.image_url and payload.image_url.strip():
+                img = payload.image_url.strip()
+                onesignal_payload["big_picture"] = img
+                onesignal_payload["ios_attachments"] = {"banner": img}
+
+            if payload.action_button_label and payload.action_button_label.strip():
+                onesignal_payload["buttons"] = [
+                    {"id": "btn_action", "text": payload.action_button_label.strip()}
+                ]
+
+            if is_test_to_me:
+                onesignal_payload["include_aliases"] = {"external_id": [str(current_admin.id)]}
+                onesignal_payload["target_channel"] = "push"
+            elif payload.audience == "all":
                 onesignal_payload["included_segments"] = ["Total Subscriptions"]
             else:
                 onesignal_payload["include_aliases"] = {"external_id": [str(uid) for uid in user_ids]}
@@ -784,67 +846,149 @@ def broadcast_bulk_push_notification(
 
             with httpx.Client(timeout=15.0) as client:
                 res = client.post("https://onesignal.com/api/v1/notifications", json=onesignal_payload, headers=headers)
-                print(f"[platform_admin] OneSignal broadcast dispatched: status={res.status_code}")
-                onesignal_sent = res.status_code in (200, 201)
+                print(f"[platform_admin] OneSignal broadcast: status={res.status_code}")
+                if res.status_code in (200, 201):
+                    onesignal_sent = True
+                    res_json = res.json()
+                    onesignal_id = res_json.get("id")
+                    onesignal_recipients = res_json.get("recipients", 0)
     except Exception as os_ex:
         print(f"[platform_admin] OneSignal broadcast error: {os_ex}")
 
-    # ── 2. Direct FCM Device Token Broadcast ──────────────────────────────────
-    tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all()
+    # ── 3. Direct FCM Device Token Broadcast (Fallback/Secondary) ─────────────
+    tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all() if user_ids else []
     token_strings = [t.token for t in tokens if t.token]
-
-    if not token_strings:
-        msg = "Push broadcast dispatched via OneSignal." if onesignal_sent else "No registered device tokens found for target audience."
-        return {"message": msg, "device_count": 0, "onesignal_dispatched": onesignal_sent}
 
     sent_count = 0
     failure_count = 0
     dead_tokens = []
 
+    if token_strings:
+        try:
+            import firebase_admin
+            from firebase_admin import messaging
+
+            data_payload = {"route": payload.action_route or "/notifications"}
+
+            chunk_size = 500
+            for i in range(0, len(token_strings), chunk_size):
+                chunk = token_strings[i : i + chunk_size]
+                msg = messaging.MulticastMessage(
+                    notification=messaging.Notification(
+                        title=payload.title.strip(),
+                        body=payload.body.strip(),
+                        image=payload.image_url.strip() if payload.image_url else None,
+                    ),
+                    data=data_payload,
+                    tokens=chunk,
+                )
+                response = messaging.send_each_for_multicast(msg)
+                sent_count += response.success_count
+                failure_count += response.failure_count
+
+                if response.failure_count > 0:
+                    for idx, resp in enumerate(response.responses):
+                        if not resp.success:
+                            if getattr(resp.exception, "code", "") == "messaging/registration-token-not-registered":
+                                dead_tokens.append(chunk[idx])
+
+            if dead_tokens:
+                db.query(models.DeviceToken).filter(models.DeviceToken.token.in_(dead_tokens)).delete(synchronize_session=False)
+                db.commit()
+
+        except Exception as ex:
+            print(f"[platform_admin] Direct FCM broadcast warning: {ex}")
+
+    # ── 4. Record Broadcast Audit Log ─────────────────────────────────────────
+    total_targeted = onesignal_recipients or len(token_strings) or len(user_ids)
+    delivery_status = "test" if is_test_to_me else ("completed" if (onesignal_sent or sent_count > 0) else "failed")
+
     try:
-        import firebase_admin
-        from firebase_admin import messaging
+        broadcast_record = models.NotificationBroadcast(
+            sender_id=current_admin.id,
+            sender_username=current_admin.username,
+            title=payload.title.strip(),
+            body=payload.body.strip(),
+            subtitle=payload.subtitle.strip() if payload.subtitle else None,
+            image_url=payload.image_url.strip() if payload.image_url else None,
+            action_route=payload.action_route,
+            action_button_label=payload.action_button_label,
+            audience=payload.audience,
+            targeted_devices_count=total_targeted,
+            delivered_count=sent_count or total_targeted if onesignal_sent else 0,
+            failed_count=failure_count,
+            priority=payload.priority,
+            ttl_seconds=payload.ttl_seconds,
+            onesignal_id=onesignal_id,
+            status=delivery_status,
+        )
+        db.add(broadcast_record)
+        db.commit()
+    except Exception as db_err:
+        print(f"[platform_admin] Failed logging broadcast to database: {db_err}")
+        db.rollback()
 
-        data_payload = {"route": payload.action_route} if payload.action_route else {}
-
-        # Chunk into 500 tokens (Firebase multicast limit)
-        chunk_size = 500
-        for i in range(0, len(token_strings), chunk_size):
-            chunk = token_strings[i : i + chunk_size]
-            msg = messaging.MulticastMessage(
-                notification=messaging.Notification(
-                    title=payload.title.strip(),
-                    body=payload.body.strip(),
-                ),
-                data=data_payload,
-                tokens=chunk,
-            )
-            response = messaging.send_each_for_multicast(msg)
-            sent_count += response.success_count
-            failure_count += response.failure_count
-
-            # Collect dead tokens for cleanup
-            if response.failure_count > 0:
-                for idx, resp in enumerate(response.responses):
-                    if not resp.success:
-                        if getattr(resp.exception, "code", "") == "messaging/registration-token-not-registered":
-                            dead_tokens.append(chunk[idx])
-
-        # Purge dead tokens from database
-        if dead_tokens:
-            db.query(models.DeviceToken).filter(models.DeviceToken.token.in_(dead_tokens)).delete(synchronize_session=False)
-            db.commit()
-
-    except Exception as ex:
-        print(f"[platform_admin] Push notification dispatch error: {ex}")
-        raise HTTPException(status_code=500, detail=f"Failed sending push notification: {ex}")
+    status_msg = (
+        "Test notification dispatched to your device."
+        if is_test_to_me
+        else f"Broadcast sent! Targeted ~{total_targeted:,} recipients (OneSignal: {'OK' if onesignal_sent else 'Standby'}, Direct FCM: {sent_count})."
+    )
 
     return {
-        "message": f"Push broadcast delivered to {sent_count} device(s) ({failure_count} failures, {len(dead_tokens)} dead tokens pruned).",
-        "devices_targeted": len(token_strings),
+        "message": status_msg,
+        "devices_targeted": total_targeted,
         "sent_count": sent_count,
-        "failure_count": failure_count,
+        "onesignal_sent": onesignal_sent,
+        "onesignal_id": onesignal_id,
+        "status": delivery_status,
     }
+
+
+@router.get("/broadcast/history", response_model=BroadcastHistoryResponse)
+def get_broadcast_history(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    current_admin: models.User = Depends(get_current_super_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns a paginated audit log of all push notification broadcasts dispatched
+    from the Super Admin Center.
+    """
+    query = db.query(models.NotificationBroadcast).order_by(desc(models.NotificationBroadcast.created_at))
+    total = query.count()
+    records = query.offset((page - 1) * limit).limit(limit).all()
+
+    items = []
+    for r in records:
+        items.append(
+            BroadcastHistoryItem(
+                id=r.id,
+                sender_username=r.sender_username,
+                title=r.title,
+                body=r.body,
+                subtitle=r.subtitle,
+                image_url=r.image_url,
+                action_route=r.action_route,
+                action_button_label=r.action_button_label,
+                audience=r.audience,
+                targeted_devices_count=r.targeted_devices_count or 0,
+                delivered_count=r.delivered_count or 0,
+                failed_count=r.failed_count or 0,
+                priority=r.priority or 10,
+                ttl_seconds=r.ttl_seconds or 86400,
+                status=r.status or "completed",
+                created_at=r.created_at.isoformat() if r.created_at else None,
+            )
+        )
+
+    return BroadcastHistoryResponse(
+        items=items,
+        total=total,
+        page=page,
+        limit=limit,
+    )
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

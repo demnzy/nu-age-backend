@@ -704,3 +704,28 @@ class CohortExamSubmission(Base):
         Index("ix_cohort_exam_sub_user_exam", "exam_id", "user_id"),
         Index("ix_cohort_exam_sub_cohort", "cohort_id", "user_id"),
     )
+
+
+class NotificationBroadcast(Base):
+    __tablename__ = "notification_broadcasts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    sender_username = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False)
+    subtitle = Column(String, nullable=True)
+    image_url = Column(String, nullable=True)
+    action_route = Column(String, nullable=True)
+    action_button_label = Column(String, nullable=True)
+    audience = Column(String, default="all")  # all, students, teachers, admins, unverified, test_me
+    targeted_devices_count = Column(Integer, default=0)
+    delivered_count = Column(Integer, default=0)
+    failed_count = Column(Integer, default=0)
+    priority = Column(Integer, default=10)
+    ttl_seconds = Column(Integer, default=86400)
+    onesignal_id = Column(String, nullable=True)
+    status = Column(String, default="completed")  # completed, partial, failed, test
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    sender = relationship("User", foreign_keys=[sender_id])
