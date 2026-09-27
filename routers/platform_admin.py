@@ -755,17 +755,47 @@ def broadcast_bulk_push_notification(
         raise HTTPException(status_code=400, detail="Notification title and body are required.")
 
     target_users = _filter_users_by_audience(db, payload.audience)
-    user_ids = [u.id for u in target_users]
-
     if not user_ids:
         return {"message": "No users found matching audience criteria.", "device_count": 0}
 
-    # Query all active device tokens for these users
+    # ── 1. OneSignal Push Broadcast ───────────────────────────────────────────
+    onesignal_sent = False
+    try:
+        settings = Settings()
+        app_id = getattr(settings, "ONESIGNAL_APP_ID", "")
+        api_key = getattr(settings, "ONESIGNAL_REST_API_KEY", "")
+        if app_id and api_key:
+            import httpx
+            headers = {
+                "Authorization": f"Basic {api_key}",
+                "Content-Type": "application/json",
+            }
+            onesignal_payload = {
+                "app_id": app_id,
+                "headings": {"en": payload.title.strip()},
+                "contents": {"en": payload.body.strip()},
+                "data": {"route": payload.action_route} if payload.action_route else {},
+            }
+            if payload.audience == "all":
+                onesignal_payload["included_segments"] = ["Total Subscriptions"]
+            else:
+                onesignal_payload["include_aliases"] = {"external_id": [str(uid) for uid in user_ids]}
+                onesignal_payload["target_channel"] = "push"
+
+            with httpx.Client(timeout=15.0) as client:
+                res = client.post("https://onesignal.com/api/v1/notifications", json=onesignal_payload, headers=headers)
+                print(f"[platform_admin] OneSignal broadcast dispatched: status={res.status_code}")
+                onesignal_sent = res.status_code in (200, 201)
+    except Exception as os_ex:
+        print(f"[platform_admin] OneSignal broadcast error: {os_ex}")
+
+    # ── 2. Direct FCM Device Token Broadcast ──────────────────────────────────
     tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all()
     token_strings = [t.token for t in tokens if t.token]
 
     if not token_strings:
-        return {"message": "No registered device tokens found for target audience.", "device_count": 0}
+        msg = "Push broadcast dispatched via OneSignal." if onesignal_sent else "No registered device tokens found for target audience."
+        return {"message": msg, "device_count": 0, "onesignal_dispatched": onesignal_sent}
 
     sent_count = 0
     failure_count = 0

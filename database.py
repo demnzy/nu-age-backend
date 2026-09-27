@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "agentrouter"
     YOUTUBE_API_KEY: str = ""
     PLATFORM_SUPER_ADMINS: str = ""
+    ONESIGNAL_APP_ID: str = ""
+    ONESIGNAL_REST_API_KEY: str = ""
     model_config = SettingsConfigDict(env_file=".env")
     
 Url= Settings().DB_URL
