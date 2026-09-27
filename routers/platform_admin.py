@@ -810,11 +810,17 @@ def broadcast_bulk_push_notification(
         settings = Settings()
         app_id = settings.get_onesignal_app_id()
         api_key = settings.get_onesignal_rest_api_key()
-        if app_id and api_key:
+
+        if not app_id or not api_key:
+            print(f"[platform_admin] WARNING: OneSignal broadcast skipped. Missing credentials. "
+                  f"ONESIGNAL_APP_ID={'configured (' + settings.mask_onesignal_app_id() + ')' if app_id else 'MISSING'}, "
+                  f"ONESIGNAL_REST_API_KEY={'configured (' + settings.mask_onesignal_key() + ')' if api_key else 'MISSING'}")
+        else:
             import httpx
+            onesignal_url = "https://api.onesignal.com/notifications"
             headers = {
-                "Authorization": f"Basic {api_key}",
-                "Content-Type": "application/json",
+                "Authorization": f"Key {api_key}",
+                "Content-Type": "application/json; charset=utf-8",
             }
             target_route_path = (payload.action_route or "/notifications").strip()
             if not target_route_path.startswith("/"):
@@ -842,27 +848,61 @@ def broadcast_bulk_push_notification(
                     {"id": "btn_action", "text": payload.action_button_label.strip()}
                 ]
 
+            targeted_uids_str = []
             if is_test_to_me:
-                onesignal_payload["include_aliases"] = {"external_id": [str(current_admin.id)]}
+                targeted_uids_str = [str(current_admin.id)]
+                onesignal_payload["include_aliases"] = {"external_id": targeted_uids_str}
                 onesignal_payload["target_channel"] = "push"
             elif payload.audience == "all":
                 onesignal_payload["included_segments"] = ["Subscribed Users"]
             else:
-                onesignal_payload["include_aliases"] = {"external_id": [str(uid) for uid in user_ids]}
+                targeted_uids_str = [str(uid) for uid in user_ids]
+                onesignal_payload["include_aliases"] = {"external_id": targeted_uids_str}
                 onesignal_payload["target_channel"] = "push"
 
+            target_desc = f"segment 'Subscribed Users'" if payload.audience == "all" and not is_test_to_me else f"{len(targeted_uids_str)} aliases"
+            print(f"[platform_admin] OneSignal broadcasting to {target_desc}... "
+                  f"app_id={settings.mask_onesignal_app_id()}, auth=Key {settings.mask_onesignal_key()}")
+
             with httpx.Client(timeout=15.0) as client:
-                res = client.post("https://onesignal.com/api/v1/notifications", json=onesignal_payload, headers=headers)
-                print(f"[platform_admin] OneSignal broadcast: status={res.status_code}")
-                if res.status_code in (200, 201):
-                    onesignal_sent = True
+                res = client.post(onesignal_url, json=onesignal_payload, headers=headers)
+                res_text = res.text
+                try:
                     res_json = res.json()
-                    onesignal_id = res_json.get("id")
-                    onesignal_recipients = res_json.get("recipients", 0)
+                except Exception:
+                    res_json = {}
+
+                onesignal_id = res_json.get("id")
+                onesignal_recipients = res_json.get("recipients", 0)
+                os_errors = res_json.get("errors")
+                os_warnings = res_json.get("warnings")
+
+                if res.status_code in (200, 201) and not os_errors:
+                    onesignal_sent = True
+                    print(f"[platform_admin] OneSignal broadcast SUCCESS: id={onesignal_id}, recipients={onesignal_recipients}, warnings={os_warnings}")
                 else:
-                    print(f"[platform_admin] OneSignal error response: {res.status_code} - {res.text}")
+                    print(f"[platform_admin] OneSignal broadcast issue: status={res.status_code}, id={onesignal_id}, recipients={onesignal_recipients}, errors={os_errors}, warnings={os_warnings}, raw={res_text}")
+
+                    # Fallback retry for targeted aliases if needed
+                    if targeted_uids_str and (res.status_code == 400 or (os_errors and isinstance(os_errors, dict) and "invalid_aliases" in os_errors)):
+                        print(f"[platform_admin] Retrying targeted broadcast with legacy include_external_user_ids...")
+                        fb_payload = dict(onesignal_payload)
+                        fb_payload.pop("include_aliases", None)
+                        fb_payload.pop("target_channel", None)
+                        fb_payload["include_external_user_ids"] = targeted_uids_str
+                        res_fb = client.post(onesignal_url, json=fb_payload, headers=headers)
+                        try:
+                            fb_json = res_fb.json()
+                        except Exception:
+                            fb_json = {}
+                        if res_fb.status_code in (200, 201) and not fb_json.get("errors"):
+                            onesignal_sent = True
+                            onesignal_id = fb_json.get("id") or onesignal_id
+                            onesignal_recipients = fb_json.get("recipients", 0)
+                        print(f"[platform_admin] OneSignal fallback response: status={res_fb.status_code}, id={onesignal_id}, recipients={onesignal_recipients}, errors={fb_json.get('errors')}")
+
     except Exception as os_ex:
-        print(f"[platform_admin] OneSignal broadcast error: {os_ex}")
+        print(f"[platform_admin] OneSignal broadcast exception: {os_ex!r}")
 
     # ── 3. Direct FCM Device Token Broadcast (Fallback/Secondary) ─────────────
     if payload.audience == "all":

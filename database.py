@@ -40,11 +40,35 @@ class Settings(BaseSettings):
 
     def get_onesignal_app_id(self) -> str:
         import os
-        return self.ONESIGNAL_APP_ID or self.ONE_SIGNAL_APP_ID or os.getenv("ONESIGNAL_APP_ID") or os.getenv("ONE_SIGNAL_APP_ID") or ""
+        val = self.ONESIGNAL_APP_ID or self.ONE_SIGNAL_APP_ID or os.getenv("ONESIGNAL_APP_ID") or os.getenv("ONE_SIGNAL_APP_ID") or ""
+        return str(val).strip().strip('"').strip("'")
 
     def get_onesignal_rest_api_key(self) -> str:
         import os
-        return self.ONESIGNAL_REST_API_KEY or self.ONE_SIGNAL_REST_API_KEY or self.ONESIGNAL_API_KEY or self.ONE_SIGNAL_API_KEY or os.getenv("ONESIGNAL_REST_API_KEY") or os.getenv("ONE_SIGNAL_REST_API_KEY") or os.getenv("ONESIGNAL_API_KEY") or ""
+        val = (
+            self.ONESIGNAL_REST_API_KEY
+            or self.ONE_SIGNAL_REST_API_KEY
+            or self.ONESIGNAL_API_KEY
+            or self.ONE_SIGNAL_API_KEY
+            or os.getenv("ONESIGNAL_REST_API_KEY")
+            or os.getenv("ONE_SIGNAL_REST_API_KEY")
+            or os.getenv("ONESIGNAL_API_KEY")
+            or os.getenv("ONE_SIGNAL_API_KEY")
+            or ""
+        )
+        return str(val).strip().strip('"').strip("'")
+
+    def mask_onesignal_app_id(self) -> str:
+        aid = self.get_onesignal_app_id()
+        if not aid:
+            return "<none>"
+        return f"{aid[:6]}...{aid[-4:]}" if len(aid) > 10 else "***"
+
+    def mask_onesignal_key(self) -> str:
+        key = self.get_onesignal_rest_api_key()
+        if not key:
+            return "<none>"
+        return f"{key[:6]}...{key[-4:]}" if len(key) > 10 else "***"
     
 Url= Settings().DB_URL
 engine = create_engine(

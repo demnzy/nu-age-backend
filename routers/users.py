@@ -60,6 +60,7 @@ class DeviceTokenSchema(BaseModel):
     token: str
     device_type: str = "web" # default
 
+@router.post("/device-token")
 @router.post("/users/device-token")
 async def register_device_token(
     payload: DeviceTokenSchema, 

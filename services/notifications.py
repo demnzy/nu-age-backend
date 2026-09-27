@@ -121,10 +121,19 @@ def dispatch_notification(
             settings = Settings()
             app_id = settings.get_onesignal_app_id()
             api_key = settings.get_onesignal_rest_api_key()
-            if app_id and api_key and valid_recipients_str:
+
+            if not app_id or not api_key:
+                print(f"[OneSignal] WARNING: Push dispatch skipped. Missing credentials in Settings. "
+                      f"ONESIGNAL_APP_ID={'configured (' + settings.mask_onesignal_app_id() + ')' if app_id else 'MISSING'}, "
+                      f"ONESIGNAL_REST_API_KEY={'configured (' + settings.mask_onesignal_key() + ')' if api_key else 'MISSING'}")
+            elif not valid_recipients_str:
+                print(f"[OneSignal] Push dispatch skipped: No valid recipients to notify.")
+            else:
+                # Modern OneSignal REST API endpoint and Authorization: Key header
+                onesignal_url = "https://api.onesignal.com/notifications"
                 headers = {
-                    "Authorization": f"Basic {api_key}",
-                    "Content-Type": "application/json",
+                    "Authorization": f"Key {api_key}",
+                    "Content-Type": "application/json; charset=utf-8",
                 }
                 body_payload = {
                     "app_id": app_id,
@@ -134,13 +143,47 @@ def dispatch_notification(
                     "contents": {"en": body},
                     "data": clean_data,
                 }
-                with httpx.Client(timeout=10.0) as client:
-                    res = client.post("https://onesignal.com/api/v1/notifications", json=body_payload, headers=headers)
-                    print(f"[OneSignal] Dispatched notification to {len(valid_recipients_str)} users: status={res.status_code}")
-                    if res.status_code not in (200, 201):
-                        print(f"[OneSignal] Error response: {res.status_code} - {res.text}")
+                print(f"[OneSignal] Dispatching push to {len(valid_recipients_str)} user(s)... "
+                      f"app_id={settings.mask_onesignal_app_id()}, auth=Key {settings.mask_onesignal_key()}, "
+                      f"title='{title[:30]}'")
+
+                with httpx.Client(timeout=12.0) as client:
+                    res = client.post(onesignal_url, json=body_payload, headers=headers)
+                    res_text = res.text
+                    try:
+                        res_json = res.json()
+                    except Exception:
+                        res_json = {}
+
+                    notif_id = res_json.get("id")
+                    recipients = res_json.get("recipients", 0)
+                    errors = res_json.get("errors")
+                    warnings = res_json.get("warnings")
+
+                    if res.status_code in (200, 201) and not errors:
+                        print(f"[OneSignal] Push SUCCESS: id={notif_id}, recipients={recipients}, warnings={warnings}")
+                    else:
+                        print(f"[OneSignal] Push issue: status={res.status_code}, id={notif_id}, recipients={recipients}, errors={errors}, warnings={warnings}, raw={res_text}")
+
+                        # Resilient fallback: If alias targeting failed (e.g. invalid_aliases or 400), retry with legacy include_external_user_ids
+                        if (res.status_code == 400 or (errors and isinstance(errors, dict) and "invalid_aliases" in errors)) and valid_recipients_str:
+                            print(f"[OneSignal] Retrying with legacy include_external_user_ids targeting...")
+                            fallback_payload = {
+                                "app_id": app_id,
+                                "include_external_user_ids": valid_recipients_str,
+                                "headings": {"en": title},
+                                "contents": {"en": body},
+                                "data": clean_data,
+                            }
+                            res_fallback = client.post(onesignal_url, json=fallback_payload, headers=headers)
+                            try:
+                                fb_json = res_fallback.json()
+                            except Exception:
+                                fb_json = {}
+                            print(f"[OneSignal] Fallback response: status={res_fallback.status_code}, id={fb_json.get('id')}, recipients={fb_json.get('recipients', 0)}, errors={fb_json.get('errors')}")
+
         except Exception as os_ex:
-            print(f"[OneSignal] Error dispatching push notification: {os_ex}")
+            print(f"[OneSignal] ERROR dispatching push notification: {os_ex!r}")
 
         # 5. Direct FCM fallback dispatch for registered device tokens
         try:
