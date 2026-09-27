@@ -792,6 +792,9 @@ def broadcast_bulk_push_notification(
     if is_test_to_me:
         target_users = [current_admin]
         user_ids = [current_admin.id]
+    elif payload.audience == "all":
+        target_users = []
+        user_ids = []
     else:
         target_users = _filter_users_by_audience(db, payload.audience)
         user_ids = [u.id for u in target_users]
@@ -805,8 +808,8 @@ def broadcast_bulk_push_notification(
     onesignal_recipients = 0
     try:
         settings = Settings()
-        app_id = getattr(settings, "ONESIGNAL_APP_ID", "")
-        api_key = getattr(settings, "ONESIGNAL_REST_API_KEY", "")
+        app_id = settings.get_onesignal_app_id()
+        api_key = settings.get_onesignal_rest_api_key()
         if app_id and api_key:
             import httpx
             headers = {
@@ -843,7 +846,7 @@ def broadcast_bulk_push_notification(
                 onesignal_payload["include_aliases"] = {"external_id": [str(current_admin.id)]}
                 onesignal_payload["target_channel"] = "push"
             elif payload.audience == "all":
-                onesignal_payload["included_segments"] = ["Total Subscriptions"]
+                onesignal_payload["included_segments"] = ["Subscribed Users"]
             else:
                 onesignal_payload["include_aliases"] = {"external_id": [str(uid) for uid in user_ids]}
                 onesignal_payload["target_channel"] = "push"
@@ -862,7 +865,12 @@ def broadcast_bulk_push_notification(
         print(f"[platform_admin] OneSignal broadcast error: {os_ex}")
 
     # ── 3. Direct FCM Device Token Broadcast (Fallback/Secondary) ─────────────
-    tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all() if user_ids else []
+    if payload.audience == "all":
+        tokens = db.query(models.DeviceToken).all()
+    elif user_ids:
+        tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all()
+    else:
+        tokens = []
     token_strings = [t.token for t in tokens if t.token]
 
     sent_count = 0
@@ -906,7 +914,12 @@ def broadcast_bulk_push_notification(
             print(f"[platform_admin] Direct FCM broadcast warning: {ex}")
 
     # ── 4. Record Broadcast Audit Log ─────────────────────────────────────────
-    total_targeted = onesignal_recipients or len(token_strings) or len(user_ids)
+    total_targeted = onesignal_recipients or len(token_strings) or (len(user_ids) if user_ids else 0)
+    if not total_targeted and payload.audience == "all":
+        try:
+            total_targeted = db.query(models.User).count()
+        except Exception:
+            total_targeted = 0
     delivery_status = "test" if is_test_to_me else ("completed" if (onesignal_sent or sent_count > 0) else "failed")
 
     try:

@@ -20,6 +20,22 @@ def _run_migrations():
                 "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS violation_log JSONB DEFAULT '[]'::jsonb;",
                 "ALTER TABLE cohort_exam_submissions ADD COLUMN IF NOT EXISTS session_token VARCHAR;",
                 "ALTER TABLE cohort_exam_questions ADD COLUMN IF NOT EXISTS scenario_text TEXT;",
+                """
+                CREATE TABLE IF NOT EXISTS user_notifications (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    sender_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+                    title VARCHAR NOT NULL,
+                    body TEXT NOT NULL,
+                    category VARCHAR DEFAULT 'general',
+                    action_route VARCHAR,
+                    data_payload JSONB DEFAULT '{}'::jsonb,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_user_notif_user_created ON user_notifications(user_id, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS ix_user_notif_unread ON user_notifications(user_id, is_read);",
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))

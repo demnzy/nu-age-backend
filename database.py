@@ -32,7 +32,19 @@ class Settings(BaseSettings):
     PLATFORM_SUPER_ADMINS: str = ""
     ONESIGNAL_APP_ID: str = ""
     ONESIGNAL_REST_API_KEY: str = ""
-    model_config = SettingsConfigDict(env_file=".env")
+    ONE_SIGNAL_APP_ID: str = ""
+    ONE_SIGNAL_REST_API_KEY: str = ""
+    ONESIGNAL_API_KEY: str = ""
+    ONE_SIGNAL_API_KEY: str = ""
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_onesignal_app_id(self) -> str:
+        import os
+        return self.ONESIGNAL_APP_ID or self.ONE_SIGNAL_APP_ID or os.getenv("ONESIGNAL_APP_ID") or os.getenv("ONE_SIGNAL_APP_ID") or ""
+
+    def get_onesignal_rest_api_key(self) -> str:
+        import os
+        return self.ONESIGNAL_REST_API_KEY or self.ONE_SIGNAL_REST_API_KEY or self.ONESIGNAL_API_KEY or self.ONE_SIGNAL_API_KEY or os.getenv("ONESIGNAL_REST_API_KEY") or os.getenv("ONE_SIGNAL_REST_API_KEY") or os.getenv("ONESIGNAL_API_KEY") or ""
     
 Url= Settings().DB_URL
 engine = create_engine(

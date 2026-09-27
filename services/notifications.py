@@ -43,17 +43,26 @@ def dispatch_notification(
         recipient_user_ids = [recipient_user_ids] if recipient_user_ids else []
 
     sender_str = str(sender_id).strip().lower() if sender_id else ""
-    valid_recipients = []
+    valid_recipients_uuid = []
+    valid_recipients_str = []
     seen = set()
     for uid in recipient_user_ids:
         if not uid:
             continue
-        uid_str = str(uid).strip()
-        if uid_str.lower() != sender_str and uid_str.lower() not in seen:
-            seen.add(uid_str.lower())
-            valid_recipients.append(uid_str)
+        try:
+            u_obj = uuid.UUID(str(uid).strip()) if not isinstance(uid, uuid.UUID) else uid
+            u_str = str(u_obj)
+        except Exception:
+            u_str = str(uid).strip()
+            u_obj = None
 
-    if not valid_recipients:
+        if u_str.lower() != sender_str and u_str.lower() not in seen:
+            seen.add(u_str.lower())
+            if u_obj:
+                valid_recipients_uuid.append(u_obj)
+            valid_recipients_str.append(u_str)
+
+    if not valid_recipients_str:
         return []
 
     # 2. Normalize routing and payload
@@ -77,14 +86,11 @@ def dispatch_notification(
             except Exception:
                 sid_uuid = None
 
-        for uid_str in valid_recipients:
-            try:
-                uid_uuid = uuid.UUID(uid_str)
-            except Exception:
-                uid_uuid = uid_str
-
+        # Prefer UUID objects for foreign key integrity in PostgreSQL
+        target_ids_for_db = valid_recipients_uuid if valid_recipients_uuid else valid_recipients_str
+        for target_id in target_ids_for_db:
             notif = models.UserNotification(
-                user_id=uid_uuid,
+                user_id=target_id,
                 sender_id=sid_uuid,
                 title=title,
                 body=body,
@@ -113,16 +119,16 @@ def dispatch_notification(
     if send_push:
         try:
             settings = Settings()
-            app_id = getattr(settings, "ONESIGNAL_APP_ID", "")
-            api_key = getattr(settings, "ONESIGNAL_REST_API_KEY", "")
-            if app_id and api_key and valid_recipients:
+            app_id = settings.get_onesignal_app_id()
+            api_key = settings.get_onesignal_rest_api_key()
+            if app_id and api_key and valid_recipients_str:
                 headers = {
                     "Authorization": f"Basic {api_key}",
                     "Content-Type": "application/json",
                 }
                 body_payload = {
                     "app_id": app_id,
-                    "include_aliases": {"external_id": valid_recipients},
+                    "include_aliases": {"external_id": valid_recipients_str},
                     "target_channel": "push",
                     "headings": {"en": title},
                     "contents": {"en": body},
@@ -130,7 +136,7 @@ def dispatch_notification(
                 }
                 with httpx.Client(timeout=10.0) as client:
                     res = client.post("https://onesignal.com/api/v1/notifications", json=body_payload, headers=headers)
-                    print(f"[OneSignal] Dispatched notification to {len(valid_recipients)} users: status={res.status_code}")
+                    print(f"[OneSignal] Dispatched notification to {len(valid_recipients_str)} users: status={res.status_code}")
                     if res.status_code not in (200, 201):
                         print(f"[OneSignal] Error response: {res.status_code} - {res.text}")
         except Exception as os_ex:
@@ -138,18 +144,19 @@ def dispatch_notification(
 
         # 5. Direct FCM fallback dispatch for registered device tokens
         try:
-            tokens = db.query(models.DeviceToken).filter(
-                models.DeviceToken.user_id.in_(valid_recipients)
-            ).all()
-            if tokens and firebase_admin._apps:
-                token_strings = [t.token for t in tokens if t.token]
-                if token_strings:
-                    fcm_msg = messaging.MulticastMessage(
-                        notification=messaging.Notification(title=title, body=body),
-                        data={k: str(v) for k, v in clean_data.items()},
-                        tokens=token_strings,
-                    )
-                    messaging.send_each_for_multicast(fcm_msg)
+            if valid_recipients_uuid:
+                tokens = db.query(models.DeviceToken).filter(
+                    models.DeviceToken.user_id.in_(valid_recipients_uuid)
+                ).all()
+                if tokens and firebase_admin._apps:
+                    token_strings = [t.token for t in tokens if t.token]
+                    if token_strings:
+                        fcm_msg = messaging.MulticastMessage(
+                            notification=messaging.Notification(title=title, body=body),
+                            data={k: str(v) for k, v in clean_data.items()},
+                            tokens=token_strings,
+                        )
+                        messaging.send_each_for_multicast(fcm_msg)
         except Exception as fcm_ex:
             print(f"[notifications] FCM dispatch notice: {fcm_ex}")
 
@@ -157,7 +164,7 @@ def dispatch_notification(
 
 
 def send_push_notification(db: Session, user_id, title: str, body: str, data_payload: dict = None):
-    """Legacy compatibility wrapper that dispatches both push and DB persistence."""
+    """Direct push notification dispatch that ensures both OneSignal and DB persistence."""
     return dispatch_notification(
         db=db,
         recipient_user_ids=[user_id],
@@ -166,45 +173,4 @@ def send_push_notification(db: Session, user_id, title: str, body: str, data_pay
         action_route=(data_payload or {}).get("route") or (data_payload or {}).get("action_route"),
         data_payload=data_payload,
         send_push=True
-    )
-    
-    if not tokens:
-        print(f"No device tokens found in DB for user {user_id}")
-        return
-
-    # 2. Extract just the token strings
-    token_strings = [t.token for t in tokens]
-
-    # 3. Construct the message
-    # 'data' is the invisible payload your frontend can use (e.g., {"course_id": "123"})
-    # 'notification' is the visible alert the user sees on their lock screen
-    message = messaging.MulticastMessage(
-        notification=messaging.Notification(
-            title=title,
-            body=body,
-        ),
-        data=data_payload or {},
-        tokens=token_strings,
-    )
-
-    try:
-        # 4. Send the message via Google's servers
-        response = messaging.send_each_for_multicast(message)
-        print(f"Successfully sent {response.success_count} messages.")
-        
-        # 5. Clean up dead tokens (Crucial for performance)
-        # If a student uninstalls the app, their token becomes invalid. 
-        # We must delete it so we don't keep pinging a dead phone.
-        if response.failure_count > 0:
-            responses = response.responses
-            for idx, resp in enumerate(responses):
-                if not resp.success:
-                    # 'Unregistered' means the app was uninstalled or token expired
-                    if resp.exception.code == 'messaging/registration-token-not-registered':
-                        dead_token = token_strings[idx]
-                        db.query(models.DeviceToken).filter(models.DeviceToken.token == dead_token).delete()
-                        db.commit()
-                        print(f"Deleted dead token: {dead_token}")
-
-    except Exception as e:
-        print(f"Error sending push notification: {e}")
+    )

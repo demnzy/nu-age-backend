@@ -259,47 +259,108 @@ async def chat_websocket(
             chan_name = chan_obj.name if chan_obj and chan_obj.name else "Chat"
             chat_route = f"/nu-chat?channel={channel_id}"
 
-            if meta_dict and isinstance(meta_dict, dict) and "mentions" in meta_dict:
-                mentioned = meta_dict.get("mentions", [])
+            import re
+            if not meta_dict:
+                meta_dict = {}
+
+            # Automatically extract mentions from message content as fallback
+            content_mentions = re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
+            mentioned = list(meta_dict.get("mentions", []))
+            for cm in content_mentions:
+                if cm not in mentioned:
+                    mentioned.append(cm)
+            mention_ids = list(meta_dict.get("mention_ids", []))
+
+            if mentioned or mention_ids:
+
+                # 1. Fetch channel members for precise in-group mention resolution
+                channel_member_users = (
+                    db.query(models.User)
+                    .join(models.ChannelMember, models.ChannelMember.user_id == models.User.id)
+                    .filter(models.ChannelMember.channel_id == channel_id)
+                    .all()
+                )
+
+                recipients_to_notify = set()
+
+                # Process direct mention_ids if provided
+                for m_uid in mention_ids:
+                    try:
+                        u_target = db.query(models.User).filter_by(id=m_uid).first()
+                        if u_target and u_target.id != user.id:
+                            recipients_to_notify.add(u_target.id)
+                    except Exception:
+                        pass
+
                 for m_id in mentioned:
                     try:
                         m_clean = str(m_id).lstrip("@").strip().lower()
                         if m_clean == "admin":
-                            # Target group admin(s) or channel creator
                             admin_members = db.query(models.ChannelMember).filter_by(channel_id=channel_id, role="admin").all()
-                            admin_ids = [m.user_id for m in admin_members]
-                            if not admin_ids and chan_obj and chan_obj.created_by_id:
+                            admin_ids = [m.user_id for m in admin_members if m.user_id != user.id]
+                            if not admin_ids and chan_obj and chan_obj.created_by_id and chan_obj.created_by_id != user.id:
                                 admin_ids = [chan_obj.created_by_id]
                             
-                            dispatch_notification(
-                                db=db,
-                                recipient_user_ids=admin_ids,
-                                title=f"Admin Tag: {sender_name} tagged @admin",
-                                body=f"{chan_name}: {new_msg.content[:120]}",
-                                category="mentions",
-                                action_route=chat_route,
-                                sender_id=user.id,
-                                data_payload={"channel_id": str(channel_id), "type": "admin_mention"}
-                            )
-                        else:
-                            # Match username or first name
-                            target_u = db.query(models.User).filter(
-                                (models.User.username.ilike(m_clean)) |
-                                (models.User.first_name.ilike(m_clean))
-                            ).first()
-                            if target_u and target_u.id != user.id:
+                            if admin_ids:
                                 dispatch_notification(
                                     db=db,
-                                    recipient_user_ids=[target_u.id],
-                                    title=f"{sender_name} mentioned you",
-                                    body=f"{chan_name}: {new_msg.content[:120]}",
-                                    category="mentions",
+                                    recipient_user_ids=admin_ids,
+                                    title=f"Admin Tag: {sender_name} in {chan_name}",
+                                    body=f"{sender_name} tagged @admin: {new_msg.content[:120]}",
+                                    category="chat",
                                     action_route=chat_route,
                                     sender_id=user.id,
-                                    data_payload={"channel_id": str(channel_id), "type": "mention"}
+                                    data_payload={"channel_id": str(channel_id), "type": "admin_mention"}
                                 )
+                        else:
+                            # Match channel member users first
+                            matched_u = None
+                            clean_no_score = m_clean.replace("_", " ")
+                            for c_u in channel_member_users:
+                                if c_u.id == user.id:
+                                    continue
+                                c_uname = (c_u.username or "").lower().strip()
+                                c_fname = (c_u.first_name or "").lower().strip()
+                                c_lname = (c_u.last_name or "").lower().strip()
+                                c_full = f"{c_fname} {c_lname}".strip()
+                                c_full_under = f"{c_fname}_{c_lname}".strip()
+
+                                if m_clean in (c_uname, c_fname, c_full_under) or clean_no_score in (c_full, c_fname):
+                                    matched_u = c_u
+                                    break
+                                elif c_uname and (m_clean in c_uname or c_uname in m_clean):
+                                    matched_u = c_u
+                                    break
+                                elif c_fname and (m_clean in c_fname or c_fname in m_clean):
+                                    matched_u = c_u
+                                    break
+
+                            # Fallback to global user query if not matched among channel members
+                            if not matched_u:
+                                matched_u = db.query(models.User).filter(
+                                    (models.User.username.ilike(m_clean)) |
+                                    (models.User.first_name.ilike(m_clean)) |
+                                    (models.User.first_name.ilike(clean_no_score)) |
+                                    ((models.User.first_name + " " + models.User.last_name).ilike(clean_no_score))
+                                ).first()
+
+                            if matched_u and matched_u.id != user.id:
+                                recipients_to_notify.add(matched_u.id)
+
                     except Exception as p_err:
-                        print(f"[NuChat] Error dispatching mention notification: {p_err}")
+                        print(f"[NuChat] Error resolving mention handle '{m_id}': {p_err}")
+
+                if recipients_to_notify:
+                    dispatch_notification(
+                        db=db,
+                        recipient_user_ids=list(recipients_to_notify),
+                        title=f"{sender_name} tagged you in {chan_name}",
+                        body=new_msg.content[:120],
+                        category="chat",
+                        action_route=chat_route,
+                        sender_id=user.id,
+                        data_payload={"channel_id": str(channel_id), "type": "mention"}
+                    )
 
             elif chan_obj and (chan_obj.type.value == "direct" if hasattr(chan_obj.type, "value") else chan_obj.type == "direct"):
                 # For direct messages, notify the recipient
@@ -395,27 +456,60 @@ def get_user_channels(
             
             # Grab the ISO timestamp for Flet to format
             last_msg_time = last_message.created_at.isoformat()
-                # Calculate unread count
+        # Calculate unread count and check for unread mentions
         unread_count = 0
+        has_unread_mention = False
+
+        unread_filter = [
+            models.Message.channel_id == channel.id,
+            models.Message.sender_id != user.id
+        ]
         if membership.last_read_at:
-            unread_count = (
-                db.query(models.Message)
-                .filter(
-                    models.Message.channel_id == channel.id,
-                    models.Message.created_at > membership.last_read_at,
-                    models.Message.sender_id != user.id
-                )
-                .count()
-            )
-        else:
-            unread_count = (
-                db.query(models.Message)
-                .filter(
-                    models.Message.channel_id == channel.id,
-                    models.Message.sender_id != user.id
-                )
-                .count()
-            )
+            unread_filter.append(models.Message.created_at > membership.last_read_at)
+
+        unread_messages = db.query(models.Message).filter(*unread_filter).all()
+        unread_count = len(unread_messages)
+
+        if unread_count > 0:
+            user_uname = (getattr(user, "username", "") or "").lower().strip()
+            user_fname = (getattr(user, "first_name", "") or "").lower().strip()
+            user_lname = (getattr(user, "last_name", "") or "").lower().strip()
+            full_n = f"{user_fname} {user_lname}".strip()
+            full_n_under = f"{user_fname}_{user_lname}".strip()
+            is_group_admin = (membership.role == "admin" or (channel.created_by_id and str(channel.created_by_id) == str(user.id)))
+
+            for um in unread_messages:
+                um_meta = um.metadata_payload or {}
+                if isinstance(um_meta, str):
+                    try:
+                        um_meta = json.loads(um_meta)
+                    except Exception:
+                        um_meta = {}
+                um_mentions = um_meta.get("mentions", []) if isinstance(um_meta, dict) else []
+                um_mention_ids = um_meta.get("mention_ids", []) if isinstance(um_meta, dict) else []
+
+                # Direct ID match
+                if str(user.id) in [str(m).strip().lower() for m in um_mention_ids]:
+                    has_unread_mention = True
+                    break
+
+                # @admin match
+                if is_group_admin and any(str(m).lstrip("@").strip().lower() == "admin" for m in um_mentions):
+                    has_unread_mention = True
+                    break
+
+                # Check handle / name matches
+                for m_str in um_mentions:
+                    clean_m = str(m_str).lstrip("@").strip().lower()
+                    if (user_uname and clean_m == user_uname) or (user_fname and clean_m == user_fname) or clean_m in (full_n, full_n_under):
+                        has_unread_mention = True
+                        break
+                    elif (user_fname and user_fname in clean_m) or (user_uname and user_uname in clean_m):
+                        has_unread_mention = True
+                        break
+
+                if has_unread_mention:
+                    break
         # ==========================================
             
         results.append({
@@ -426,6 +520,7 @@ def get_user_channels(
             "last_msg": last_msg_content,
             "time": last_msg_time,
             "unread": unread_count,
+            "has_unread_mention": has_unread_mention,
             "role": membership.role,
             "is_announcement_only": channel.is_announcement_only,
             "other_user_id": str(other_user.id) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
