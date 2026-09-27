@@ -813,11 +813,19 @@ def broadcast_bulk_push_notification(
                 "Authorization": f"Basic {api_key}",
                 "Content-Type": "application/json",
             }
+            target_route_path = (payload.action_route or "/notifications").strip()
+            if not target_route_path.startswith("/"):
+                target_route_path = "/" + target_route_path
+
             onesignal_payload = {
                 "app_id": app_id,
                 "headings": {"en": payload.title.strip()},
                 "contents": {"en": payload.body.strip()},
-                "data": {"route": payload.action_route or "/notifications"},
+                "data": {
+                    "route": target_route_path,
+                    "action_route": target_route_path,
+                },
+                "app_url": target_route_path,
                 "priority": payload.priority,
                 "ttl": payload.ttl_seconds,
             }

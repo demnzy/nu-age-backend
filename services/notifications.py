@@ -33,14 +33,22 @@ def send_push_notification(db: Session, user_id: int, title: str, body: str, dat
                 "Authorization": f"Basic {api_key}",
                 "Content-Type": "application/json",
             }
+            clean_data = dict(data_payload or {})
+            route_val = clean_data.get("route") or clean_data.get("action_route")
+            if route_val and not str(route_val).startswith("/"):
+                route_val = "/" + str(route_val)
+                clean_data["route"] = route_val
+
             body_payload = {
                 "app_id": app_id,
                 "include_aliases": {"external_id": [str(user_id)]},
                 "target_channel": "push",
                 "headings": {"en": title},
                 "contents": {"en": body},
-                "data": data_payload or {},
+                "data": clean_data,
             }
+            if route_val:
+                body_payload["app_url"] = str(route_val)
             with httpx.Client(timeout=10.0) as client:
                 res = client.post("https://onesignal.com/api/v1/notifications", json=body_payload, headers=headers)
                 print(f"[OneSignal] Dispatched notification to user {user_id}: status={res.status_code}")
