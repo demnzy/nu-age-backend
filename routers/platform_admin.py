@@ -821,11 +821,7 @@ def broadcast_bulk_push_notification(
                 "app_id": app_id,
                 "headings": {"en": payload.title.strip()},
                 "contents": {"en": payload.body.strip()},
-                "data": {
-                    "route": target_route_path,
-                    "action_route": target_route_path,
-                },
-                "app_url": target_route_path,
+                "data": {"route": target_route_path},
                 "priority": payload.priority,
                 "ttl": payload.ttl_seconds,
             }
@@ -860,6 +856,8 @@ def broadcast_bulk_push_notification(
                     res_json = res.json()
                     onesignal_id = res_json.get("id")
                     onesignal_recipients = res_json.get("recipients", 0)
+                else:
+                    print(f"[platform_admin] OneSignal error response: {res.status_code} - {res.text}")
     except Exception as os_ex:
         print(f"[platform_admin] OneSignal broadcast error: {os_ex}")
 

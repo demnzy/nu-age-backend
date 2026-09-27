@@ -47,11 +47,11 @@ def send_push_notification(db: Session, user_id: int, title: str, body: str, dat
                 "contents": {"en": body},
                 "data": clean_data,
             }
-            if route_val:
-                body_payload["app_url"] = str(route_val)
             with httpx.Client(timeout=10.0) as client:
                 res = client.post("https://onesignal.com/api/v1/notifications", json=body_payload, headers=headers)
                 print(f"[OneSignal] Dispatched notification to user {user_id}: status={res.status_code}")
+                if res.status_code not in (200, 201):
+                    print(f"[OneSignal] Error response: {res.status_code} - {res.text}")
     except Exception as os_ex:
         print(f"[OneSignal] Error dispatching push notification: {os_ex}")
 
