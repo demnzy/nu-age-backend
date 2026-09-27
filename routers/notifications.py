@@ -4,7 +4,7 @@ from uuid import UUID
 from typing import Optional, List
 from datetime import datetime, timezone
 import models
-import auth
+from services import auth
 from database import get_db
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
