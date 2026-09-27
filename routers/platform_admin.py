@@ -802,6 +802,58 @@ def broadcast_bulk_push_notification(
     if not user_ids and not is_test_to_me and payload.audience != "all":
         return {"message": "No users found matching audience criteria.", "device_count": 0}
 
+    # ── 1.5 In-App UserNotification Persistence (PostgreSQL) ──────────────────
+    target_route_path = (payload.action_route or "/notifications").strip()
+    if not target_route_path.startswith("/"):
+        target_route_path = "/" + target_route_path
+
+    try:
+        from services.notifications import dispatch_notification
+        if is_test_to_me:
+            dispatch_notification(
+                db=db,
+                recipient_user_ids=[current_admin.id],
+                title=payload.title.strip(),
+                body=payload.body.strip(),
+                category="announcement",
+                action_route=target_route_path,
+                sender_id=current_admin.id,
+                data_payload={"route": target_route_path, "image_url": payload.image_url},
+                send_push=False,
+                allow_self_notify=True,
+            )
+        elif payload.audience == "all":
+            all_u_rows = db.query(models.User.id).all()
+            all_uids = [r[0] for r in all_u_rows if r[0]]
+            for c_idx in range(0, len(all_uids), 500):
+                dispatch_notification(
+                    db=db,
+                    recipient_user_ids=all_uids[c_idx : c_idx + 500],
+                    title=payload.title.strip(),
+                    body=payload.body.strip(),
+                    category="announcement",
+                    action_route=target_route_path,
+                    sender_id=current_admin.id,
+                    data_payload={"route": target_route_path, "image_url": payload.image_url},
+                    send_push=False,
+                    allow_self_notify=True,
+                )
+        elif user_ids:
+            dispatch_notification(
+                db=db,
+                recipient_user_ids=user_ids,
+                title=payload.title.strip(),
+                body=payload.body.strip(),
+                category="announcement",
+                action_route=target_route_path,
+                sender_id=current_admin.id,
+                data_payload={"route": target_route_path, "image_url": payload.image_url},
+                send_push=False,
+                allow_self_notify=True,
+            )
+    except Exception as in_app_ex:
+        print(f"[platform_admin] Warning creating in-app UserNotification records: {in_app_ex}")
+
     # ── 2. OneSignal Rich Push Dispatch ──────────────────────────────────────
     onesignal_sent = False
     onesignal_id = None

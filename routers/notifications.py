@@ -63,6 +63,7 @@ def get_user_notifications(
     return {
         "unread_count": unread_count,
         "total": total,
+        "items": results,
         "notifications": results
     }
 

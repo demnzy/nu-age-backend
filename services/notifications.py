@@ -26,11 +26,12 @@ def dispatch_notification(
     action_route: str = None,
     sender_id = None,
     data_payload: dict = None,
-    send_push: bool = True
+    send_push: bool = True,
+    allow_self_notify: bool = False
 ) -> list:
     """
     Unified, reliable notification dispatcher:
-    1. Deduplicates recipient user IDs and excludes sender.
+    1. Deduplicates recipient user IDs and excludes sender unless allow_self_notify=True.
     2. Persists a UserNotification record in PostgreSQL for every recipient.
     3. Fires targeted push notifications via OneSignal & FCM with deep-link routing.
     4. Synchronizes with in-app notifications tab, bell badge, and mobile system trays.
@@ -56,7 +57,7 @@ def dispatch_notification(
             u_str = str(uid).strip()
             u_obj = None
 
-        if u_str.lower() != sender_str and u_str.lower() not in seen:
+        if (allow_self_notify or u_str.lower() != sender_str) and u_str.lower() not in seen:
             seen.add(u_str.lower())
             if u_obj:
                 valid_recipients_uuid.append(u_obj)
