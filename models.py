@@ -728,4 +728,22 @@ class NotificationBroadcast(Base):
     status = Column(String, default="completed")  # completed, partial, failed, test
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    sender = relationship("User", foreign_keys=[sender_id])
+
+
+class UserNotification(Base):
+    __tablename__ = "user_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=False)
+    category = Column(String, default="general", index=True)  # "chat", "mentions", "courses", "exams", "cohorts", "platform"
+    action_route = Column(String, nullable=True)             # e.g., "/chat?channel=...", "/member/..."
+    data_payload = Column(JSONB, nullable=True)
+    is_read = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User", foreign_keys=[user_id], backref="notifications")
     sender = relationship("User", foreign_keys=[sender_id])

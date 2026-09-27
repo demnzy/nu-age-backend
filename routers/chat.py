@@ -253,13 +253,14 @@ async def chat_websocket(
             for member in channel_members:
                 await manager.send_personal_message(broadcast_payload, str(member[0]))
 
-            # 7. Targeted Push Notifications for Mentions (including @admin)
-            if meta_dict and isinstance(meta_dict, dict) and "mentions" in meta_dict:
-                from services.notifications import send_push_notification
-                mentioned = meta_dict.get("mentions", [])
-                chan_obj = db.query(models.Channel).filter_by(id=channel_id).first()
-                chan_name = chan_obj.name if chan_obj and chan_obj.name else "Group Chat"
+            # 7. Unified In-App & Push Notifications for Mentions (including @admin) and DMs
+            from services.notifications import dispatch_notification
+            chan_obj = db.query(models.Channel).filter_by(id=channel_id).first()
+            chan_name = chan_obj.name if chan_obj and chan_obj.name else "Chat"
+            chat_route = f"/nu-chat?channel={channel_id}"
 
+            if meta_dict and isinstance(meta_dict, dict) and "mentions" in meta_dict:
+                mentioned = meta_dict.get("mentions", [])
                 for m_id in mentioned:
                     try:
                         m_clean = str(m_id).lstrip("@").strip().lower()
@@ -269,29 +270,55 @@ async def chat_websocket(
                             admin_ids = [m.user_id for m in admin_members]
                             if not admin_ids and chan_obj and chan_obj.created_by_id:
                                 admin_ids = [chan_obj.created_by_id]
-                            for a_id in admin_ids:
-                                if a_id != user.id:
-                                    send_push_notification(
-                                        db,
-                                        a_id,
-                                        f"Admin Alert: {sender_name} tagged @admin in {chan_name}",
-                                        new_msg.content[:100],
-                                        {"route": f"/nu-chat?channel={channel_id}"}
-                                    )
+                            
+                            dispatch_notification(
+                                db=db,
+                                recipient_user_ids=admin_ids,
+                                title=f"Admin Tag: {sender_name} tagged @admin",
+                                body=f"{chan_name}: {new_msg.content[:120]}",
+                                category="mentions",
+                                action_route=chat_route,
+                                sender_id=user.id,
+                                data_payload={"channel_id": str(channel_id), "type": "admin_mention"}
+                            )
                         else:
+                            # Match username or first name
                             target_u = db.query(models.User).filter(
-                                (models.User.username.ilike(m_clean))
+                                (models.User.username.ilike(m_clean)) |
+                                (models.User.first_name.ilike(m_clean))
                             ).first()
                             if target_u and target_u.id != user.id:
-                                send_push_notification(
-                                    db,
-                                    target_u.id,
-                                    f"{sender_name} mentioned you in {chan_name}",
-                                    new_msg.content[:100],
-                                    {"route": f"/nu-chat?channel={channel_id}"}
+                                dispatch_notification(
+                                    db=db,
+                                    recipient_user_ids=[target_u.id],
+                                    title=f"{sender_name} mentioned you",
+                                    body=f"{chan_name}: {new_msg.content[:120]}",
+                                    category="mentions",
+                                    action_route=chat_route,
+                                    sender_id=user.id,
+                                    data_payload={"channel_id": str(channel_id), "type": "mention"}
                                 )
                     except Exception as p_err:
-                        print(f"[NuChat] Error sending mention push: {p_err}")
+                        print(f"[NuChat] Error dispatching mention notification: {p_err}")
+
+            elif chan_obj and (chan_obj.type.value == "direct" if hasattr(chan_obj.type, "value") else chan_obj.type == "direct"):
+                # For direct messages, notify the recipient
+                other_members = db.query(models.ChannelMember.user_id).filter(
+                    models.ChannelMember.channel_id == channel_id,
+                    models.ChannelMember.user_id != user.id
+                ).all()
+                other_ids = [str(m[0]) for m in other_members]
+                if other_ids:
+                    dispatch_notification(
+                        db=db,
+                        recipient_user_ids=other_ids,
+                        title=sender_name,
+                        body=new_msg.content[:120],
+                        category="chat",
+                        action_route=chat_route,
+                        sender_id=user.id,
+                        data_payload={"channel_id": str(channel_id), "type": "dm"}
+                    )
 
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id_str)
