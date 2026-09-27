@@ -253,6 +253,27 @@ async def chat_websocket(
             for member in channel_members:
                 await manager.send_personal_message(broadcast_payload, str(member[0]))
 
+            # 7. Targeted Push Notifications for Mentions
+            if meta_dict and isinstance(meta_dict, dict) and "mentions" in meta_dict:
+                from services.notifications import send_push_notification
+                mentioned = meta_dict.get("mentions", [])
+                for m_id in mentioned:
+                    try:
+                        m_clean = str(m_id).lstrip("@").strip()
+                        target_u = db.query(models.User).filter(
+                            (models.User.username.ilike(m_clean))
+                        ).first()
+                        if target_u and target_u.id != user.id:
+                            send_push_notification(
+                                db,
+                                target_u.id,
+                                f"{sender_name} mentioned you in chat",
+                                new_msg.content[:100],
+                                {"route": f"/nu-chat?channel={channel_id}"}
+                            )
+                    except Exception as p_err:
+                        print(f"[NuChat] Error sending mention push: {p_err}")
+
     except WebSocketDisconnect:
         manager.disconnect(websocket, user_id_str)
         if user_id_str not in manager.active_connections:
