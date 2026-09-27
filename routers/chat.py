@@ -253,24 +253,43 @@ async def chat_websocket(
             for member in channel_members:
                 await manager.send_personal_message(broadcast_payload, str(member[0]))
 
-            # 7. Targeted Push Notifications for Mentions
+            # 7. Targeted Push Notifications for Mentions (including @admin)
             if meta_dict and isinstance(meta_dict, dict) and "mentions" in meta_dict:
                 from services.notifications import send_push_notification
                 mentioned = meta_dict.get("mentions", [])
+                chan_obj = db.query(models.Channel).filter_by(id=channel_id).first()
+                chan_name = chan_obj.name if chan_obj and chan_obj.name else "Group Chat"
+
                 for m_id in mentioned:
                     try:
-                        m_clean = str(m_id).lstrip("@").strip()
-                        target_u = db.query(models.User).filter(
-                            (models.User.username.ilike(m_clean))
-                        ).first()
-                        if target_u and target_u.id != user.id:
-                            send_push_notification(
-                                db,
-                                target_u.id,
-                                f"{sender_name} mentioned you in chat",
-                                new_msg.content[:100],
-                                {"route": f"/nu-chat?channel={channel_id}"}
-                            )
+                        m_clean = str(m_id).lstrip("@").strip().lower()
+                        if m_clean == "admin":
+                            # Target group admin(s) or channel creator
+                            admin_members = db.query(models.ChannelMember).filter_by(channel_id=channel_id, role="admin").all()
+                            admin_ids = [m.user_id for m in admin_members]
+                            if not admin_ids and chan_obj and chan_obj.created_by_id:
+                                admin_ids = [chan_obj.created_by_id]
+                            for a_id in admin_ids:
+                                if a_id != user.id:
+                                    send_push_notification(
+                                        db,
+                                        a_id,
+                                        f"Admin Alert: {sender_name} tagged @admin in {chan_name}",
+                                        new_msg.content[:100],
+                                        {"route": f"/nu-chat?channel={channel_id}"}
+                                    )
+                        else:
+                            target_u = db.query(models.User).filter(
+                                (models.User.username.ilike(m_clean))
+                            ).first()
+                            if target_u and target_u.id != user.id:
+                                send_push_notification(
+                                    db,
+                                    target_u.id,
+                                    f"{sender_name} mentioned you in {chan_name}",
+                                    new_msg.content[:100],
+                                    {"route": f"/nu-chat?channel={channel_id}"}
+                                )
                     except Exception as p_err:
                         print(f"[NuChat] Error sending mention push: {p_err}")
 
@@ -381,7 +400,10 @@ def get_user_channels(
             "time": last_msg_time,
             "unread": unread_count,
             "role": membership.role,
-            "is_announcement_only": channel.is_announcement_only
+            "is_announcement_only": channel.is_announcement_only,
+            "other_user_id": str(other_user.id) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
+            "course_id": str(channel.course_id) if channel.course_id else None,
+            "created_by_id": str(channel.created_by_id) if channel.created_by_id else None
         })
         
     # Finally, sort the entire list of channels so the ones with the newest messages are at the top
@@ -545,8 +567,38 @@ def get_channel_members(
     user = Depends(auth.get_current_user), 
     db: Session = Depends(get_db)
 ):
-    members = db.query(models.ChannelMember).filter_by(channel_id=channel_id).all()
-    return {"member_ids": [str(m.user_id) for m in members]}
+    members = db.query(models.ChannelMember).options(joinedload(models.ChannelMember.user)).filter_by(channel_id=channel_id).all()
+    channel = db.query(models.Channel).filter_by(id=channel_id).first()
+    admin_id = str(channel.created_by_id) if channel and channel.created_by_id else None
+
+    member_ids = []
+    members_data = []
+    for m in members:
+        uid_str = str(m.user_id)
+        member_ids.append(uid_str)
+        u = m.user
+        if u:
+            first = u.first_name or ""
+            last = u.last_name or ""
+            dname = f"{first} {last}".strip() or getattr(u, "username", "Member")
+            uname = getattr(u, "username", None) or dname.replace(" ", "_")
+            is_adm = (m.role == "admin" or uid_str == admin_id)
+            if is_adm and not admin_id:
+                admin_id = uid_str
+            members_data.append({
+                "id": uid_str,
+                "name": dname,
+                "username": uname,
+                "email": u.email,
+                "role": m.role,
+                "is_admin": is_adm
+            })
+
+    return {
+        "member_ids": member_ids,
+        "members": members_data,
+        "admin_id": admin_id
+    }
 
 # 3. Endpoint to actually add the members and broadcast the System Message
 @router.post("/channels/{channel_id}/members")
@@ -635,35 +687,45 @@ def delete_channel(
 
 
 @router.delete("/{chat_id}/leave")
+@router.delete("/channels/{chat_id}/leave")
 def leave_group_chat(chat_id: UUID, db: Session = Depends(get_db), current_user = Depends(auth.get_current_user)):
-    """Removes the current user from a group chat."""
-    
-    # 1. Find the junction row connecting the user to this specific chat
-    participant_record = db.query(models.ChatParticipant).filter(
-        models.ChatParticipant.chat_id == chat_id,
-        models.ChatParticipant.user_id == current_user.id
+    """Removes the current user from a group chat with course enrollment protection."""
+    channel = db.query(models.Channel).filter_by(id=chat_id).first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Chat channel not found.")
+
+    # 1. Enforce Course Group Protection: Cannot leave if enrolled in the course
+    is_course = (channel.course_id is not None or getattr(channel.type, "value", channel.type) == "course")
+    if is_course and channel.course_id:
+        enrollment = db.query(models.Enrollment).filter_by(
+            course_id=channel.course_id,
+            user_id=current_user.id
+        ).first()
+        if enrollment:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot leave a course group while enrolled in the course. Please unenroll from the course to leave."
+            )
+
+    # 2. Find the membership row
+    membership = db.query(models.ChannelMember).filter_by(
+        channel_id=chat_id,
+        user_id=current_user.id
     ).first()
     
-    if not participant_record:
+    if not membership:
         raise HTTPException(status_code=404, detail="You are not a member of this chat.")
         
-    # 2. Sever the connection (The user has now officially left)
-    db.delete(participant_record)
+    db.delete(membership)
     db.commit()
     
-    # 3. --- THE SAFEGUARD: Clean up ghost chats ---
-    # Check if anyone is left in the chat. If the count is 0, nuke the empty room.
-    remaining_members = db.query(models.ChatParticipant).filter(
-        models.ChatParticipant.chat_id == chat_id
-    ).count()
-    
-    if remaining_members == 0:
-        empty_chat = db.query(models.Chat).filter(models.Chat.id == chat_id).first()
-        if empty_chat:
-            db.delete(empty_chat)
-            db.commit()
-            return {"status": "success", "message": "Left chat. Chat was empty and has been deleted."}
-            
+    # 3. Clean up empty custom group
+    remaining = db.query(models.ChannelMember).filter_by(channel_id=chat_id).count()
+    if remaining == 0 and getattr(channel.type, "value", channel.type) == "custom":
+        db.delete(channel)
+        db.commit()
+        return {"status": "success", "message": "Left chat. Chat was empty and has been deleted."}
+        
     return {"status": "success", "message": "Successfully left the group chat."}
 
 @router.post("/chat/dms/{target_user_id}")
