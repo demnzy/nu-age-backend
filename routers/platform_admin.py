@@ -113,6 +113,8 @@ class BulkPushRequest(BaseModel):
     action_button_label: Optional[str] = None
     priority: int = 10  # 10=high, 5=normal
     ttl_seconds: int = 86400  # 24h default
+    test_user_id: Optional[str] = None
+    test_email: Optional[str] = None
 
 
 class BroadcastHistoryItem(BaseModel):
@@ -901,8 +903,23 @@ def broadcast_bulk_push_notification(
                 ]
 
             targeted_uids_str = []
+            test_target_name = current_admin.username
             if is_test_to_me:
-                targeted_uids_str = [str(current_admin.id)]
+                test_uid = current_admin.id
+                if payload.test_email and payload.test_email.strip():
+                    found_u = db.query(models.User).filter(models.User.email.ilike(payload.test_email.strip())).first()
+                    if found_u:
+                        test_uid = found_u.id
+                        test_target_name = found_u.username or found_u.email
+                elif payload.test_user_id and payload.test_user_id.strip():
+                    try:
+                        found_u = db.query(models.User).filter(models.User.id == UUID(payload.test_user_id.strip())).first()
+                        if found_u:
+                            test_uid = found_u.id
+                            test_target_name = found_u.username or str(found_u.id)
+                    except Exception:
+                        pass
+                targeted_uids_str = [str(test_uid)]
                 onesignal_payload["include_aliases"] = {"external_id": targeted_uids_str}
                 onesignal_payload["target_channel"] = "push"
             elif payload.audience == "all":
@@ -929,14 +946,16 @@ def broadcast_bulk_push_notification(
                 os_errors = res_json.get("errors")
                 os_warnings = res_json.get("warnings")
 
-                if res.status_code in (200, 201) and not os_errors and onesignal_recipients > 0:
+                # In OneSignal REST API, receiving a valid notification 'id' with 200/201 means
+                # the notification is accepted and queued. Recipients are calculated asynchronously.
+                if res.status_code in (200, 201) and bool(onesignal_id) and not os_errors:
                     onesignal_sent = True
                     print(f"[platform_admin] OneSignal broadcast SUCCESS: id={onesignal_id}, recipients={onesignal_recipients}, warnings={os_warnings}")
                 else:
                     print(f"[platform_admin] OneSignal broadcast issue: status={res.status_code}, id={onesignal_id}, recipients={onesignal_recipients}, errors={os_errors}, warnings={os_warnings}, raw={res_text}")
 
-                    # 1. Fallback for broadcast "all" if "Subscribed Users" had 0 subscribers
-                    if payload.audience == "all" and not is_test_to_me and (os_errors or onesignal_recipients == 0):
+                    # 1. Fallback for broadcast "all" if "Subscribed Users" had 0 subscribers or failed
+                    if payload.audience == "all" and not is_test_to_me and not onesignal_sent:
                         for alt_segment in [["Active Users"], ["Total Subscriptions"], ["All"]]:
                             print(f"[platform_admin] Retrying broadcast with alternative segment: {alt_segment}...")
                             fb_seg_payload = dict(onesignal_payload)
@@ -947,19 +966,45 @@ def broadcast_bulk_push_notification(
                                 fb_seg_json = res_fb_seg.json()
                             except Exception:
                                 fb_seg_json = {}
+                            fb_seg_id = fb_seg_json.get("id")
                             fb_seg_errors = fb_seg_json.get("errors")
-                            fb_seg_recipients = fb_seg_json.get("recipients", 0)
-                            if res_fb_seg.status_code in (200, 201) and not fb_seg_errors and fb_seg_recipients > 0:
+                            if res_fb_seg.status_code in (200, 201) and bool(fb_seg_id) and not fb_seg_errors:
                                 onesignal_sent = True
-                                onesignal_id = fb_seg_json.get("id") or onesignal_id
-                                onesignal_recipients = fb_seg_recipients
-                                print(f"[platform_admin] OneSignal broadcast SUCCESS via segment {alt_segment}: id={onesignal_id}, recipients={onesignal_recipients}")
+                                onesignal_id = fb_seg_id
+                                onesignal_recipients = fb_seg_json.get("recipients", 0)
+                                print(f"[platform_admin] OneSignal broadcast SUCCESS via segment {alt_segment}: id={onesignal_id}")
                                 break
                             else:
-                                print(f"[platform_admin] OneSignal segment {alt_segment} response: status={res_fb_seg.status_code}, recipients={fb_seg_recipients}, errors={fb_seg_errors}")
+                                print(f"[platform_admin] OneSignal segment {alt_segment} response: status={res_fb_seg.status_code}, id={fb_seg_id}, errors={fb_seg_errors}")
 
-                    # 2. Fallback retry for targeted aliases with legacy include_external_user_ids
-                    if targeted_uids_str and (res.status_code == 400 or os_errors or onesignal_recipients == 0):
+                        # 1b. If all segments failed/empty, fallback to targeting all user IDs directly via alias
+                        if not onesignal_sent:
+                            try:
+                                all_u_rows = db.query(models.User.id).all()
+                                all_uids_str = [str(r[0]) for r in all_u_rows if r[0]]
+                                if all_uids_str:
+                                    print(f"[platform_admin] Segments empty/failed. Retrying broadcast 'all' via {len(all_uids_str)} user aliases...")
+                                    fb_all_payload = dict(onesignal_payload)
+                                    fb_all_payload.pop("included_segments", None)
+                                    fb_all_payload["include_aliases"] = {"external_id": all_uids_str[:2000]}
+                                    fb_all_payload["target_channel"] = "push"
+                                    res_fb_all = client.post(onesignal_url, json=fb_all_payload, headers=headers)
+                                    try:
+                                        fb_all_json = res_fb_all.json()
+                                    except Exception:
+                                        fb_all_json = {}
+                                    fb_all_id = fb_all_json.get("id")
+                                    fb_all_errors = fb_all_json.get("errors")
+                                    if res_fb_all.status_code in (200, 201) and bool(fb_all_id) and not fb_all_errors:
+                                        onesignal_sent = True
+                                        onesignal_id = fb_all_id
+                                        onesignal_recipients = fb_all_json.get("recipients", 0)
+                                        print(f"[platform_admin] OneSignal broadcast SUCCESS via all user aliases: id={onesignal_id}")
+                            except Exception as all_err:
+                                print(f"[platform_admin] Error in all user fallback: {all_err}")
+
+                    # 2. Fallback retry for targeted aliases with legacy include_external_user_ids (only if not already sent)
+                    if targeted_uids_str and not onesignal_sent:
                         print(f"[platform_admin] Retrying targeted broadcast with legacy include_external_user_ids...")
                         fb_payload = dict(onesignal_payload)
                         fb_payload.pop("include_aliases", None)
@@ -970,14 +1015,14 @@ def broadcast_bulk_push_notification(
                             fb_json = res_fb.json()
                         except Exception:
                             fb_json = {}
-                        fb_recipients = fb_json.get("recipients", 0)
-                        if res_fb.status_code in (200, 201) and not fb_json.get("errors") and fb_recipients > 0:
+                        fb_id = fb_json.get("id")
+                        if res_fb.status_code in (200, 201) and bool(fb_id) and not fb_json.get("errors"):
                             onesignal_sent = True
-                            onesignal_id = fb_json.get("id") or onesignal_id
-                            onesignal_recipients = fb_recipients
-                            print(f"[platform_admin] OneSignal targeted fallback SUCCESS: id={onesignal_id}, recipients={onesignal_recipients}")
+                            onesignal_id = fb_id
+                            onesignal_recipients = fb_json.get("recipients", 0)
+                            print(f"[platform_admin] OneSignal targeted fallback SUCCESS: id={onesignal_id}")
                         else:
-                            print(f"[platform_admin] OneSignal fallback response: status={res_fb.status_code}, id={onesignal_id}, recipients={fb_recipients}, errors={fb_json.get('errors')}")
+                            print(f"[platform_admin] OneSignal fallback response: status={res_fb.status_code}, id={fb_id}, errors={fb_json.get('errors')}")
 
     except Exception as os_ex:
         print(f"[platform_admin] OneSignal broadcast exception: {os_ex!r}")
@@ -1065,11 +1110,16 @@ def broadcast_bulk_push_notification(
         print(f"[platform_admin] Failed logging broadcast to database: {db_err}")
         db.rollback()
 
-    status_msg = (
-        "Test notification dispatched to your device."
-        if is_test_to_me
-        else f"Broadcast sent! Targeted ~{total_targeted:,} recipients (OneSignal: {'OK' if onesignal_sent else 'Standby'}, Direct FCM: {sent_count})."
-    )
+    if is_test_to_me:
+        if onesignal_sent or sent_count > 0:
+            status_msg = f"Test notification sent to account '{test_target_name}' on OneSignal."
+        else:
+            status_msg = (
+                f"Test push dispatched, but user '{test_target_name}' has no active mobile subscription in OneSignal. "
+                "Log into the NU-Front mobile app with this account to receive test pushes."
+            )
+    else:
+        status_msg = f"Broadcast sent! Targeted ~{total_targeted:,} recipients (OneSignal: {'OK' if onesignal_sent else 'Standby'}, Direct FCM: {sent_count})."
 
     return {
         "message": status_msg,
