@@ -929,14 +929,37 @@ def broadcast_bulk_push_notification(
                 os_errors = res_json.get("errors")
                 os_warnings = res_json.get("warnings")
 
-                if res.status_code in (200, 201) and not os_errors:
+                if res.status_code in (200, 201) and not os_errors and onesignal_recipients > 0:
                     onesignal_sent = True
                     print(f"[platform_admin] OneSignal broadcast SUCCESS: id={onesignal_id}, recipients={onesignal_recipients}, warnings={os_warnings}")
                 else:
                     print(f"[platform_admin] OneSignal broadcast issue: status={res.status_code}, id={onesignal_id}, recipients={onesignal_recipients}, errors={os_errors}, warnings={os_warnings}, raw={res_text}")
 
-                    # Fallback retry for targeted aliases if needed
-                    if targeted_uids_str and (res.status_code == 400 or (os_errors and isinstance(os_errors, dict) and "invalid_aliases" in os_errors)):
+                    # 1. Fallback for broadcast "all" if "Subscribed Users" had 0 subscribers
+                    if payload.audience == "all" and not is_test_to_me and (os_errors or onesignal_recipients == 0):
+                        for alt_segment in [["Active Users"], ["Total Subscriptions"], ["All"]]:
+                            print(f"[platform_admin] Retrying broadcast with alternative segment: {alt_segment}...")
+                            fb_seg_payload = dict(onesignal_payload)
+                            fb_seg_payload["included_segments"] = alt_segment
+                            fb_seg_payload["target_channel"] = "push"
+                            res_fb_seg = client.post(onesignal_url, json=fb_seg_payload, headers=headers)
+                            try:
+                                fb_seg_json = res_fb_seg.json()
+                            except Exception:
+                                fb_seg_json = {}
+                            fb_seg_errors = fb_seg_json.get("errors")
+                            fb_seg_recipients = fb_seg_json.get("recipients", 0)
+                            if res_fb_seg.status_code in (200, 201) and not fb_seg_errors and fb_seg_recipients > 0:
+                                onesignal_sent = True
+                                onesignal_id = fb_seg_json.get("id") or onesignal_id
+                                onesignal_recipients = fb_seg_recipients
+                                print(f"[platform_admin] OneSignal broadcast SUCCESS via segment {alt_segment}: id={onesignal_id}, recipients={onesignal_recipients}")
+                                break
+                            else:
+                                print(f"[platform_admin] OneSignal segment {alt_segment} response: status={res_fb_seg.status_code}, recipients={fb_seg_recipients}, errors={fb_seg_errors}")
+
+                    # 2. Fallback retry for targeted aliases with legacy include_external_user_ids
+                    if targeted_uids_str and (res.status_code == 400 or os_errors or onesignal_recipients == 0):
                         print(f"[platform_admin] Retrying targeted broadcast with legacy include_external_user_ids...")
                         fb_payload = dict(onesignal_payload)
                         fb_payload.pop("include_aliases", None)
@@ -947,11 +970,14 @@ def broadcast_bulk_push_notification(
                             fb_json = res_fb.json()
                         except Exception:
                             fb_json = {}
-                        if res_fb.status_code in (200, 201) and not fb_json.get("errors"):
+                        fb_recipients = fb_json.get("recipients", 0)
+                        if res_fb.status_code in (200, 201) and not fb_json.get("errors") and fb_recipients > 0:
                             onesignal_sent = True
                             onesignal_id = fb_json.get("id") or onesignal_id
-                            onesignal_recipients = fb_json.get("recipients", 0)
-                        print(f"[platform_admin] OneSignal fallback response: status={res_fb.status_code}, id={onesignal_id}, recipients={onesignal_recipients}, errors={fb_json.get('errors')}")
+                            onesignal_recipients = fb_recipients
+                            print(f"[platform_admin] OneSignal targeted fallback SUCCESS: id={onesignal_id}, recipients={onesignal_recipients}")
+                        else:
+                            print(f"[platform_admin] OneSignal fallback response: status={res_fb.status_code}, id={onesignal_id}, recipients={fb_recipients}, errors={fb_json.get('errors')}")
 
     except Exception as os_ex:
         print(f"[platform_admin] OneSignal broadcast exception: {os_ex!r}")
@@ -1131,3 +1157,61 @@ def platform_system_health(
         "database_latency_ms": db_latency_ms,
         "super_admin": current_admin.username,
     }
+
+
+@router.get("/onesignal/diagnostics")
+def onesignal_diagnostics(
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Directly queries OneSignal REST API to inspect:
+    1. App configuration and active subscriber counts
+    2. Exact segment names configured in OneSignal
+    3. Last notifications sent (including successful dashboard messages)
+    """
+    import httpx
+    settings = Settings()
+    app_id = settings.get_onesignal_app_id()
+    api_key = settings.get_onesignal_rest_api_key()
+
+    if not app_id or not api_key:
+        return {
+            "error": "Missing credentials in Settings",
+            "app_id_configured": bool(app_id),
+            "api_key_configured": bool(api_key),
+        }
+
+    headers = {
+        "Authorization": f"Key {api_key}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+
+    result = {
+        "app_id": settings.mask_onesignal_app_id(),
+        "key": settings.mask_onesignal_key(),
+    }
+
+    with httpx.Client(timeout=15.0) as client:
+        # 1. Fetch App Info & Subscribers
+        try:
+            r_app = client.get(f"https://api.onesignal.com/apps/{app_id}", headers=headers)
+            result["app_info"] = r_app.json() if r_app.status_code == 200 else {"status": r_app.status_code, "text": r_app.text}
+        except Exception as e:
+            result["app_info"] = {"error": str(e)}
+
+        # 2. Fetch Segments
+        try:
+            r_seg = client.get(f"https://api.onesignal.com/apps/{app_id}/segments", headers=headers)
+            result["segments"] = r_seg.json() if r_seg.status_code == 200 else {"status": r_seg.status_code, "text": r_seg.text}
+        except Exception as e:
+            result["segments"] = {"error": str(e)}
+
+        # 3. Fetch Recent Notifications
+        try:
+            r_notifs = client.get(f"https://api.onesignal.com/notifications?app_id={app_id}&limit=5", headers=headers)
+            result["recent_notifications"] = r_notifs.json() if r_notifs.status_code == 200 else {"status": r_notifs.status_code, "text": r_notifs.text}
+        except Exception as e:
+            result["recent_notifications"] = {"error": str(e)}
+
+    print(f"[platform_admin] OneSignal diagnostics fetched: app_name={result.get('app_info', {}).get('name') if isinstance(result.get('app_info'), dict) else 'N/A'}")
+    return result
