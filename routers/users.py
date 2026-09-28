@@ -11,10 +11,19 @@ from datetime import datetime, timezone, timedelta
 import random
 import resend
 import pytz
+import base64
+import uuid
+from services.bunny_service import upload_bytes_to_bunny
+
 class UserDirectorySchema(BaseModel):
     id: UUID
     name: str
     email: str
+    profile_picture_url: Optional[str] = None
+
+class AvatarUploadSchema(BaseModel):
+    image_bytes: str
+    image_filename: str = "avatar.jpg"
 
 # NEW: request bodies for the refresh-token endpoints below.
 class RefreshRequest(BaseModel):
@@ -664,7 +673,7 @@ def get_current_user(user = Depends(auth.get_current_user), db:Session = Depends
 # Update user email
 
 @router.patch('/me/update', response_model=UserBase)
-def update_profile(
+async def update_profile(
     profile_data: ProfileUpdate, 
     db: Session = Depends(get_db), 
     user = Depends(auth.get_current_user)
@@ -692,7 +701,7 @@ def update_profile(
             raise HTTPException(status_code=409, detail="Username is already taken")
         user.username = new_username
 
-    # 3. Handle simple fields (first_name, last_name)
+    # 3. Handle simple fields (first_name, last_name, gender)
     if 'first_name' in update_data:
         user.first_name = update_data['first_name']
     
@@ -702,7 +711,64 @@ def update_profile(
     if 'gender' in update_data:
         user.gender = update_data['gender']
 
-    # 4. Save Changes
+    # 4. Handle profile picture upload / removal
+    if update_data.get('remove_picture'):
+        user.profile_picture_url = None
+    elif update_data.get('image_bytes') and update_data.get('image_filename'):
+        try:
+            raw_bytes = base64.b64decode(update_data['image_bytes'])
+            if len(raw_bytes) > 5 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Profile picture exceeds 5MB size limit")
+            ext = update_data['image_filename'].rsplit(".", 1)[-1].lower() if "." in update_data['image_filename'] else "jpg"
+            if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+                ext = "jpg"
+            safe_filename = f"avatar_{uuid.uuid4().hex[:12]}.{ext}"
+            folder_path = f"avatars/{user.id}"
+            cdn_url = await upload_bytes_to_bunny(raw_bytes, safe_filename, folder_path)
+            user.profile_picture_url = cdn_url
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Warning: Profile update succeeded but CDN avatar upload failed: {e}")
+    elif 'profile_picture_url' in update_data:
+        user.profile_picture_url = update_data['profile_picture_url']
+
+    # 5. Save Changes
+    db.commit()
+    db.refresh(user)
+    return user
+
+@router.post('/me/avatar', response_model=UserBase)
+async def upload_avatar(
+    payload: AvatarUploadSchema,
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    try:
+        raw_bytes = base64.b64decode(payload.image_bytes)
+        if len(raw_bytes) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Profile picture exceeds 5MB size limit")
+        ext = payload.image_filename.rsplit(".", 1)[-1].lower() if "." in payload.image_filename else "jpg"
+        if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+            ext = "jpg"
+        safe_filename = f"avatar_{uuid.uuid4().hex[:12]}.{ext}"
+        folder_path = f"avatars/{user.id}"
+        cdn_url = await upload_bytes_to_bunny(raw_bytes, safe_filename, folder_path)
+        user.profile_picture_url = cdn_url
+        db.commit()
+        db.refresh(user)
+        return user
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to upload avatar: {str(e)}")
+
+@router.delete('/me/avatar', response_model=UserBase)
+def remove_avatar(
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    user.profile_picture_url = None
     db.commit()
     db.refresh(user)
     return user
@@ -743,7 +809,8 @@ def get_user_directory(
         friends_list.append({
             "id": friend_user.id, 
             "name": f"{friend_user.first_name} {friend_user.last_name}",
-            "email": friend_user.email
+            "email": friend_user.email,
+            "profile_picture_url": friend_user.profile_picture_url
         })
         
     return friends_list

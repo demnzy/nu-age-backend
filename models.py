@@ -37,6 +37,7 @@ class User(Base):
     streak = Column(Integer, default=0, nullable=True)
     last_login_date = Column(Date, nullable=True)
     is_verified = Column(Boolean, default=False)
+    profile_picture_url = Column(String, nullable=True)
      
     organisations = relationship("Organisation", secondary="OrganisationMembers", back_populates="members")
     courses= relationship("Course", secondary= "enrollments", back_populates="Students")

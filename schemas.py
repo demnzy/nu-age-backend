@@ -34,6 +34,7 @@ class UserBase(BaseModel):
     role: str
     streak: Optional[int] = 0
     university: Optional[str] = ""
+    profile_picture_url: Optional[str] = None
     model_config = {'from_attributes' : True}
 
 class UserProfile(BaseModel):
@@ -50,6 +51,7 @@ class UserProfile(BaseModel):
     is_verified: Optional[bool] = False
     active_count: Optional[int] = 0
     finished_count: Optional[int] = 0
+    profile_picture_url: Optional[str] = None
     model_config = {'from_attributes' : True}
     
 class UserReg(BaseModel):
@@ -80,6 +82,10 @@ class ProfileUpdate(BaseModel):
     email: Optional[EmailStr] = None
     username: Optional[str] = None
     gender: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    image_bytes: Optional[str] = None
+    image_filename: Optional[str] = None
+    remove_picture: Optional[bool] = False
 
 class CourseBase(BaseModel):
     name: str
@@ -138,6 +144,7 @@ class UserMin(BaseModel):
     id: UUID
     first_name: str
     last_name: str
+    profile_picture_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -286,6 +293,7 @@ class NetworkUserResponse(BaseModel):
     org: Optional[str] = None
     online: bool = False
     streak: int = 0
+    profile_picture_url: Optional[str] = None
     
     class Config:
         from_attributes = True # Allows Pydantic to read SQLAlchemy objects directly
@@ -624,6 +632,7 @@ class MemberResponse(BaseModel):
     role: str
     streak: Optional[int] = 0
     university: Optional[str] = ""
+    profile_picture_url: Optional[str] = None
     model_config = {'from_attributes' : True}
 
 

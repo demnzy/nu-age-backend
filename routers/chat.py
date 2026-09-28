@@ -127,7 +127,8 @@ async def chat_websocket(
                     "created_at": datetime.now(timezone.utc).isoformat(),
                     "sender": {
                         "id": str(user.id),
-                        "name": f"{user.first_name} {user.last_name}"
+                        "name": f"{user.first_name} {user.last_name}",
+                        "profile_picture_url": getattr(user, "profile_picture_url", None)
                     }
                 }
                 channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
@@ -208,7 +209,8 @@ async def chat_websocket(
                             "created_at": original_poll.created_at.isoformat(),
                             "sender": {
                                 "id": str(original_poll.sender.id) if original_poll.sender else "system",
-                                "name": sender_name
+                                "name": sender_name,
+                                "profile_picture_url": getattr(original_poll.sender, "profile_picture_url", None) if original_poll.sender else None
                             }
                         }
                         channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
@@ -245,7 +247,8 @@ async def chat_websocket(
                 "created_at": new_msg.created_at.isoformat(),
                 "sender": {
                     "id": str(user.id),
-                    "name": sender_name
+                    "name": sender_name,
+                    "profile_picture_url": getattr(user, "profile_picture_url", None)
                 }
             }
 
@@ -607,6 +610,7 @@ def get_user_channels(
             "role": membership.role,
             "is_announcement_only": channel.is_announcement_only,
             "other_user_id": str(other_user.id) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
+            "other_user_avatar": getattr(other_user, "profile_picture_url", None) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
             "course_id": str(channel.course_id) if channel.course_id else None,
             "created_by_id": str(channel.created_by_id) if channel.created_by_id else None
         })
@@ -659,7 +663,8 @@ def get_channel_messages(
             "created_at": msg.created_at,
             "sender": {
                 "id": str(msg.sender.id),
-                "name": f"{msg.sender.first_name} {msg.sender.last_name}"
+                "name": f"{msg.sender.first_name} {msg.sender.last_name}",
+                "profile_picture_url": getattr(msg.sender, "profile_picture_url", None)
             }
         })
         
@@ -796,7 +801,8 @@ def get_channel_members(
                 "username": uname,
                 "email": u.email,
                 "role": m.role,
-                "is_admin": is_adm
+                "is_admin": is_adm,
+                "profile_picture_url": getattr(u, "profile_picture_url", None)
             })
 
     return {
