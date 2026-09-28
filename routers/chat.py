@@ -253,7 +253,7 @@ async def chat_websocket(
             for member in channel_members:
                 await manager.send_personal_message(broadcast_payload, str(member[0]))
 
-            # 7. Unified In-App & Push Notifications for Mentions (including @admin) and DMs
+            # 7. Unified In-App & Push Notifications for Group Messages, DMs, and Mentions
             from services.notifications import dispatch_notification
             chan_obj = db.query(models.Channel).filter_by(id=channel_id).first()
             chan_name = chan_obj.name if chan_obj and chan_obj.name else "Chat"
@@ -263,66 +263,132 @@ async def chat_websocket(
             if not meta_dict:
                 meta_dict = {}
 
-            # Automatically extract mentions from message content as fallback & clean deduplicate
-            raw_mentions = list(meta_dict.get("mentions", [])) + re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
-            mentioned = []
-            seen_handles = set()
-            for mh in raw_mentions:
-                cl = str(mh).lstrip("@").strip().lower()
-                if cl and cl not in seen_handles:
-                    seen_handles.add(cl)
-                    mentioned.append(cl)
-            mention_ids = list(meta_dict.get("mention_ids", []))
+            # Format message snippet for preview
+            msg_type_str = new_msg.type.value if hasattr(new_msg.type, 'value') else str(new_msg.type)
+            if msg_type_str == "poll":
+                notif_body = f"📊 Poll: {new_msg.content.split('|||')[0]}"
+            elif msg_type_str in ("image", "file", "attachment"):
+                notif_body = "Sent an attachment"
+            else:
+                notif_body = (new_msg.content or "Sent a message")[:120]
 
-            if mentioned or mention_ids:
+            is_dm = chan_obj and (chan_obj.type.value == "direct" if hasattr(chan_obj.type, "value") else chan_obj.type == "direct")
 
-                # 1. Fetch channel members for precise in-group mention resolution
-                channel_member_users = (
-                    db.query(models.User)
-                    .join(models.ChannelMember, models.ChannelMember.user_id == models.User.id)
-                    .filter(models.ChannelMember.channel_id == channel_id)
-                    .all()
+            if is_dm:
+                # Direct message: notify the recipient (other user in DM)
+                other_members = db.query(models.ChannelMember.user_id).filter(
+                    models.ChannelMember.channel_id == channel_id,
+                    models.ChannelMember.user_id != user.id
+                ).all()
+                other_ids = [str(m[0]) for m in other_members]
+                if other_ids:
+                    dispatch_notification(
+                        db=db,
+                        recipient_user_ids=other_ids,
+                        title=sender_name,
+                        body=notif_body,
+                        category="chat",
+                        action_route=chat_route,
+                        sender_id=user.id,
+                        data_payload={
+                            "channel_id": str(channel_id),
+                            "type": "dm",
+                            "collapse_id": f"chat_{channel_id}",
+                        }
+                    )
+            else:
+                # Group / Channel message: notify all members in the channel (sender excluded)
+                all_channel_members = db.query(models.ChannelMember.user_id).filter(
+                    models.ChannelMember.channel_id == channel_id,
+                    models.ChannelMember.user_id != user.id
+                ).all()
+                candidate_member_ids = {m[0] for m in all_channel_members}
+                notified_user_ids = set()
+
+                # Automatically extract mentions from message content and metadata
+                raw_mentions = list(meta_dict.get("mentions", [])) + re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
+                mentioned = []
+                seen_handles = set()
+                for mh in raw_mentions:
+                    cl = str(mh).lstrip("@").strip().lower()
+                    if cl and cl not in seen_handles:
+                        seen_handles.add(cl)
+                        mentioned.append(cl)
+                mention_ids = list(meta_dict.get("mention_ids", []))
+
+                # Check if sender is an admin of this channel (or platform admin)
+                sender_membership = db.query(models.ChannelMember).filter_by(channel_id=channel_id, user_id=user.id).first()
+                is_sender_admin = (
+                    (sender_membership and sender_membership.role == "admin") or
+                    (chan_obj and chan_obj.created_by_id == user.id) or
+                    (str(getattr(user, "role", "")).upper() in ("ADMIN", "OWNER", "SUPERADMIN"))
                 )
 
-                recipients_to_notify = set()
+                # A. Handle @admin tag
+                if "admin" in mentioned:
+                    admin_members = db.query(models.ChannelMember).filter_by(channel_id=channel_id, role="admin").all()
+                    admin_ids = [m.user_id for m in admin_members if m.user_id != user.id]
+                    if not admin_ids and chan_obj and chan_obj.created_by_id and chan_obj.created_by_id != user.id:
+                        admin_ids = [chan_obj.created_by_id]
+                    if admin_ids:
+                        dispatch_notification(
+                            db=db,
+                            recipient_user_ids=admin_ids,
+                            title=f"Admin Tag: {sender_name} in {chan_name}",
+                            body=f"{sender_name} tagged @admin: {notif_body}",
+                            category="chat",
+                            action_route=chat_route,
+                            sender_id=user.id,
+                            data_payload={
+                                "channel_id": str(channel_id),
+                                "type": "admin_mention",
+                                "collapse_id": f"chat_{channel_id}",
+                            }
+                        )
+                        notified_user_ids.update(admin_ids)
 
-                # Process direct mention_ids if provided
-                for m_uid in mention_ids:
-                    try:
-                        u_target = db.query(models.User).filter_by(id=m_uid).first()
-                        if u_target and u_target.id != user.id:
-                            recipients_to_notify.add(u_target.id)
-                    except Exception:
-                        pass
+                # B. Handle @all tag (Admins only)
+                if "all" in mentioned and is_sender_admin:
+                    all_targets = [uid for uid in candidate_member_ids if uid not in notified_user_ids]
+                    if all_targets:
+                        dispatch_notification(
+                            db=db,
+                            recipient_user_ids=all_targets,
+                            title=f"📢 {sender_name} in {chan_name}",
+                            body=f"@all {notif_body}",
+                            category="chat",
+                            action_route=chat_route,
+                            sender_id=user.id,
+                            data_payload={
+                                "channel_id": str(channel_id),
+                                "type": "all_mention",
+                                "collapse_id": f"chat_{channel_id}",
+                            }
+                        )
+                        notified_user_ids.update(all_targets)
 
-                for m_id in mentioned:
-                    try:
-                        m_clean = str(m_id).lstrip("@").strip().lower()
-                        if m_clean == "admin":
-                            admin_members = db.query(models.ChannelMember).filter_by(channel_id=channel_id, role="admin").all()
-                            admin_ids = [m.user_id for m in admin_members if m.user_id != user.id]
-                            if not admin_ids and chan_obj and chan_obj.created_by_id and chan_obj.created_by_id != user.id:
-                                admin_ids = [chan_obj.created_by_id]
-                            
-                            if admin_ids:
-                                dispatch_notification(
-                                    db=db,
-                                    recipient_user_ids=admin_ids,
-                                    title=f"Admin Tag: {sender_name} in {chan_name}",
-                                    body=f"{sender_name} tagged @admin: {new_msg.content[:120]}",
-                                    category="chat",
-                                    action_route=chat_route,
-                                    sender_id=user.id,
-                                    data_payload={
-                                        "channel_id": str(channel_id),
-                                        "type": "admin_mention",
-                                        "collapse_id": f"chat_{channel_id}",
-                                    }
-                                )
-                                # Anti-Spam Invariant: Exclude admin IDs from generic mention dispatch so admins are not double-notified
-                                recipients_to_notify.difference_update(admin_ids)
-                        else:
-                            # Match channel member users first
+                # C. Handle specific user mentions (@handle and mention_ids)
+                user_mentions = [m for m in mentioned if m not in ("admin", "all")]
+                if user_mentions or mention_ids:
+                    channel_member_users = (
+                        db.query(models.User)
+                        .join(models.ChannelMember, models.ChannelMember.user_id == models.User.id)
+                        .filter(models.ChannelMember.channel_id == channel_id)
+                        .all()
+                    )
+                    specific_recipients = set()
+
+                    for m_uid in mention_ids:
+                        try:
+                            u_target = db.query(models.User).filter_by(id=m_uid).first()
+                            if u_target and u_target.id != user.id and u_target.id not in notified_user_ids:
+                                specific_recipients.add(u_target.id)
+                        except Exception:
+                            pass
+
+                    for m_id in user_mentions:
+                        try:
+                            m_clean = str(m_id).lstrip("@").strip().lower()
                             matched_u = None
                             clean_no_score = m_clean.replace("_", " ")
                             for c_u in channel_member_users:
@@ -344,7 +410,6 @@ async def chat_websocket(
                                     matched_u = c_u
                                     break
 
-                            # Fallback to global user query if not matched among channel members
                             if not matched_u:
                                 matched_u = db.query(models.User).filter(
                                     (models.User.username.ilike(m_clean)) |
@@ -353,47 +418,43 @@ async def chat_websocket(
                                     ((models.User.first_name + " " + models.User.last_name).ilike(clean_no_score))
                                 ).first()
 
-                            if matched_u and matched_u.id != user.id:
-                                recipients_to_notify.add(matched_u.id)
+                            if matched_u and matched_u.id != user.id and matched_u.id not in notified_user_ids:
+                                specific_recipients.add(matched_u.id)
 
-                    except Exception as p_err:
-                        print(f"[NuChat] Error resolving mention handle '{m_id}': {p_err}")
+                        except Exception as p_err:
+                            print(f"[NuChat] Error resolving mention handle '{m_id}': {p_err}")
 
-                if recipients_to_notify:
+                    if specific_recipients:
+                        dispatch_notification(
+                            db=db,
+                            recipient_user_ids=list(specific_recipients),
+                            title=f"{sender_name} tagged you in {chan_name}",
+                            body=notif_body,
+                            category="chat",
+                            action_route=chat_route,
+                            sender_id=user.id,
+                            data_payload={
+                                "channel_id": str(channel_id),
+                                "type": "mention",
+                                "collapse_id": f"chat_{channel_id}",
+                            }
+                        )
+                        notified_user_ids.update(specific_recipients)
+
+                # D. General group message notification for all other channel members
+                general_recipients = [uid for uid in candidate_member_ids if uid not in notified_user_ids]
+                if general_recipients:
                     dispatch_notification(
                         db=db,
-                        recipient_user_ids=list(recipients_to_notify),
-                        title=f"{sender_name} tagged you in {chan_name}",
-                        body=new_msg.content[:120],
+                        recipient_user_ids=general_recipients,
+                        title=f"{sender_name} in {chan_name}",
+                        body=notif_body,
                         category="chat",
                         action_route=chat_route,
                         sender_id=user.id,
                         data_payload={
                             "channel_id": str(channel_id),
-                            "type": "mention",
-                            "collapse_id": f"chat_{channel_id}",
-                        }
-                    )
-
-            elif chan_obj and (chan_obj.type.value == "direct" if hasattr(chan_obj.type, "value") else chan_obj.type == "direct"):
-                # For direct messages, notify the recipient
-                other_members = db.query(models.ChannelMember.user_id).filter(
-                    models.ChannelMember.channel_id == channel_id,
-                    models.ChannelMember.user_id != user.id
-                ).all()
-                other_ids = [str(m[0]) for m in other_members]
-                if other_ids:
-                    dispatch_notification(
-                        db=db,
-                        recipient_user_ids=other_ids,
-                        title=sender_name,
-                        body=new_msg.content[:120],
-                        category="chat",
-                        action_route=chat_route,
-                        sender_id=user.id,
-                        data_payload={
-                            "channel_id": str(channel_id),
-                            "type": "dm",
+                            "type": "channel_message",
                             "collapse_id": f"chat_{channel_id}",
                         }
                     )
@@ -512,6 +573,11 @@ def get_user_channels(
 
                 # @admin match
                 if is_group_admin and any(str(m).lstrip("@").strip().lower() == "admin" for m in um_mentions):
+                    has_unread_mention = True
+                    break
+
+                # @all match (Admin broadcast mentions all channel members)
+                if any(str(m).lstrip("@").strip().lower() == "all" for m in um_mentions):
                     has_unread_mention = True
                     break
 
