@@ -263,12 +263,15 @@ async def chat_websocket(
             if not meta_dict:
                 meta_dict = {}
 
-            # Automatically extract mentions from message content as fallback
-            content_mentions = re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
-            mentioned = list(meta_dict.get("mentions", []))
-            for cm in content_mentions:
-                if cm not in mentioned:
-                    mentioned.append(cm)
+            # Automatically extract mentions from message content as fallback & clean deduplicate
+            raw_mentions = list(meta_dict.get("mentions", [])) + re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
+            mentioned = []
+            seen_handles = set()
+            for mh in raw_mentions:
+                cl = str(mh).lstrip("@").strip().lower()
+                if cl and cl not in seen_handles:
+                    seen_handles.add(cl)
+                    mentioned.append(cl)
             mention_ids = list(meta_dict.get("mention_ids", []))
 
             if mentioned or mention_ids:
@@ -310,8 +313,14 @@ async def chat_websocket(
                                     category="chat",
                                     action_route=chat_route,
                                     sender_id=user.id,
-                                    data_payload={"channel_id": str(channel_id), "type": "admin_mention"}
+                                    data_payload={
+                                        "channel_id": str(channel_id),
+                                        "type": "admin_mention",
+                                        "collapse_id": f"chat_{channel_id}",
+                                    }
                                 )
+                                # Anti-Spam Invariant: Exclude admin IDs from generic mention dispatch so admins are not double-notified
+                                recipients_to_notify.difference_update(admin_ids)
                         else:
                             # Match channel member users first
                             matched_u = None
@@ -359,7 +368,11 @@ async def chat_websocket(
                         category="chat",
                         action_route=chat_route,
                         sender_id=user.id,
-                        data_payload={"channel_id": str(channel_id), "type": "mention"}
+                        data_payload={
+                            "channel_id": str(channel_id),
+                            "type": "mention",
+                            "collapse_id": f"chat_{channel_id}",
+                        }
                     )
 
             elif chan_obj and (chan_obj.type.value == "direct" if hasattr(chan_obj.type, "value") else chan_obj.type == "direct"):
@@ -378,7 +391,11 @@ async def chat_websocket(
                         category="chat",
                         action_route=chat_route,
                         sender_id=user.id,
-                        data_payload={"channel_id": str(channel_id), "type": "dm"}
+                        data_payload={
+                            "channel_id": str(channel_id),
+                            "type": "dm",
+                            "collapse_id": f"chat_{channel_id}",
+                        }
                     )
 
     except WebSocketDisconnect:

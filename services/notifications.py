@@ -117,6 +117,7 @@ def dispatch_notification(
             pass
 
     # 4. Dispatch Push Notifications via OneSignal (Targeting external_ids)
+    onesignal_sent = False
     if send_push:
         try:
             settings = Settings()
@@ -144,6 +145,10 @@ def dispatch_notification(
                     "contents": {"en": body},
                     "data": clean_data,
                 }
+                collapse_key = clean_data.get("collapse_id")
+                if collapse_key:
+                    body_payload["collapse_id"] = str(collapse_key).strip()
+
                 print(f"[OneSignal] Dispatching push to {len(valid_recipients_str)} user(s)... "
                       f"app_id={settings.mask_onesignal_app_id()}, auth=Key {settings.mask_onesignal_key()}, "
                       f"title='{title[:30]}'")
@@ -161,7 +166,8 @@ def dispatch_notification(
                     errors = res_json.get("errors")
                     warnings = res_json.get("warnings")
 
-                    if res.status_code in (200, 201) and not errors:
+                    if res.status_code in (200, 201) and bool(notif_id) and not errors:
+                        onesignal_sent = True
                         print(f"[OneSignal] Push SUCCESS: id={notif_id}, recipients={recipients}, warnings={warnings}")
                     else:
                         print(f"[OneSignal] Push issue: status={res.status_code}, id={notif_id}, recipients={recipients}, errors={errors}, warnings={warnings}, raw={res_text}")
@@ -169,40 +175,44 @@ def dispatch_notification(
                         # Resilient fallback: If alias targeting failed (e.g. invalid_aliases or 400), retry with legacy include_external_user_ids
                         if (res.status_code == 400 or (errors and isinstance(errors, dict) and "invalid_aliases" in errors)) and valid_recipients_str:
                             print(f"[OneSignal] Retrying with legacy include_external_user_ids targeting...")
-                            fallback_payload = {
-                                "app_id": app_id,
-                                "include_external_user_ids": valid_recipients_str,
-                                "headings": {"en": title},
-                                "contents": {"en": body},
-                                "data": clean_data,
-                            }
+                            fallback_payload = dict(body_payload)
+                            fallback_payload.pop("include_aliases", None)
+                            fallback_payload.pop("target_channel", None)
+                            fallback_payload["include_external_user_ids"] = valid_recipients_str
                             res_fallback = client.post(onesignal_url, json=fallback_payload, headers=headers)
                             try:
                                 fb_json = res_fallback.json()
                             except Exception:
                                 fb_json = {}
-                            print(f"[OneSignal] Fallback response: status={res_fallback.status_code}, id={fb_json.get('id')}, recipients={fb_json.get('recipients', 0)}, errors={fb_json.get('errors')}")
+                            fb_id = fb_json.get("id")
+                            if res_fallback.status_code in (200, 201) and bool(fb_id) and not fb_json.get("errors"):
+                                onesignal_sent = True
+                                print(f"[OneSignal] Fallback SUCCESS: id={fb_id}, recipients={fb_json.get('recipients', 0)}")
+                            else:
+                                print(f"[OneSignal] Fallback response: status={res_fallback.status_code}, id={fb_id}, errors={fb_json.get('errors')}")
 
         except Exception as os_ex:
             print(f"[OneSignal] ERROR dispatching push notification: {os_ex!r}")
 
-        # 5. Direct FCM fallback dispatch for registered device tokens
-        try:
-            if valid_recipients_uuid:
-                tokens = db.query(models.DeviceToken).filter(
-                    models.DeviceToken.user_id.in_(valid_recipients_uuid)
-                ).all()
-                if tokens and firebase_admin._apps:
-                    token_strings = [t.token for t in tokens if t.token]
-                    if token_strings:
-                        fcm_msg = messaging.MulticastMessage(
-                            notification=messaging.Notification(title=title, body=body),
-                            data={k: str(v) for k, v in clean_data.items()},
-                            tokens=token_strings,
-                        )
-                        messaging.send_each_for_multicast(fcm_msg)
-        except Exception as fcm_ex:
-            print(f"[notifications] FCM dispatch notice: {fcm_ex}")
+        # 5. Direct FCM fallback dispatch for registered device tokens (Exclusive fallback if OneSignal did not deliver)
+        if not onesignal_sent:
+            try:
+                if valid_recipients_uuid:
+                    tokens = db.query(models.DeviceToken).filter(
+                        models.DeviceToken.user_id.in_(valid_recipients_uuid)
+                    ).all()
+                    if tokens and firebase_admin._apps:
+                        token_strings = [t.token for t in tokens if t.token]
+                        if token_strings:
+                            fcm_msg = messaging.MulticastMessage(
+                                notification=messaging.Notification(title=title, body=body),
+                                data={k: str(v) for k, v in clean_data.items()},
+                                tokens=token_strings,
+                            )
+                            messaging.send_each_for_multicast(fcm_msg)
+                            print(f"[notifications] Direct FCM fallback dispatched to {len(token_strings)} token(s).")
+            except Exception as fcm_ex:
+                print(f"[notifications] FCM fallback notice: {fcm_ex}")
 
     return created_notifs
 
