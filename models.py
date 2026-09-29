@@ -279,6 +279,7 @@ class Channel(Base):
     # Relationships
     members = relationship("ChannelMember", back_populates="channel", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="channel", cascade="all, delete-orphan")
+    course = relationship("Course", foreign_keys=[course_id], lazy="select")
 
 
 # 3. The Junction Table (Who is in the Room?)

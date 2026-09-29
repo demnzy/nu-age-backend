@@ -484,7 +484,10 @@ def get_user_channels(
     memberships = (
         db.query(models.ChannelMember)
         .filter(models.ChannelMember.user_id == user.id)
-        .options(joinedload(models.ChannelMember.channel))
+        .options(
+            joinedload(models.ChannelMember.channel)
+            .joinedload(models.Channel.course)
+        )
         .all()
     )
     
@@ -597,7 +600,14 @@ def get_user_channels(
                 if has_unread_mention:
                     break
         # ==========================================
-            
+
+        # Resolve avatar: course image for course chats, profile pic for DMs
+        _is_dm = (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct")
+        _dm_avatar = getattr(other_user, "profile_picture_url", None) if _is_dm and other_user else None
+        _course_avatar = None
+        if channel.course_id and channel.course:
+            _course_avatar = channel.course.image_url
+
         results.append({
             "channel_id": str(channel.id),
             "name": display_name,
@@ -609,8 +619,9 @@ def get_user_channels(
             "has_unread_mention": has_unread_mention,
             "role": membership.role,
             "is_announcement_only": channel.is_announcement_only,
-            "other_user_id": str(other_user.id) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
-            "other_user_avatar": getattr(other_user, "profile_picture_url", None) if (channel.type.value == "direct" if hasattr(channel.type, 'value') else channel.type == "direct") and other_user else None,
+            "other_user_id": str(other_user.id) if _is_dm and other_user else None,
+            "other_user_avatar": _dm_avatar,
+            "avatar_url": _course_avatar or _dm_avatar,
             "course_id": str(channel.course_id) if channel.course_id else None,
             "created_by_id": str(channel.created_by_id) if channel.created_by_id else None
         })
