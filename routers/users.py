@@ -640,6 +640,29 @@ def refresh_token_endpoint(payload: RefreshRequest, db: Session = Depends(get_db
 def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
     auth.revoke_refresh_token(db, payload.refresh_token)
     return None
+
+
+# NEW: revoke ALL refresh tokens for this user (log out everywhere).
+# Designed for the "Log Out All Devices" button in the profile view.
+@router.post('/auth/logout-all', status_code=status.HTTP_200_OK)
+def logout_all_devices(
+    current_user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    now = datetime.now(timezone.utc)
+    revoked_count = (
+        db.query(models.RefreshToken)
+        .filter(
+            models.RefreshToken.user_id == current_user.id,
+            models.RefreshToken.revoked_at.is_(None),
+        )
+        .update({"revoked_at": now})
+    )
+    db.commit()
+    return {
+        "message": f"All sessions revoked. {revoked_count} active session(s) were logged out.",
+        "revoked_count": revoked_count,
+    }
     
 # Admin get all users
 @router.get('', response_model= List[UserBase])
