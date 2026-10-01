@@ -1321,3 +1321,55 @@ async def run_course_draft_job(job_id: str, topic: str, context: str):
 
     finally:
         db.close()
+
+
+async def ask_ai_tutor_response(
+    query: str,
+    course_title: str = "Course",
+    module_title: str = "Module",
+    lesson_title: str = "Lesson",
+    lesson_content: str = "",
+    conversation_history: list = None,
+) -> str:
+    """
+    Executes a contextual, guarded educational doubt-clearing prompt via OpenAI pipeline.
+    """
+    system_prompt = (
+        "You are Nu-AI, an expert, encouraging, and academically rigorous learning assistant for Nu-Age.\n"
+        "Your mission is to help the student understand concepts deeply, resolve doubts, and master their course.\n\n"
+        "GUARDRAILS & DIRECTIVES:\n"
+        "1. Academic Focus: Keep all answers relevant to the student's study context. Politely redirect off-topic or harmful requests back to their studies.\n"
+        "2. Pedagogical Style: Break complex ideas into intuitive, clear, step-by-step explanations with relatable real-world analogies.\n"
+        "3. Interactive & Encouraging: Include a brief follow-up question, hint, or check to stimulate active recall.\n"
+        "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n\n"
+        f"STUDENT'S ACTIVE LEARNING CONTEXT:\n"
+        f"- Course: {course_title}\n"
+        f"- Module: {module_title}\n"
+        f"- Lesson: {lesson_title}\n"
+    )
+    if lesson_content:
+        snippet = lesson_content[:1500].strip()
+        system_prompt += f"- Lesson Material Excerpt:\n\"\"\"\n{snippet}\n\"\"\"\n"
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if conversation_history:
+        for msg in conversation_history[-6:]:
+            role = "user" if msg.get("is_user") or msg.get("role") == "user" else "assistant"
+            content = msg.get("text") or msg.get("content") or ""
+            if content:
+                messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": query})
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=800,
+            temperature=0.6,
+        )
+        return response.choices[0].message.content or "I couldn't generate a response. Please try again."
+    except Exception as ex:
+        print(f"[AI Tutor Error]: {ex}")
+        raise

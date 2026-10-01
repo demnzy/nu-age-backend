@@ -369,3 +369,36 @@ async def generate_study_content(
 
     # 3. Return instantly
     return {"message": "AI Generation started", "status": "processing", "source": credit_source}
+
+
+class AIDoubtPayload(BaseModel):
+    query: str
+    module_title: Optional[str] = "Module"
+    lesson_title: Optional[str] = "Lesson"
+    course_title: Optional[str] = "Course"
+    lesson_content: Optional[str] = ""
+    conversation_history: Optional[List[dict]] = None
+
+
+@router.post("/ai-tutor")
+async def ask_ai_tutor(
+    payload: AIDoubtPayload,
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Contextual, guarded AI Doubt Assistant answering student queries
+    grounded in the active course module and lesson via OpenAI pipeline.
+    """
+    try:
+        reply = await ai_service.ask_ai_tutor_response(
+            query=payload.query,
+            course_title=payload.course_title,
+            module_title=payload.module_title,
+            lesson_title=payload.lesson_title,
+            lesson_content=payload.lesson_content or "",
+            conversation_history=payload.conversation_history or [],
+        )
+        return {"reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Tutor service error: {str(e)}")

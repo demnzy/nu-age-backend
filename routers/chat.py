@@ -682,6 +682,68 @@ def get_channel_messages(
     return formatted_messages
 
 
+class MessageCreatePayload(BaseModel):
+    content: str
+    type: str = "text"
+    metadata_payload: Optional[dict] = None
+
+
+@router.post("/channels/{channel_id}/messages")
+async def send_channel_message_rest(
+    channel_id: UUID,
+    payload: MessageCreatePayload,
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sends a message to a channel via REST with instant WebSocket broadcast."""
+    is_member = db.query(models.ChannelMember).filter_by(
+        channel_id=channel_id, user_id=user.id
+    ).first()
+    if not is_member:
+        raise HTTPException(status_code=403, detail="You do not have access to this chat.")
+
+    channel = db.query(models.Channel).filter_by(id=channel_id).first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found.")
+    if channel.is_announcement_only and is_member.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can post in announcement channels.")
+
+    new_msg = models.Message(
+        channel_id=channel_id,
+        sender_id=user.id,
+        content=payload.content,
+        type=payload.type,
+        metadata_payload=payload.metadata_payload,
+    )
+    db.add(new_msg)
+    db.commit()
+    db.refresh(new_msg)
+
+    first = user.first_name or ""
+    last = user.last_name or ""
+    sender_name = f"{first} {last}".strip() or getattr(user, "username", "Unknown")
+
+    broadcast_payload = {
+        "id": str(new_msg.id),
+        "channel_id": str(channel_id),
+        "type": new_msg.type.value if hasattr(new_msg.type, "value") else new_msg.type,
+        "content": new_msg.content,
+        "metadata_payload": new_msg.metadata_payload,
+        "created_at": new_msg.created_at.isoformat(),
+        "sender": {
+            "id": str(user.id),
+            "name": sender_name,
+            "profile_picture_url": getattr(user, "profile_picture_url", None),
+        },
+    }
+
+    channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+    for member in channel_members:
+        await manager.send_personal_message(broadcast_payload, str(member[0]))
+
+    return broadcast_payload
+
+
 
 
 # 1. Update the Schema to accept member_ids
