@@ -162,6 +162,31 @@ def create_course_discussion(
     db.commit()
     db.refresh(new_disc)
 
+    # Dispatch notification to course instructor/admin
+    try:
+        from services.notifications import dispatch_notification
+        targets = []
+        if course.admin_id and course.admin_id != current_user.id:
+            targets.append(course.admin_id)
+        if course.teacher_id and course.teacher_id != current_user.id:
+            targets.append(course.teacher_id)
+        if targets:
+            category_label = payload.category.capitalize()
+            sender_name = current_user.full_name or "A learner"
+            dispatch_notification(
+                db=db,
+                recipient_user_ids=targets,
+                title=f"New {category_label} in {course.name}",
+                body=f"{sender_name} posted: '{payload.title[:60]}'",
+                category="discussion",
+                action_route=f"/course/{course_id}?tab=discuss",
+                sender_id=current_user.id,
+                data_payload={"course_id": str(course_id), "discussion_id": str(new_disc.id)},
+                send_push=True,
+            )
+    except Exception as ex:
+        print(f"[Discussion Notification Error]: {ex}")
+
     return _serialize_discussion(new_disc, current_user.id, False)
 
 
@@ -232,6 +257,41 @@ def add_discussion_reply(
     disc.replies_count = (disc.replies_count or 0) + 1
     db.commit()
     db.refresh(reply)
+
+    # Dispatch notifications for reply to thread author and previous repliers
+    try:
+        from services.notifications import dispatch_notification
+        targets = set()
+        if disc.user_id and disc.user_id != current_user.id:
+            targets.add(disc.user_id)
+        
+        for existing_r in disc.replies:
+            if existing_r.user_id and existing_r.user_id != current_user.id:
+                targets.add(existing_r.user_id)
+
+        if targets:
+            category_label = (disc.category or "topic").capitalize()
+            sender_name = current_user.full_name or "A classmate"
+            snippet = payload.content.strip()
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "..."
+            dispatch_notification(
+                db=db,
+                recipient_user_ids=list(targets),
+                title=f"New reply to {category_label}: '{disc.title[:45]}'",
+                body=f"{sender_name}: {snippet}",
+                category="discussion",
+                action_route=f"/course/{disc.course_id}?tab=discuss&topic={disc.id}",
+                sender_id=current_user.id,
+                data_payload={
+                    "course_id": str(disc.course_id),
+                    "discussion_id": str(disc.id),
+                    "reply_id": str(reply.id),
+                },
+                send_push=True,
+            )
+    except Exception as ex:
+        print(f"[Reply Notification Error]: {ex}")
 
     return _serialize_reply(reply, current_user.id, False)
 

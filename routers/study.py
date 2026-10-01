@@ -378,6 +378,7 @@ class AIDoubtPayload(BaseModel):
     lesson_title: Optional[str] = "Lesson"
     course_title: Optional[str] = "Course"
     lesson_content: Optional[str] = ""
+    is_assessment: Optional[bool] = False
     conversation_history: Optional[List[dict]] = None
 
 
@@ -399,6 +400,7 @@ async def ask_ai_tutor(
             lesson_title=payload.lesson_title,
             lesson_content=payload.lesson_content or "",
             conversation_history=payload.conversation_history or [],
+            is_assessment=payload.is_assessment or False,
         )
         return {"reply": reply}
     except Exception as e:

@@ -1330,6 +1330,7 @@ async def ask_ai_tutor_response(
     lesson_title: str = "Lesson",
     lesson_content: str = "",
     conversation_history: list = None,
+    is_assessment: bool = False,
 ) -> str:
     """
     Executes a contextual, guarded educational doubt-clearing prompt via OpenAI pipeline.
@@ -1341,11 +1342,28 @@ async def ask_ai_tutor_response(
         "1. Academic Focus: Keep all answers relevant to the student's study context. Politely redirect off-topic or harmful requests back to their studies.\n"
         "2. Pedagogical Style: Break complex ideas into intuitive, clear, step-by-step explanations with relatable real-world analogies.\n"
         "3. Interactive & Encouraging: Include a brief follow-up question, hint, or check to stimulate active recall.\n"
-        "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n\n"
-        f"STUDENT'S ACTIVE LEARNING CONTEXT:\n"
+        "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n"
+    )
+
+    if is_assessment:
+        system_prompt += (
+            "\n🚨 CRITICAL ASSESSMENT MODE DIRECTIVE:\n"
+            "The student is currently viewing or taking an active GRADED ASSESSMENT or QUIZ.\n"
+            "Under NO circumstances should you provide direct answers, indicate which multiple-choice option (A, B, C, D) is correct, write exact solution code, or complete quiz problems for them.\n"
+            "INSTEAD, act strictly as a Socratic tutor:\n"
+            "1. Clarify definitions, terminology, and underlying theoretical concepts.\n"
+            "2. Walk through a different, simplified example illustrating the same mathematical, conceptual, or logical pattern.\n"
+            "3. Prompt the student with reflective questions that guide them to discover the answer independently.\n"
+            "4. If the student asks 'What is the answer to question X?' or pastes a quiz problem, politely state: "
+            "'I cannot provide direct answers or letter selections during an assessment, but let's break down how to approach the underlying concept...'\n"
+        )
+
+    system_prompt += (
+        f"\nSTUDENT'S ACTIVE LEARNING CONTEXT:\n"
         f"- Course: {course_title}\n"
         f"- Module: {module_title}\n"
         f"- Lesson: {lesson_title}\n"
+        f"- Assessment Mode: {'ACTIVE (Strict Socratic Hints Only)' if is_assessment else 'Inactive (Standard Doubt Resolution)'}\n"
     )
     if lesson_content:
         snippet = lesson_content[:1500].strip()
