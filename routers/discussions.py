@@ -379,10 +379,9 @@ def toggle_discussion_resolved(
     if not disc:
         raise HTTPException(status_code=404, detail="Discussion not found")
 
-    user_role = str(current_user.role.value if hasattr(current_user.role, "value") else current_user.role).lower()
-    is_instructor = user_role in ("teacher", "admin", "platform_admin")
-    if disc.user_id != current_user.id and not is_instructor:
-        raise HTTPException(status_code=403, detail="Only thread author or instructor can mark as solved")
+    # Only the author who posted the question can mark it as solved
+    if disc.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the author who posted this question can mark it as solved")
 
     disc.is_resolved = not bool(disc.is_resolved)
     db.commit()

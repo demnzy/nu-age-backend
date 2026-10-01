@@ -850,8 +850,28 @@ def get_channel_members(
     user = Depends(auth.get_current_user), 
     db: Session = Depends(get_db)
 ):
-    members = db.query(models.ChannelMember).options(joinedload(models.ChannelMember.user)).filter_by(channel_id=channel_id).all()
     channel = db.query(models.Channel).filter_by(id=channel_id).first()
+
+    # Automatically synchronize enrolled course members if this is a course channel
+    if channel and channel.course_id:
+        try:
+            enrolled = db.query(models.Enrollment.user_id).filter_by(course_id=channel.course_id).all()
+            existing_uids = {
+                row[0] for row in db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+            }
+            new_members = []
+            for (e_uid,) in enrolled:
+                if e_uid not in existing_uids:
+                    new_members.append(models.ChannelMember(channel_id=channel_id, user_id=e_uid, role="member"))
+                    existing_uids.add(e_uid)
+            if new_members:
+                db.bulk_save_objects(new_members)
+                db.commit()
+        except Exception as sync_err:
+            print(f"[chat] Course member auto-sync notice: {sync_err}")
+            db.rollback()
+
+    members = db.query(models.ChannelMember).options(joinedload(models.ChannelMember.user)).filter_by(channel_id=channel_id).all()
     admin_id = str(channel.created_by_id) if channel and channel.created_by_id else None
 
     member_ids = []
