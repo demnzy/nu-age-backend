@@ -4,6 +4,7 @@ from sqlalchemy.sql.expression import func
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import uuid
+from pydantic import BaseModel
 from services.ai_service import process_and_generate_content
 import models
 import schemas
