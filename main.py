@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
@@ -36,6 +36,48 @@ def _run_migrations():
                 """,
                 "CREATE INDEX IF NOT EXISTS ix_user_notif_user_created ON user_notifications(user_id, created_at DESC);",
                 "CREATE INDEX IF NOT EXISTS ix_user_notif_unread ON user_notifications(user_id, is_read);",
+                """
+                CREATE TABLE IF NOT EXISTS course_discussions (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    title VARCHAR(255) NOT NULL,
+                    content TEXT NOT NULL,
+                    category VARCHAR(50) DEFAULT 'question',
+                    upvotes_count INTEGER DEFAULT 0,
+                    replies_count INTEGER DEFAULT 0,
+                    is_pinned BOOLEAN DEFAULT FALSE,
+                    is_resolved BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_course_disc_course_created ON course_discussions(course_id, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS ix_course_disc_category ON course_discussions(course_id, category);",
+                """
+                CREATE TABLE IF NOT EXISTS course_discussion_replies (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    discussion_id UUID NOT NULL REFERENCES course_discussions(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    upvotes_count INTEGER DEFAULT 0,
+                    is_endorsed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_course_reply_disc_created ON course_discussion_replies(discussion_id, created_at ASC);",
+                """
+                CREATE TABLE IF NOT EXISTS course_discussion_upvotes (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    discussion_id UUID REFERENCES course_discussions(id) ON DELETE CASCADE,
+                    reply_id UUID REFERENCES course_discussion_replies(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    CONSTRAINT uq_user_discussion_upvote UNIQUE (user_id, discussion_id),
+                    CONSTRAINT uq_user_reply_upvote UNIQUE (user_id, reply_id)
+                );
+                """,
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))
@@ -88,6 +130,7 @@ app.include_router(subscriptions.router, tags=["Subscription Management"])
 app.include_router(network.router, tags=["Friends Management"])
 app.include_router(platform_admin.router, tags=["Platform Super Admin"])
 app.include_router(notifications.router, tags=["Notifications"])
+app.include_router(discussions.router, tags=["Course Discussions"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

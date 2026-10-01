@@ -748,4 +748,56 @@ class UserNotification(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     user = relationship("User", foreign_keys=[user_id], backref="notifications")
-    sender = relationship("User", foreign_keys=[sender_id])
+    sender = relationship("User", foreign_keys=[sender_id])
+
+
+class CourseDiscussion(Base):
+    __tablename__ = "course_discussions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(50), default="question", index=True)  # question, idea, discussion, resource
+    upvotes_count = Column(Integer, default=0)
+    replies_count = Column(Integer, default=0)
+    is_pinned = Column(Boolean, default=False)
+    is_resolved = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    course = relationship("Course", backref="discussions")
+    author = relationship("User", foreign_keys=[user_id])
+    replies = relationship("CourseDiscussionReply", back_populates="discussion", cascade="all, delete-orphan", order_by="CourseDiscussionReply.created_at.asc()")
+
+
+class CourseDiscussionReply(Base):
+    __tablename__ = "course_discussion_replies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    discussion_id = Column(UUID(as_uuid=True), ForeignKey("course_discussions.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    upvotes_count = Column(Integer, default=0)
+    is_endorsed = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    discussion = relationship("CourseDiscussion", back_populates="replies")
+    author = relationship("User", foreign_keys=[user_id])
+
+
+class CourseDiscussionUpvote(Base):
+    __tablename__ = "course_discussion_upvotes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    discussion_id = Column(UUID(as_uuid=True), ForeignKey("course_discussions.id", ondelete="CASCADE"), nullable=True, index=True)
+    reply_id = Column(UUID(as_uuid=True), ForeignKey("course_discussion_replies.id", ondelete="CASCADE"), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "discussion_id", name="uq_user_discussion_upvote"),
+        UniqueConstraint("user_id", "reply_id", name="uq_user_reply_upvote"),
+    )
