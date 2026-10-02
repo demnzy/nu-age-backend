@@ -194,6 +194,188 @@ async def upload_material(
     
     return {"material_id": new_mat.id, "message": "Material saved and uploaded successfully."}
 
+
+class YouTubeImportRequest(BaseModel):
+    url: str
+    title: Optional[str] = None
+
+
+@router.post("/materials/youtube", response_model=schemas.UploadResponse)
+async def import_youtube_material(
+    payload: YouTubeImportRequest,
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    import re
+    import urllib.parse
+    import httpx
+    from database import Settings
+
+    raw_url = payload.url.strip()
+    match = re.search(
+        r"(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})",
+        raw_url,
+        re.IGNORECASE
+    )
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL format.")
+    video_id = match.group(1)
+
+    # Usage check
+    sub = db.query(models.UserSubscription).filter(
+        models.UserSubscription.user_id == user.id
+    ).first()
+    if not sub:
+        sub = models.UserSubscription(user_id=user.id, plan_id="free")
+        db.add(sub)
+        db.commit()
+        db.refresh(sub)
+    if sub.plan.materials_limit is not None and sub.materials_uploaded >= sub.plan.materials_limit:
+        raise HTTPException(
+            status_code=403,
+            detail="You have reached your material upload limit. Please upgrade your plan."
+        )
+
+    # Fetch YouTube snippet
+    yt_key = getattr(Settings(), "YOUTUBE_API_KEY", "") or ""
+    video_title = payload.title or ""
+    video_desc = ""
+    channel = ""
+
+    if yt_key:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client_http:
+                resp = await client_http.get(
+                    "https://www.googleapis.com/youtube/v3/videos",
+                    params={"part": "snippet", "id": video_id, "key": yt_key}
+                )
+                if resp.status_code == 200:
+                    items = resp.json().get("items", [])
+                    if items:
+                        snippet = items[0].get("snippet", {})
+                        if not video_title:
+                            video_title = snippet.get("title", "")
+                        video_desc = snippet.get("description", "")
+                        channel = snippet.get("channelTitle", "")
+        except Exception as yt_err:
+            print(f"[WARNING] YouTube Data API lookup failed: {yt_err}")
+
+    if not video_title:
+        video_title = f"YouTube Study Video ({video_id})"
+
+    # Synthesize educational study notes from video context
+    study_content = f"# {video_title}\n\n"
+    if channel:
+        study_content += f"**Channel:** {channel}\n\n"
+    study_content += f"**Source Video:** {raw_url}\n\n"
+
+    try:
+        from services.ai_service import client
+        prompt = (
+            f"You are an expert pedagogical study coach. Analyze this YouTube educational video context and produce "
+            f"comprehensive, structured self-study material.\n\n"
+            f"Video Title: {video_title}\n"
+            f"Channel: {channel}\n"
+            f"Video Description / Context:\n{video_desc[:2500]}\n\n"
+            f"Generate structured study notes in clean Markdown covering:\n"
+            f"1. Core Conceptual Overview\n"
+            f"2. Key Terminology & Definitions\n"
+            f"3. 3-5 Foundational Takeaways\n"
+            f"4. Practice & Self-Check Review Questions with Brief Answers\n"
+        )
+        completion = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a concise, structured educational assistant creating study notes from video context."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1500,
+        )
+        ai_notes = completion.choices[0].message.content.strip()
+        study_content += ai_notes
+    except Exception as ai_err:
+        print(f"[WARNING] AI synthesis from video failed, using raw description fallback: {ai_err}")
+        study_content += f"## Video Summary & Notes\n\n{video_desc or 'Educational video notes from YouTube.'}"
+
+    # Increment and save
+    sub.materials_uploaded += 1
+    db.commit()
+
+    new_mat = models.StudyMaterial(
+        user_id=user.id,
+        title=video_title,
+        source_type="youtube",
+        content=study_content,
+        file_url=raw_url
+    )
+    db.add(new_mat)
+    db.commit()
+    db.refresh(new_mat)
+
+    return {"material_id": new_mat.id, "message": "YouTube video imported and converted to study material successfully."}
+
+
+@router.get("/youtube/recommendations")
+async def get_youtube_recommendations(
+    query: str,
+    limit: int = 4,
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    """Finds educational YouTube recommendations related to a study query."""
+    import httpx
+    import urllib.parse
+    from database import Settings
+
+    clean_q = query.strip()
+    if not clean_q:
+        return []
+
+    yt_key = getattr(Settings(), "YOUTUBE_API_KEY", "") or ""
+    results = []
+    if yt_key:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client_http:
+                resp = await client_http.get(
+                    "https://www.googleapis.com/youtube/v3/search",
+                    params={
+                        "part": "snippet",
+                        "q": f"{clean_q} tutorial",
+                        "type": "video",
+                        "maxResults": limit,
+                        "key": yt_key
+                    }
+                )
+                if resp.status_code == 200:
+                    for item in resp.json().get("items", []):
+                        vid_id = item.get("id", {}).get("videoId")
+                        snippet = item.get("snippet", {})
+                        if vid_id and snippet:
+                            results.append({
+                                "video_id": vid_id,
+                                "url": f"https://www.youtube.com/watch?v={vid_id}",
+                                "title": snippet.get("title", ""),
+                                "channel": snippet.get("channelTitle", ""),
+                                "thumbnail": snippet.get("thumbnails", {}).get("medium", {}).get("url", "")
+                            })
+        except Exception as e:
+            print(f"[WARNING] YouTube search failed: {e}")
+
+    if not results:
+        # Fallback to search query link
+        encoded = urllib.parse.quote(f"{clean_q} tutorial")
+        results.append({
+            "video_id": "",
+            "url": f"https://www.youtube.com/results?search_query={encoded}",
+            "title": f"YouTube search: {clean_q} tutorial",
+            "channel": "YouTube Search",
+            "thumbnail": ""
+        })
+
+    return results
+
+
 # ==========================================
 # 3. ASSESSMENTS (QUIZZES & EXAMS)
 # ==========================================
