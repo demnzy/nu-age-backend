@@ -369,6 +369,23 @@ def chunk_text(text: str, chunk_size: int = 15000, overlap: int = 1000) -> List[
     return chunks
 
 
+# In-memory thread-safe generation progress registry
+_MATERIAL_PROGRESS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_material_generation_progress(material_id: str) -> Dict[str, Any]:
+    """Retrieve detailed generation progress and stage for a material."""
+    mid_str = str(material_id).strip().lower()
+    return _MATERIAL_PROGRESS.get(mid_str) or {
+        "status": "completed",
+        "is_generating": False,
+        "progress_percent": 100,
+        "stage": "Ready to study",
+        "flashcards_count": 0,
+        "questions_count": 0,
+    }
+
+
 async def process_and_generate_content(user_id: str, material_ids: List[str], content_text: str, types_requested: List[str]):
     """Thread-safe background worker using OpenAI's guaranteed Structured Outputs."""
     db: Session = SessionLocal()
@@ -488,17 +505,47 @@ Adhere strictly to the generation size configurations provided.
 
         if total_chunks == 0:
             print("[WARNING] No text to process.")
+            for mid in material_ids:
+                _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
+                    "status": "completed",
+                    "is_generating": False,
+                    "progress_percent": 100,
+                    "stage": "Ready",
+                    "flashcards_count": 0,
+                    "questions_count": 0,
+                }
             return
 
         print(f"[DEBUG] Document split into {total_chunks} chunks. Firing at OpenAI...")
+        for mid in material_ids:
+            _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
+                "status": "processing",
+                "is_generating": True,
+                "progress_percent": 15,
+                "stage": "Analyzing and chunking document text...",
+                "flashcards_count": 0,
+                "questions_count": 0,
+            }
 
         # --- THE SMART LIMIT MATH ---
-        # Divide the requested defaults by the number of chunks so the total matches the goal
         cards_per_chunk = max(1, 15 // total_chunks)
         quiz_per_chunk = max(1, 20 // total_chunks)
         exam_per_chunk = max(1, 40 // total_chunks)
+        total_fc_saved = 0
+        total_q_saved = 0
 
         for index, chunk in enumerate(chunks):
+            pct = int(15 + (75 * index / max(1, total_chunks)))
+            stage_desc = f"Synthesizing flashcards & quiz scenarios (Part {index + 1} of {total_chunks})..."
+            for mid in material_ids:
+                _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
+                    "status": "processing",
+                    "is_generating": True,
+                    "progress_percent": pct,
+                    "stage": stage_desc,
+                    "flashcards_count": total_fc_saved,
+                    "questions_count": total_q_saved,
+                }
             try:
                 print(f"[DEBUG] Processing chunk {index + 1} of {total_chunks}...")
 
@@ -515,8 +562,6 @@ Adhere strictly to the generation size configurations provided.
                     generation_goals.append(f"- Generate exactly {quiz_per_chunk} QUIZ multiple-choice questions (Focus on core concepts and immediate factual application).")
 
                 goals_text = "\n".join(generation_goals)
-
-                # Combine the goals and the text for the user message
                 user_prompt = f"TARGET OUTPUTS FOR THIS CHUNK:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
 
                 # Native OpenAI parsing with structured outputs
@@ -530,7 +575,6 @@ Adhere strictly to the generation size configurations provided.
                     temperature=0.2
                 )
 
-                # The response is already a perfectly formatted Python object
                 result = response.choices[0].message.parsed
 
                 parsed_user_id = user_id
@@ -546,6 +590,7 @@ Adhere strictly to the generation size configurations provided.
                     pass
 
                 if "flashcards" in types_requested and result.flashcards:
+                    total_fc_saved += len(result.flashcards)
                     for card in result.flashcards:
                         db.add(models.Flashcard(
                             user_id=parsed_user_id, material_id=parsed_mat_id, front=card.front, back=card.back
@@ -553,6 +598,7 @@ Adhere strictly to the generation size configurations provided.
 
                 if "quiz" in types_requested or "exam" in types_requested:
                     if result.questions:
+                        total_q_saved += len(result.questions)
                         for q in result.questions:
                             db.add(models.Question(
                                 user_id=parsed_user_id, material_id=parsed_mat_id, question_text=q.question_text,
@@ -561,6 +607,16 @@ Adhere strictly to the generation size configurations provided.
 
                 db.commit()
                 print(f"[SUCCESS] Chunk {index + 1} saved.")
+
+                for mid in material_ids:
+                    _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
+                        "status": "processing",
+                        "is_generating": True,
+                        "progress_percent": int(15 + (75 * (index + 1) / max(1, total_chunks))),
+                        "stage": f"Synthesizing flashcards & quiz scenarios (Part {index + 1} of {total_chunks})...",
+                        "flashcards_count": total_fc_saved,
+                        "questions_count": total_q_saved,
+                    }
 
                 # A 1-second pause keeps you safely under OpenAI's Tier 1 limits
                 await asyncio.sleep(1)
@@ -592,6 +648,15 @@ Adhere strictly to the generation size configurations provided.
 
         db.commit()
         db.close()
+        for mid in material_ids:
+            _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
+                "status": "completed",
+                "is_generating": False,
+                "progress_percent": 100,
+                "stage": "AI Study Engine Ready",
+                "flashcards_count": total_fc_saved,
+                "questions_count": total_q_saved,
+            }
         print("[DEBUG] Database session closed and materials unlocked.")
 
 

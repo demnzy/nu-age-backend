@@ -174,26 +174,31 @@ def create_course_discussion(
     db.commit()
     db.refresh(new_disc)
 
-    # Dispatch notification to course instructor/admin (and enrolled learners if posted by instructor)
+    # Dispatch notification to course participants (enrolled learners + instructor + admin)
     try:
         from services.notifications import dispatch_notification
-        targets = []
-        is_instructor = current_user.id in (course.teacher_id, course.admin_id)
-        if is_instructor:
-            enrolled = db.query(models.Enrollment.user_id).filter(models.Enrollment.course_id == course_id).all()
-            targets.extend([e[0] for e in enrolled if e[0] != current_user.id])
-        else:
-            if course.admin_id and course.admin_id != current_user.id:
-                targets.append(course.admin_id)
-            if course.teacher_id and course.teacher_id != current_user.id:
-                targets.append(course.teacher_id)
+        targets = set()
+        enrolled = db.query(models.Enrollment.user_id).filter(models.Enrollment.course_id == course_id).all()
+        for e in enrolled:
+            if e[0]:
+                targets.add(e[0])
+        if course.admin_id:
+            targets.add(course.admin_id)
+        if course.teacher_id:
+            targets.add(course.teacher_id)
 
-        if targets:
+        recipient_targets = [t for t in targets if str(t).lower() != str(current_user.id).lower()]
+        allow_self = False
+        if not recipient_targets:
+            recipient_targets = [current_user.id]
+            allow_self = True
+
+        if recipient_targets:
             category_label = payload.category.capitalize()
             sender_name = current_user.full_name or "A classmate"
             dispatch_notification(
                 db=db,
-                recipient_user_ids=targets,
+                recipient_user_ids=recipient_targets,
                 title=f"New {category_label} in {course.name}",
                 body=f"{sender_name}: '{payload.title[:60]}'",
                 category="discussion",
@@ -205,6 +210,7 @@ def create_course_discussion(
                     "collapse_id": f"disc_{new_disc.id}",
                 },
                 send_push=True,
+                allow_self_notify=allow_self,
             )
     except Exception as ex:
         print(f"[Discussion Notification Error]: {ex}")
@@ -280,18 +286,31 @@ def add_discussion_reply(
     db.commit()
     db.refresh(reply)
 
-    # Dispatch notifications for reply to thread author and previous repliers
+    # Dispatch notifications for reply to thread author, previous repliers, and course instructor/admin
     try:
         from services.notifications import dispatch_notification
         targets = set()
-        if disc.user_id and disc.user_id != current_user.id:
+        if disc.user_id:
             targets.add(disc.user_id)
         
         for existing_r in disc.replies:
-            if existing_r.user_id and existing_r.user_id != current_user.id:
+            if existing_r.user_id:
                 targets.add(existing_r.user_id)
 
-        if targets:
+        course = db.query(models.Course).filter(models.Course.id == disc.course_id).first()
+        if course:
+            if course.teacher_id:
+                targets.add(course.teacher_id)
+            if course.admin_id:
+                targets.add(course.admin_id)
+
+        recipient_targets = [t for t in targets if str(t).lower() != str(current_user.id).lower()]
+        allow_self = False
+        if not recipient_targets:
+            recipient_targets = [current_user.id]
+            allow_self = True
+
+        if recipient_targets:
             category_label = (disc.category or "topic").capitalize()
             sender_name = current_user.full_name or "A classmate"
             snippet = payload.content.strip()
@@ -299,7 +318,7 @@ def add_discussion_reply(
                 snippet = snippet[:77] + "..."
             dispatch_notification(
                 db=db,
-                recipient_user_ids=list(targets),
+                recipient_user_ids=recipient_targets,
                 title=f"New reply to {category_label}: '{disc.title[:45]}'",
                 body=f"{sender_name}: {snippet}",
                 category="discussion",
@@ -309,9 +328,10 @@ def add_discussion_reply(
                     "course_id": str(disc.course_id),
                     "discussion_id": str(disc.id),
                     "reply_id": str(reply.id),
-                    "collapse_id": f"disc_{disc.id}",
+                    "collapse_id": f"disc_reply_{disc.id}",
                 },
                 send_push=True,
+                allow_self_notify=allow_self,
             )
     except Exception as ex:
         print(f"[Reply Notification Error]: {ex}")

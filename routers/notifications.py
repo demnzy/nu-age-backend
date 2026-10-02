@@ -14,11 +14,13 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"])
 def get_user_notifications(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    skip: Optional[int] = Query(None, ge=0),
     category: Optional[str] = Query(None),
     user = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     """Fetches paginated in-app notifications for the authenticated user."""
+    effective_offset = skip if skip is not None else offset
     query = (
         db.query(models.UserNotification)
         .filter(models.UserNotification.user_id == user.id)
@@ -29,7 +31,7 @@ def get_user_notifications(
         query = query.filter(models.UserNotification.category == category.lower())
 
     total = query.count()
-    items = query.order_by(models.UserNotification.created_at.desc()).offset(offset).limit(limit).all()
+    items = query.order_by(models.UserNotification.created_at.desc()).offset(effective_offset).limit(limit).all()
 
     unread_count = (
         db.query(models.UserNotification)

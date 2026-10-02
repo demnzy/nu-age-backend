@@ -5,12 +5,11 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import uuid
 from pydantic import BaseModel
-from services.ai_service import process_and_generate_content
+from services.ai_service import process_and_generate_content, get_material_generation_progress
 import models
 import schemas
 from database import get_db
-from services import auth, ai_service # Assuming this is your auth dependency
-from services.ai_service import process_and_generate_content
+from services import auth, ai_service
 import fitz # PyMuPDF
 from services.bunny_service import upload_bytes_to_bunny
 
@@ -480,7 +479,7 @@ def get_material_status(
     db: Session = Depends(get_db), 
     user = Depends(auth.get_current_user)
 ):
-    """The endpoint the frontend polls every 4 seconds."""
+    """The endpoint the frontend polls for granular generation progress and counts."""
     material = db.query(models.StudyMaterial).filter(
         models.StudyMaterial.id == material_id,
         models.StudyMaterial.user_id == user.id
@@ -489,8 +488,18 @@ def get_material_status(
     if not material:
         raise HTTPException(status_code=404, detail="Material not found.")
         
+    prog = get_material_generation_progress(str(material_id))
+    fc_count = db.query(models.Flashcard).filter(models.Flashcard.material_id == material_id).count()
+    q_count = db.query(models.Question).filter(models.Question.material_id == material_id).count()
+
+    is_generating = bool(material.is_generating or prog.get("is_generating", False))
     return {
-        "status": "processing" if material.is_generating else "completed"
+        "status": "processing" if is_generating else "completed",
+        "is_generating": is_generating,
+        "progress_percent": prog.get("progress_percent", 100 if not is_generating else 25),
+        "stage": prog.get("stage", "Ready to study" if not is_generating else "Generating study engine..."),
+        "flashcards_count": max(fc_count, prog.get("flashcards_count", 0)),
+        "questions_count": max(q_count, prog.get("questions_count", 0)),
     }
 
 
