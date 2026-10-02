@@ -40,6 +40,7 @@ def _run_migrations():
                 CREATE TABLE IF NOT EXISTS course_discussions (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+                    module_id UUID REFERENCES modules(id) ON DELETE SET NULL,
                     user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
                     title VARCHAR(255) NOT NULL,
                     content TEXT NOT NULL,
@@ -52,7 +53,9 @@ def _run_migrations():
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
                 """,
+                "ALTER TABLE course_discussions ADD COLUMN IF NOT EXISTS module_id UUID REFERENCES modules(id) ON DELETE SET NULL;",
                 "CREATE INDEX IF NOT EXISTS ix_course_disc_course_created ON course_discussions(course_id, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS ix_course_disc_module ON course_discussions(module_id);",
                 "CREATE INDEX IF NOT EXISTS ix_course_disc_category ON course_discussions(course_id, category);",
                 """
                 CREATE TABLE IF NOT EXISTS course_discussion_replies (

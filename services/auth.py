@@ -107,8 +107,19 @@ def verify_and_rotate_refresh_token(db: Session, raw_token: str, device_label: O
         expires_at = expires_at.replace(tzinfo=timezone.utc)
 
     if record.revoked_at is not None:
+        revoked_at = record.revoked_at
+        if revoked_at.tzinfo is None:
+            revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+
+        # 30-second grace window for concurrent requests or network retries
+        if (now - revoked_at).total_seconds() <= 30.0:
+            user = db.query(models.User).filter(models.User.id == record.user_id).first()
+            if user:
+                new_raw_token = create_refresh_token(db, user.id, device_label=device_label)
+                return user, new_raw_token
+
         # SECURITY: this token was already used/rotated (or revoked via
-        # logout) once before, and someone is trying to use it AGAIN.
+        # logout) outside the grace window, and someone is trying to use it AGAIN.
         # Under normal client behavior this should never happen — treat it
         # as a compromise signal and kill every active refresh token this
         # user has, forcing a fresh login on all devices.
