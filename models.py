@@ -756,6 +756,7 @@ class CourseDiscussion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    module_id = Column(UUID(as_uuid=True), ForeignKey("modules.id", ondelete="SET NULL"), nullable=True, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
@@ -768,6 +769,7 @@ class CourseDiscussion(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     course = relationship("Course", backref="discussions")
+    module = relationship("Module")
     author = relationship("User", foreign_keys=[user_id])
     replies = relationship("CourseDiscussionReply", back_populates="discussion", cascade="all, delete-orphan", order_by="CourseDiscussionReply.created_at.asc()")
 

@@ -3,6 +3,7 @@ import csv
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
+from pydantic import BaseModel, Field
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
@@ -237,6 +238,13 @@ def get_cohort_details(
                 if enrollments:
                     avg_prog = round(sum(e[0] or 0.0 for e in enrollments) / len(course_ids), 1)
 
+            if avg_prog >= 50.0:
+                h_status = "on_track"
+            elif avg_prog > 0.0:
+                h_status = "at_risk"
+            else:
+                h_status = "disengaged"
+
             members_payload.append({
                 "user_id": str(u.id),
                 "first_name": u.first_name,
@@ -246,6 +254,7 @@ def get_cohort_details(
                 "status": cm.status,
                 "enrolled_at": cm.enrolled_at.isoformat() if cm.enrolled_at else None,
                 "avg_progress": avg_prog,
+                "health_status": h_status,
             })
 
     # Fetch exams
@@ -349,6 +358,12 @@ def get_cohort_details(
         "courses": courses_payload,
         "members": members_payload if is_admin else [],
         "members_count": len(members_payload),
+        "health_summary": {
+            "on_track": sum(1 for m in members_payload if m.get("health_status") == "on_track"),
+            "at_risk": sum(1 for m in members_payload if m.get("health_status") == "at_risk"),
+            "disengaged": sum(1 for m in members_payload if m.get("health_status") == "disengaged"),
+            "total": len(members_payload),
+        } if is_admin else None,
         "exams": exams_payload,
         "is_admin": is_admin,
     }
@@ -524,6 +539,175 @@ def remove_member_from_cohort(
     db.delete(cm)
     db.commit()
     return {"message": "Member removed from cohort."}
+
+
+# =========================================================================
+# 2B. COHORT HEALTH & INTERVENTIONS (TELEMETRY & BULK PUSH NUDGES)
+# =========================================================================
+
+class CohortInterventionPayload(BaseModel):
+    target_status: str = Field("inactive", description="inactive, at_risk, disengaged, all, or custom")
+    user_ids: Optional[List[uuid.UUID]] = None
+    custom_title: Optional[str] = None
+    custom_message: Optional[str] = None
+
+
+@router.get("/{cohort_id}/health")
+def get_cohort_health(
+    org_id: uuid.UUID,
+    cohort_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    _require_org_admin_or_teacher(db, org_id, user.id)
+
+    cohort = db.query(models.Cohort).filter_by(id=cohort_id, organisation_id=org_id).first()
+    if not cohort:
+        raise HTTPException(status_code=404, detail="Cohort not found.")
+
+    cohort_courses = db.query(models.CohortCourse).filter_by(cohort_id=cohort_id).all()
+    course_ids = [cc.course_id for cc in cohort_courses]
+
+    cohort_members = (
+        db.query(models.CohortMember)
+        .options(joinedload(models.CohortMember.user))
+        .filter_by(cohort_id=cohort_id)
+        .all()
+    )
+
+    learners = []
+    for cm in cohort_members:
+        u = cm.user
+        if not u:
+            continue
+        avg_prog = 0.0
+        if course_ids:
+            enrollments = db.query(models.Enrollment.progress).filter(
+                models.Enrollment.student_id == u.id,
+                models.Enrollment.course_id.in_(course_ids)
+            ).all()
+            if enrollments:
+                avg_prog = round(sum(e[0] or 0.0 for e in enrollments) / len(course_ids), 1)
+
+        if avg_prog >= 50.0:
+            h_status = "on_track"
+        elif avg_prog > 0.0:
+            h_status = "at_risk"
+        else:
+            h_status = "disengaged"
+
+        first_name = u.first_name or "Learner"
+        full_name = f"{u.first_name or ''} {u.last_name or ''}".strip() or u.username or "Learner"
+
+        learners.append({
+            "user_id": str(u.id),
+            "name": full_name,
+            "email": u.email,
+            "avatar": u.profile_picture_url,
+            "avg_progress": avg_prog,
+            "health_status": h_status,
+            "enrolled_at": cm.enrolled_at.isoformat() if cm.enrolled_at else None,
+            "recommended_nudge": f"Hi {first_name}, your cohort is advancing in {cohort.name}! Jump back in today to catch up with your classmates.",
+        })
+
+    on_track_count = sum(1 for l in learners if l["health_status"] == "on_track")
+    at_risk_count = sum(1 for l in learners if l["health_status"] == "at_risk")
+    disengaged_count = sum(1 for l in learners if l["health_status"] == "disengaged")
+
+    return {
+        "cohort_id": str(cohort.id),
+        "cohort_name": cohort.name,
+        "total_learners": len(learners),
+        "on_track_count": on_track_count,
+        "at_risk_count": at_risk_count,
+        "disengaged_count": disengaged_count,
+        "learners": learners,
+    }
+
+
+@router.post("/{cohort_id}/intervene")
+def intervene_cohort(
+    org_id: uuid.UUID,
+    cohort_id: uuid.UUID,
+    payload: CohortInterventionPayload,
+    db: Session = Depends(get_db),
+    user=Depends(auth.get_current_user),
+):
+    _require_org_admin_or_teacher(db, org_id, user.id)
+
+    cohort = db.query(models.Cohort).filter_by(id=cohort_id, organisation_id=org_id).first()
+    if not cohort:
+        raise HTTPException(status_code=404, detail="Cohort not found.")
+
+    target_user_ids = []
+    if payload.user_ids:
+        target_user_ids = [uid for uid in payload.user_ids]
+    else:
+        cohort_courses = db.query(models.CohortCourse).filter_by(cohort_id=cohort_id).all()
+        course_ids = [cc.course_id for cc in cohort_courses]
+
+        cohort_members = (
+            db.query(models.CohortMember)
+            .filter_by(cohort_id=cohort_id)
+            .all()
+        )
+
+        for cm in cohort_members:
+            avg_prog = 0.0
+            if course_ids:
+                enrollments = db.query(models.Enrollment.progress).filter(
+                    models.Enrollment.student_id == cm.user_id,
+                    models.Enrollment.course_id.in_(course_ids)
+                ).all()
+                if enrollments:
+                    avg_prog = round(sum(e[0] or 0.0 for e in enrollments) / len(course_ids), 1)
+
+            if avg_prog >= 50.0:
+                h_status = "on_track"
+            elif avg_prog > 0.0:
+                h_status = "at_risk"
+            else:
+                h_status = "disengaged"
+
+            if payload.target_status == "all":
+                target_user_ids.append(cm.user_id)
+            elif payload.target_status == "inactive" and h_status in ("at_risk", "disengaged"):
+                target_user_ids.append(cm.user_id)
+            elif payload.target_status == h_status:
+                target_user_ids.append(cm.user_id)
+
+    if not target_user_ids:
+        return {"success": True, "notified_count": 0, "message": "No learners matched the intervention criteria."}
+
+    from services.notifications import dispatch_notification
+
+    title = (payload.custom_title or "").strip() or f"Academic Nudge: {cohort.name}"
+    body = (payload.custom_message or "").strip() or f"Your cohort is progressing through {cohort.name}! Take a quick study session today to stay on track."
+
+    try:
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=target_user_ids,
+            title=title,
+            body=body,
+            category="cohort_reminder",
+            action_route=f"/cohorts/{cohort_id}",
+            sender_id=user.id,
+            data_payload={
+                "collapse_id": f"cohort_{cohort_id}",
+                "cohort_id": str(cohort_id),
+                "type": "cohort_nudge",
+            },
+            send_push=True,
+        )
+    except Exception as e:
+        print(f"[Cohort Intervention] Notification dispatch warning: {e}")
+
+    return {
+        "success": True,
+        "notified_count": len(target_user_ids),
+        "message": f"Successfully dispatched push nudge to {len(target_user_ids)} learner(s).",
+    }
 
 
 # =========================================================================

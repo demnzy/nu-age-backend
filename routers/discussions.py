@@ -21,6 +21,11 @@ class DiscussionCreatePayload(BaseModel):
     title: str = Field(..., min_length=3, max_length=255)
     content: str = Field(..., min_length=5)
     category: str = Field("question", pattern="^(question|idea|discussion|resource)$")
+    module_id: Optional[uuid.UUID] = None
+
+
+class ReportPayload(BaseModel):
+    reason: str = Field(..., min_length=2, max_length=200)
 
 
 class ReplyCreatePayload(BaseModel):
@@ -44,6 +49,8 @@ def _serialize_discussion(d: models.CourseDiscussion, current_user_id: Optional[
     return {
         "id": str(d.id),
         "course_id": str(d.course_id),
+        "module_id": str(d.module_id) if getattr(d, "module_id", None) else None,
+        "module_title": d.module.title if getattr(d, "module", None) else None,
         "title": d.title,
         "content": d.content,
         "category": d.category or "question",
@@ -81,6 +88,7 @@ def _serialize_reply(r: models.CourseDiscussionReply, current_user_id: Optional[
 @router.get("/courses/{course_id}/discussions")
 def list_course_discussions(
     course_id: uuid.UUID,
+    module_id: Optional[uuid.UUID] = None,
     category: Optional[str] = None,
     search: Optional[str] = None,
     sort_by: str = Query("latest", pattern="^(latest|top|unanswered)$"),
@@ -93,6 +101,9 @@ def list_course_discussions(
     List discussion board posts for a specific course with category filtering and search.
     """
     query = db.query(models.CourseDiscussion).filter(models.CourseDiscussion.course_id == course_id)
+
+    if module_id:
+        query = query.filter(models.CourseDiscussion.module_id == module_id)
 
     if category and category.lower() != "all":
         if category.lower() == "solved":
@@ -149,6 +160,7 @@ def create_course_discussion(
 
     new_disc = models.CourseDiscussion(
         course_id=course_id,
+        module_id=payload.module_id,
         user_id=current_user.id,
         title=payload.title.strip(),
         content=payload.content.strip(),
@@ -162,26 +174,36 @@ def create_course_discussion(
     db.commit()
     db.refresh(new_disc)
 
-    # Dispatch notification to course instructor/admin
+    # Dispatch notification to course instructor/admin (and enrolled learners if posted by instructor)
     try:
         from services.notifications import dispatch_notification
         targets = []
-        if course.admin_id and course.admin_id != current_user.id:
-            targets.append(course.admin_id)
-        if course.teacher_id and course.teacher_id != current_user.id:
-            targets.append(course.teacher_id)
+        is_instructor = current_user.id in (course.teacher_id, course.admin_id)
+        if is_instructor:
+            enrolled = db.query(models.Enrollment.user_id).filter(models.Enrollment.course_id == course_id).all()
+            targets.extend([e[0] for e in enrolled if e[0] != current_user.id])
+        else:
+            if course.admin_id and course.admin_id != current_user.id:
+                targets.append(course.admin_id)
+            if course.teacher_id and course.teacher_id != current_user.id:
+                targets.append(course.teacher_id)
+
         if targets:
             category_label = payload.category.capitalize()
-            sender_name = current_user.full_name or "A learner"
+            sender_name = current_user.full_name or "A classmate"
             dispatch_notification(
                 db=db,
                 recipient_user_ids=targets,
                 title=f"New {category_label} in {course.name}",
-                body=f"{sender_name} posted: '{payload.title[:60]}'",
+                body=f"{sender_name}: '{payload.title[:60]}'",
                 category="discussion",
-                action_route=f"/course/{course_id}?tab=discuss",
+                action_route=f"/course/{course_id}?tab=discuss&topic={new_disc.id}",
                 sender_id=current_user.id,
-                data_payload={"course_id": str(course_id), "discussion_id": str(new_disc.id)},
+                data_payload={
+                    "course_id": str(course_id),
+                    "discussion_id": str(new_disc.id),
+                    "collapse_id": f"disc_{new_disc.id}",
+                },
                 send_push=True,
             )
     except Exception as ex:
@@ -287,6 +309,7 @@ def add_discussion_reply(
                     "course_id": str(disc.course_id),
                     "discussion_id": str(disc.id),
                     "reply_id": str(reply.id),
+                    "collapse_id": f"disc_{disc.id}",
                 },
                 send_push=True,
             )
@@ -408,3 +431,42 @@ def toggle_reply_endorsed(
     reply.is_endorsed = not bool(reply.is_endorsed)
     db.commit()
     return {"is_endorsed": reply.is_endorsed}
+
+
+@router.post("/discussions/{discussion_id}/report")
+def report_discussion(
+    discussion_id: uuid.UUID,
+    payload: ReportPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Report a discussion topic for moderation review.
+    """
+    disc = db.query(models.CourseDiscussion).filter(models.CourseDiscussion.id == discussion_id).first()
+    if not disc:
+        raise HTTPException(status_code=404, detail="Discussion not found")
+
+    try:
+        from services.notifications import dispatch_notification
+        targets = []
+        if disc.course.admin_id and disc.course.admin_id != current_user.id:
+            targets.append(disc.course.admin_id)
+        if disc.course.teacher_id and disc.course.teacher_id != current_user.id:
+            targets.append(disc.course.teacher_id)
+        if targets:
+            dispatch_notification(
+                db=db,
+                recipient_user_ids=targets,
+                title=f"Flagged Post: {disc.title[:35]}",
+                body=f"Reported by @{current_user.username}: {payload.reason[:75]}",
+                category="moderation",
+                action_route=f"/course/{disc.course_id}?tab=discuss&topic={disc.id}",
+                sender_id=current_user.id,
+                send_push=True,
+            )
+    except Exception as ex:
+        print(f"[Report Notification Error]: {ex}")
+
+    return {"message": "Report submitted successfully."}
+
