@@ -7,7 +7,7 @@ import base64
 import urllib.parse
 import httpx
 from pydantic import BaseModel, Field
-from typing import List, Literal, Annotated, Union
+from typing import List, Literal, Annotated, Union, Dict, Any, Optional
 from sqlalchemy.orm import Session
 
 # The native OpenAI client
