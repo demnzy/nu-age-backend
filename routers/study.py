@@ -203,6 +203,7 @@ class YouTubeImportRequest(BaseModel):
 @router.post("/materials/youtube", response_model=schemas.UploadResponse)
 async def import_youtube_material(
     payload: YouTubeImportRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user = Depends(auth.get_current_user)
 ):
@@ -230,10 +231,24 @@ async def import_youtube_material(
         db.add(sub)
         db.commit()
         db.refresh(sub)
-    if sub.plan.materials_limit is not None and sub.materials_uploaded >= sub.plan.materials_limit:
+    if sub.plan and sub.plan.materials_limit is not None and sub.materials_uploaded >= sub.plan.materials_limit:
         raise HTTPException(
             status_code=403,
             detail="You have reached your material upload limit. Please upgrade your plan."
+        )
+
+    from monetization_models import CreditBalance, CreditLedgerEntry
+    credit_bal = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
+    has_gen_quota = (
+        not sub.plan
+        or sub.plan.generations_limit is None
+        or sub.generations_used < sub.plan.generations_limit
+        or (credit_bal and credit_bal.balance > 0)
+    )
+    if not has_gen_quota:
+        raise HTTPException(
+            status_code=403,
+            detail="You have reached your AI generation limit for this cycle. Please upgrade your plan or purchase credits."
         )
 
     # Fetch YouTube snippet
@@ -313,7 +328,32 @@ async def import_youtube_material(
     db.commit()
     db.refresh(new_mat)
 
-    return {"material_id": new_mat.id, "message": "YouTube video imported and converted to study material successfully."}
+    # Queue generation engine for the newly imported YouTube material and count toward student quota
+    if sub.plan and sub.plan.generations_limit is not None and sub.generations_used >= sub.plan.generations_limit:
+        if credit_bal and credit_bal.balance > 0:
+            credit_bal.balance -= 1
+            db.add(CreditLedgerEntry(
+                user_id=user.id,
+                delta=-1,
+                reason="generation_spend",
+                reference_id=str(new_mat.id),
+                balance_after=credit_bal.balance,
+            ))
+    else:
+        sub.generations_used += 1
+
+    new_mat.is_generating = True
+    db.commit()
+
+    background_tasks.add_task(
+        process_and_generate_content,
+        user_id=str(user.id),
+        material_ids=[str(new_mat.id)],
+        content_text=study_content,
+        types_requested=["flashcards", "quiz", "exam"]
+    )
+
+    return {"material_id": new_mat.id, "message": "YouTube video imported and study generation initiated."}
 
 
 @router.get("/youtube/recommendations")

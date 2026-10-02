@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import re
 import time
 import traceback
@@ -532,17 +533,29 @@ Adhere strictly to the generation size configurations provided.
                 # The response is already a perfectly formatted Python object
                 result = response.choices[0].message.parsed
 
+                parsed_user_id = user_id
+                try:
+                    parsed_user_id = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+                except Exception:
+                    pass
+
+                parsed_mat_id = material_ids[0] if material_ids else None
+                try:
+                    parsed_mat_id = uuid.UUID(str(parsed_mat_id)) if parsed_mat_id and not isinstance(parsed_mat_id, uuid.UUID) else parsed_mat_id
+                except Exception:
+                    pass
+
                 if "flashcards" in types_requested and result.flashcards:
                     for card in result.flashcards:
                         db.add(models.Flashcard(
-                            user_id=user_id, material_id=material_ids[0], front=card.front, back=card.back
+                            user_id=parsed_user_id, material_id=parsed_mat_id, front=card.front, back=card.back
                         ))
 
                 if "quiz" in types_requested or "exam" in types_requested:
                     if result.questions:
                         for q in result.questions:
                             db.add(models.Question(
-                                user_id=user_id, material_id=material_ids[0], question_text=q.question_text,
+                                user_id=parsed_user_id, material_id=parsed_mat_id, question_text=q.question_text,
                                 options=q.options, answer_index=q.answer_index, explanation=q.explanation
                             ))
 
@@ -563,8 +576,15 @@ Adhere strictly to the generation size configurations provided.
 
     finally:
         # Unlock the materials so the frontend knows to stop spinning
+        parsed_mat_ids = []
+        for mid in material_ids:
+            try:
+                parsed_mat_ids.append(uuid.UUID(str(mid)) if not isinstance(mid, uuid.UUID) else mid)
+            except Exception:
+                parsed_mat_ids.append(mid)
+
         materials = db.query(models.StudyMaterial).filter(
-            models.StudyMaterial.id.in_(material_ids)
+            models.StudyMaterial.id.in_(parsed_mat_ids)
         ).all()
 
         for mat in materials:
@@ -1343,6 +1363,7 @@ async def ask_ai_tutor_response(
         "2. Pedagogical Style: Break complex ideas into intuitive, clear, step-by-step explanations with relatable real-world analogies.\n"
         "3. Interactive & Encouraging: Include a brief follow-up question, hint, or check to stimulate active recall.\n"
         "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n"
+        "5. Educational Video Recommendations Directive: When asked for YouTube or video recommendations, recommend 2-3 top high-quality educational videos or channels (such as CrashCourse, Khan Academy, 3Blue1Brown, freeCodeCamp, MIT OpenCourseWare). For each video, specify the title, channel name, a concise 1-sentence explanation of why it helps with this topic, and a direct clickable link formatted as [Watch on YouTube](https://www.youtube.com/results?search_query=...) or a direct watch URL.\n"
     )
 
     if is_assessment:
