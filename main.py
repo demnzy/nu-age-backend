@@ -81,27 +81,6 @@ def _run_migrations():
                     CONSTRAINT uq_user_reply_upvote UNIQUE (user_id, reply_id)
                 );
                 """,
-                """
-                CREATE TABLE IF NOT EXISTS payment_transactions (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    reference VARCHAR(100) UNIQUE NOT NULL,
-                    gateway VARCHAR(50) DEFAULT 'paystack',
-                    user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
-                    organisation_id UUID REFERENCES organisations(id) ON DELETE SET NULL,
-                    amount DOUBLE PRECISION NOT NULL,
-                    currency VARCHAR(10) DEFAULT 'NGN',
-                    status VARCHAR(30) DEFAULT 'pending',
-                    purpose VARCHAR(50) NOT NULL,
-                    metadata_payload JSONB DEFAULT '{}'::jsonb,
-                    gateway_response JSONB DEFAULT '{}'::jsonb,
-                    paid_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS ix_payment_tx_ref ON payment_transactions(reference);",
-                "CREATE INDEX IF NOT EXISTS ix_payment_tx_user ON payment_transactions(user_id);",
-                "CREATE INDEX IF NOT EXISTS ix_payment_tx_status ON payment_transactions(status);",
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))

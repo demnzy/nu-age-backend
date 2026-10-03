@@ -812,7 +812,7 @@ class PaymentTransaction(Base):
     reference = Column(String(100), unique=True, nullable=False, index=True)
     gateway = Column(String(50), default="paystack", index=True)  # paystack, stripe, flutterwave
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True)
-    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="SET NULL"), nullable=True, index=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="SET NULL"), nullable=True, index=True)
 
     amount = Column(Float, nullable=False)                         # In major currency unit (e.g. 5000.0 NGN)
     currency = Column(String(10), default="NGN")                   # NGN, USD, etc.
