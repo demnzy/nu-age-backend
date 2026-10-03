@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
@@ -81,6 +81,27 @@ def _run_migrations():
                     CONSTRAINT uq_user_reply_upvote UNIQUE (user_id, reply_id)
                 );
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS payment_transactions (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    reference VARCHAR(100) UNIQUE NOT NULL,
+                    gateway VARCHAR(50) DEFAULT 'paystack',
+                    user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+                    organisation_id UUID REFERENCES organisations(id) ON DELETE SET NULL,
+                    amount DOUBLE PRECISION NOT NULL,
+                    currency VARCHAR(10) DEFAULT 'NGN',
+                    status VARCHAR(30) DEFAULT 'pending',
+                    purpose VARCHAR(50) NOT NULL,
+                    metadata_payload JSONB DEFAULT '{}'::jsonb,
+                    gateway_response JSONB DEFAULT '{}'::jsonb,
+                    paid_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_payment_tx_ref ON payment_transactions(reference);",
+                "CREATE INDEX IF NOT EXISTS ix_payment_tx_user ON payment_transactions(user_id);",
+                "CREATE INDEX IF NOT EXISTS ix_payment_tx_status ON payment_transactions(status);",
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))
@@ -134,6 +155,7 @@ app.include_router(network.router, tags=["Friends Management"])
 app.include_router(platform_admin.router, tags=["Platform Super Admin"])
 app.include_router(notifications.router, tags=["Notifications"])
 app.include_router(discussions.router, tags=["Course Discussions"])
+app.include_router(payments.router, tags=["Payments Foundation"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

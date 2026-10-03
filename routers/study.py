@@ -110,6 +110,7 @@ async def upload_material(
     title: str = Form(...),
     pasted_text: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db),
     user = Depends(auth.get_current_user)
 ):
@@ -141,37 +142,70 @@ async def upload_material(
     content_text = ""
     file_url = None
     
-    if file:
-        source_type = file.filename.split(".")[-1].lower()
-        file_bytes = await file.read()
-        
-        # 1. Extract Text from PDF
-        if source_type == "pdf":
-            try:
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                for page in doc:
-                    content_text += page.get_text("text") + "\n"
-                doc.close()
-                print(f"[DEBUG] Extracted {len(content_text)} characters from PDF.")
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to read PDF: {e}")
-        else:
-            # If it is a TXT file
-            content_text = file_bytes.decode('utf-8', errors='ignore')
+    # Consolidate single file and multi files
+    all_incoming_files = []
+    if files:
+        all_incoming_files.extend(files)
+    if file and file not in all_incoming_files:
+        all_incoming_files.insert(0, file)
 
-        # 2. Upload the raw file to BunnyCDN
-        safe_name = f"material_{str(uuid.uuid4())[:8]}_{file.filename}"
-        folder_path = f"users/{str(user.id)}/materials"
-        
-        try:
-            print(f"[DEBUG] Uploading {safe_name} to BunnyCDN...")
-            file_url = await upload_bytes_to_bunny(file_bytes, safe_name, folder_path)
-            print(f"[DEBUG] Upload successful: {file_url}")
-        except Exception as e:
-            import traceback
-            traceback.print_exc() # This will print the exact line and HTTP error code!
-            print(f"[ERROR] BunnyCDN Upload failed: {repr(e)}") # repr() forces it to show the object
-            raise HTTPException(status_code=500, detail="Failed to upload file to CDN.")
+    image_exts = {"png", "jpg", "jpeg", "webp"}
+    collected_images = []
+
+    if all_incoming_files:
+        # Check if the upload contains images
+        for f in all_incoming_files:
+            ext = f.filename.split(".")[-1].lower() if f.filename else ""
+            if ext in image_exts:
+                f_bytes = await f.read()
+                mime = f.content_type or (f"image/{ext}" if ext != "jpg" else "image/jpeg")
+                collected_images.append({
+                    "bytes": f_bytes,
+                    "mime_type": mime,
+                    "name": f.filename or "image.jpg"
+                })
+
+        if collected_images:
+            source_type = "photo"
+            print(f"[DEBUG] Processing cluster of {len(collected_images)} study images with Vision AI...")
+            try:
+                content_text = await ai_service.extract_text_from_study_images(collected_images)
+                print(f"[DEBUG] Vision AI extracted {len(content_text)} characters of Markdown content.")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to transcribe study images: {e}")
+            # Note: per user decision, images do not need to be uploaded to CDN
+        else:
+            # Single non-image document (PDF, TXT, MD)
+            primary_file = all_incoming_files[0]
+            source_type = primary_file.filename.split(".")[-1].lower()
+            file_bytes = await primary_file.read()
+
+            # 1. Extract Text from PDF
+            if source_type == "pdf":
+                try:
+                    doc = fitz.open(stream=file_bytes, filetype="pdf")
+                    for page in doc:
+                        content_text += page.get_text("text") + "\n"
+                    doc.close()
+                    print(f"[DEBUG] Extracted {len(content_text)} characters from PDF.")
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"Failed to read PDF: {e}")
+            else:
+                # TXT / MD file
+                content_text = file_bytes.decode('utf-8', errors='ignore')
+
+            # 2. Upload the raw document file to BunnyCDN
+            safe_name = f"material_{str(uuid.uuid4())[:8]}_{primary_file.filename}"
+            folder_path = f"users/{str(user.id)}/materials"
+            try:
+                print(f"[DEBUG] Uploading {safe_name} to BunnyCDN...")
+                file_url = await upload_bytes_to_bunny(file_bytes, safe_name, folder_path)
+                print(f"[DEBUG] Upload successful: {file_url}")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[ERROR] BunnyCDN Upload failed: {repr(e)}")
+                raise HTTPException(status_code=500, detail="Failed to upload file to CDN.")
 
     elif pasted_text:
         source_type = "pasted_text"
@@ -185,7 +219,7 @@ async def upload_material(
         title=title, 
         source_type=source_type, 
         content=content_text,
-        file_url=file_url # Save the CDN link!
+        file_url=file_url
     )
     db.add(new_mat)
     db.commit()
@@ -611,6 +645,7 @@ class AIDoubtPayload(BaseModel):
     lesson_content: Optional[str] = ""
     is_assessment: Optional[bool] = False
     conversation_history: Optional[List[dict]] = None
+    material_id: Optional[str] = None
 
 
 @router.post("/ai-tutor")
@@ -624,12 +659,24 @@ async def ask_ai_tutor(
     grounded in the active course module and lesson via OpenAI pipeline.
     """
     try:
+        content_to_use = payload.lesson_content or ""
+        if payload.material_id:
+            try:
+                mat_record = db.query(models.StudyMaterial).filter(
+                    models.StudyMaterial.id == payload.material_id,
+                    models.StudyMaterial.user_id == user.id,
+                ).first()
+                if mat_record and mat_record.content:
+                    content_to_use = mat_record.content
+            except Exception as mat_err:
+                print(f"[ask_ai_tutor] Error loading material content: {mat_err}")
+
         reply = await ai_service.ask_ai_tutor_response(
             query=payload.query,
             course_title=payload.course_title,
             module_title=payload.module_title,
             lesson_title=payload.lesson_title,
-            lesson_content=payload.lesson_content or "",
+            lesson_content=content_to_use,
             conversation_history=payload.conversation_history or [],
             is_assessment=payload.is_assessment or False,
         )

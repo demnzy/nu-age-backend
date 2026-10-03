@@ -36,7 +36,25 @@ class Settings(BaseSettings):
     ONE_SIGNAL_REST_API_KEY: str = ""
     ONESIGNAL_API_KEY: str = ""
     ONE_SIGNAL_API_KEY: str = ""
+    PAYSTACK_SECRET_KEY: str = ""
+    PAYSTACK_PUBLIC_KEY: str = ""
+    PAYSTACK_WEBHOOK_SECRET: str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_paystack_secret_key(self) -> str:
+        import os
+        val = self.PAYSTACK_SECRET_KEY or os.getenv("PAYSTACK_SECRET_KEY") or ""
+        return str(val).strip().strip('"').strip("'")
+
+    def get_paystack_public_key(self) -> str:
+        import os
+        val = self.PAYSTACK_PUBLIC_KEY or os.getenv("PAYSTACK_PUBLIC_KEY") or ""
+        return str(val).strip().strip('"').strip("'")
+
+    def get_paystack_webhook_secret(self) -> str:
+        import os
+        val = self.PAYSTACK_WEBHOOK_SECRET or os.getenv("PAYSTACK_WEBHOOK_SECRET") or self.get_paystack_secret_key()
+        return str(val).strip().strip('"').strip("'")
 
     def get_onesignal_app_id(self) -> str:
         import os

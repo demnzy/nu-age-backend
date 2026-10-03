@@ -285,11 +285,12 @@ async def chat_websocket(
                 ).all()
                 other_ids = [str(m[0]) for m in other_members]
                 if other_ids:
+                    dm_body = f"{sender_name}: {notif_body}"
                     dispatch_notification(
                         db=db,
                         recipient_user_ids=other_ids,
                         title=sender_name,
-                        body=notif_body,
+                        body=dm_body,
                         category="chat",
                         action_route=chat_route,
                         sender_id=user.id,

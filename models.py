@@ -802,4 +802,29 @@ class CourseDiscussionUpvote(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "discussion_id", name="uq_user_discussion_upvote"),
         UniqueConstraint("user_id", "reply_id", name="uq_user_reply_upvote"),
-    )
+    )
+
+
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    reference = Column(String(100), unique=True, nullable=False, index=True)
+    gateway = Column(String(50), default="paystack", index=True)  # paystack, stripe, flutterwave
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("organisations.id", ondelete="SET NULL"), nullable=True, index=True)
+
+    amount = Column(Float, nullable=False)                         # In major currency unit (e.g. 5000.0 NGN)
+    currency = Column(String(10), default="NGN")                   # NGN, USD, etc.
+    status = Column(String(30), default="pending", index=True)      # pending, success, failed, abandoned
+    purpose = Column(String(50), nullable=False, index=True)       # study_credits, org_seats, plan_upgrade, course_purchase
+
+    metadata_payload = Column(JSONB, default=dict)
+    gateway_response = Column(JSONB, default=dict)
+
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])
+    organisation = relationship("Organisation", foreign_keys=[organisation_id])
