@@ -399,21 +399,17 @@ def submit_pack_for_review(
         ]
     }
 
-    # 4. Check if caller has super-admin privileges
-    role_str = str(getattr(current_user, "role", "")).upper()
-    is_admin = (getattr(current_user, "role", None) == models.Roles.ADMIN or "ADMIN" in role_str)
-
     new_pack = models.StudyPack(
         creator_id=current_user.id,
         source_material_id=mat.id,
         title=payload.title.strip(),
         description=payload.description.strip() if payload.description else "",
         category=payload.category.strip() or "General",
-        theme_gradient=payload.theme_gradient or "purple_indigo",
+        theme_gradient=payload.theme_gradient or "emerald_teal",
         price_coins=payload.price_coins,
-        is_official=is_admin,
-        status="approved" if is_admin else "pending_review",
-        approved_at=datetime.now(timezone.utc) if is_admin else None,
+        is_official=False,
+        status="pending_review",
+        approved_at=None,
         pack_data=pack_data
     )
 
@@ -428,11 +424,7 @@ def submit_pack_for_review(
         "is_official": new_pack.is_official,
         "flashcards_count": len(flashcards),
         "questions_count": len(questions),
-        "message": (
-            "Official pack published successfully to the marketplace!"
-            if is_admin
-            else "Study pack submitted for admin review! You will earn Nu-Coins once approved."
-        )
+        "message": "Study pack submitted for admin review! You will earn Nu-Coins once approved."
     }
 
 
