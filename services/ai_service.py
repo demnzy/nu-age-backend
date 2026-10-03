@@ -1428,7 +1428,7 @@ async def ask_ai_tutor_response(
         "2. Pedagogical Style: Break complex ideas into intuitive, clear, step-by-step explanations with relatable real-world analogies.\n"
         "3. Interactive & Encouraging: Include a brief follow-up question, hint, or check to stimulate active recall.\n"
         "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n"
-        "5. Educational Video Recommendations Directive: When asked for YouTube or video recommendations, recommend 2-3 top high-quality educational videos or channels (such as CrashCourse, Khan Academy, 3Blue1Brown, freeCodeCamp, MIT OpenCourseWare). For each video, specify the title, channel name, a concise 1-sentence explanation of why it helps with this topic, and a direct clickable link formatted as [Watch on YouTube](https://www.youtube.com/results?search_query=...) or a direct watch URL.\n"
+        "5. Educational Video Recommendations Directive: When asked for YouTube or video recommendations, recommend 2-3 top high-quality educational videos or channels (such as CrashCourse, Khan Academy, 3Blue1Brown, freeCodeCamp, MIT OpenCourseWare). NEVER hallucinate or invent raw 11-character YouTube video IDs ('watch?v=...') because they are frequently broken or 404. INSTEAD, always construct robust, verified YouTube search links using the topic and channel name: [Watch: Video Title on YouTube](https://www.youtube.com/results?search_query=Encoded+Search+Terms). For each video, specify the descriptive title, channel name, a concise 1-sentence explanation of why it reinforces this upload, and the search link.\n"
     )
 
     if is_assessment:
@@ -1452,8 +1452,8 @@ async def ask_ai_tutor_response(
         f"- Assessment Mode: {'ACTIVE (Strict Socratic Hints Only)' if is_assessment else 'Inactive (Standard Doubt Resolution)'}\n"
     )
     if lesson_content:
-        snippet = lesson_content[:1500].strip()
-        system_prompt += f"- Lesson Material Excerpt:\n\"\"\"\n{snippet}\n\"\"\"\n"
+        snippet = lesson_content[:6000].strip()
+        system_prompt += f"- Active Study Material / Lesson Content:\n\"\"\"\n{snippet}\n\"\"\"\n"
 
     messages = [{"role": "system", "content": system_prompt}]
 
