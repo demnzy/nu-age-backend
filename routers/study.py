@@ -687,4 +687,47 @@ async def ask_ai_tutor(
         )
         return {"reply": reply}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Tutor service error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI Tutor service error: {str(e)}")
+
+
+@router.delete("/materials/{material_id}")
+def delete_study_material(
+    material_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Deletes a study material (uploaded note, video, or downloaded study pack)
+    and cascades deletion of all associated flashcards and questions from the user's vault.
+    If the material was a downloaded pack, cleans up the download record so the marketplace state is fresh.
+    """
+    mat = db.query(models.StudyMaterial).filter(
+        models.StudyMaterial.id == material_id,
+        models.StudyMaterial.user_id == user.id
+    ).first()
+
+    if not mat:
+        raise HTTPException(status_code=404, detail="Material not found in your vault.")
+
+    # 1. If it was imported from a study pack, remove the download association
+    dl = db.query(models.StudyPackDownload).filter(
+        models.StudyPackDownload.imported_material_id == material_id,
+        models.StudyPackDownload.user_id == user.id
+    ).first()
+    if dl:
+        db.delete(dl)
+
+    # 2. Delete associated flashcards & questions
+    db.query(models.Flashcard).filter(models.Flashcard.material_id == material_id).delete(synchronize_session=False)
+    db.query(models.Question).filter(models.Question.material_id == material_id).delete(synchronize_session=False)
+
+    # 3. Delete the material itself
+    db.delete(mat)
+
+    # 4. Decrement uploaded materials count if applicable
+    sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user.id).first()
+    if sub and sub.materials_uploaded and sub.materials_uploaded > 0:
+        sub.materials_uploaded = max(0, sub.materials_uploaded - 1)
+
+    db.commit()
+    return {"success": True, "message": "Material removed from vault."}
