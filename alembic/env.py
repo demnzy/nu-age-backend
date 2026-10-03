@@ -22,6 +22,15 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Dynamically set sqlalchemy.url from Settings / environment to protect secrets
+try:
+    from database import Settings
+    db_url = os.getenv("DB_URL") or Settings().DB_URL
+    if db_url:
+        config.set_main_option("sqlalchemy.url", db_url)
+except Exception:
+    pass
+
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel
