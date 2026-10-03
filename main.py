@@ -6,6 +6,18 @@ from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
 
+def _run_alembic_migrations():
+    try:
+        from alembic.config import Config
+        from alembic import command
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
+        print("[MIGRATION] Alembic upgrade head executed successfully.")
+    except Exception as ex:
+        print(f"[MIGRATION] Notice: {ex}")
+
+_run_alembic_migrations()
+
 # Auto-heal missing columns on existing tables
 def _run_migrations():
     try:
