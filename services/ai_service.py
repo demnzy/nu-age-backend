@@ -1476,4 +1476,68 @@ async def ask_ai_tutor_response(
         return response.choices[0].message.content or "I couldn't generate a response. Please try again."
     except Exception as ex:
         print(f"[AI Tutor Error]: {ex}")
+        raise
+
+
+async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
+    """
+    Extracts, transcribes, and synthesizes study notes, handwritten text, formulas,
+    diagrams, and textbook sections from a single photo or cluster of photos.
+    `images` is a list of dicts: [{"bytes": bytes, "mime_type": str, "name": str}]
+    """
+    if not images:
+        return ""
+
+    user_content: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "You are an expert academic transcription and note synthesis assistant. "
+                "The user has provided one or more photographs of their study materials "
+                "(which may include handwritten notes, lecture slides, whiteboard equations, diagrams, or textbook pages). "
+                "Please perform an accurate, exhaustive transcription and structuring of this material:\n"
+                "1. Transcribe all text, notes, equations, and annotations faithfully.\n"
+                "2. If multiple pages/photos are provided, synthesize and organize them logically in coherent order.\n"
+                "3. Use clean Markdown headings, bullet points, numbered lists, and LaTeX formatting (e.g. $E=mc^2$) for formulas.\n"
+                "4. Describe key diagrams, flowcharts, or graphs clearly in text or standard Mermaid syntax where appropriate.\n"
+                "5. Ensure the final transcript is comprehensive and ready for creating study flashcards and quiz questions."
+            ),
+        }
+    ]
+
+    for idx, img in enumerate(images[:6]):  # Capped at 6 images per cluster for optimal vision context
+        raw_b = img.get("bytes")
+        if not raw_b:
+            continue
+        mime = img.get("mime_type") or "image/jpeg"
+        b64_str = base64.b64encode(raw_b).decode("utf-8")
+        data_url = f"data:{mime};base64,{b64_str}"
+        user_content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": data_url,
+                "detail": "high",
+            },
+        })
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a specialized vision-to-text academic study assistant that extracts handwritten and printed study notes into structured Markdown."
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ],
+            max_tokens=2500,
+            temperature=0.2,
+        )
+        extracted_text = response.choices[0].message.content or ""
+        return extracted_text.strip()
+    except Exception as ex:
+        print(f"[Vision Extraction Error]: {ex}")
         raise
