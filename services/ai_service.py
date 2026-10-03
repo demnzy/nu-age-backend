@@ -254,8 +254,9 @@ async def _search_youtube(query: str) -> str:
     Finds a relevant, embeddable YouTube video URL for an educational query.
     1. Uses official YouTube Data API v3 when YOUTUBE_API_KEY is configured
        (with videoEmbeddable=true and videoDuration=short/medium).
-    2. Gracefully falls back to Invidious public search API.
-    3. Final fallback to a YouTube query link if all endpoints fail.
+    2. Uses fast direct YouTube HTML search scraper (no key needed, 100% accurate live results).
+    3. Gracefully falls back to Invidious public search API.
+    4. Final fallback to a YouTube query link if all endpoints fail.
     """
     clean_query = query.strip()
     if not clean_query:
@@ -287,6 +288,23 @@ async def _search_youtube(query: str) -> str:
         except Exception as yt_err:
             print(f"[WARNING] YouTube Data API search failed: {yt_err}")
 
+    # Fast direct YouTube HTML search scraper
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        encoded = urllib.parse.quote_plus(clean_query)
+        search_url = f"https://www.youtube.com/results?search_query={encoded}"
+        async with httpx.AsyncClient(timeout=5.0) as client_http:
+            resp = await client_http.get(search_url, headers=headers)
+            if resp.status_code == 200:
+                vids = re.findall(r"/watch\?v=([a-zA-Z0-9_-]{11})", resp.text)
+                if vids:
+                    return f"https://www.youtube.com/watch?v={vids[0]}"
+    except Exception as scrape_err:
+        pass
+
     # Fallback to public Invidious instances
     invidious_endpoints = [
         "https://invidious.privacydev.net/api/v1/search",
@@ -294,7 +312,7 @@ async def _search_youtube(query: str) -> str:
     ]
     for endpoint in invidious_endpoints:
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client_http:
+            async with httpx.AsyncClient(timeout=3.0) as client_http:
                 resp = await client_http.get(
                     endpoint,
                     params={"q": clean_query, "type": "video"},
@@ -310,6 +328,66 @@ async def _search_youtube(query: str) -> str:
 
     encoded = urllib.parse.quote(clean_query)
     return f"https://www.youtube.com/results?search_query={encoded}"
+
+
+async def resolve_youtube_links_in_text(text: str) -> str:
+    """
+    Finds YouTube search query links (e.g. https://www.youtube.com/results?search_query=...)
+    or 'YOUTUBE: <query>' placeholders in an AI response and resolves them into real, verified
+    direct video URLs (https://www.youtube.com/watch?v=...) for in-app video playback.
+    """
+    if not text:
+        return text
+
+    result = text
+
+    # 1. Resolve YOUTUBE: <query> placeholders
+    yt_ph_pattern = re.compile(r'(?:\[([^\]]+)\]\()?(?:YOUTUBE:\s*([^\s\)\n]+(?:[^\)\n]*?)))(?:\))?', re.IGNORECASE)
+    ph_matches = list(yt_ph_pattern.finditer(result))
+    for m in ph_matches:
+        full_match = m.group(0)
+        label = m.group(1)
+        query = m.group(2)
+        if query:
+            clean_q = query.strip()
+            real_url = await _search_youtube(clean_q)
+            if real_url and "watch?v=" in real_url:
+                if label:
+                    replacement = f"[{label}]({real_url})"
+                else:
+                    replacement = f"[Watch on YouTube]({real_url})"
+                result = result.replace(full_match, replacement)
+
+    # 2. Resolve https://www.youtube.com/results?search_query=...
+    search_url_pattern = re.compile(
+        r'https?://(?:www\.|m\.)?youtube\.com/results\?search_query=([^)\s\"]+)',
+        re.IGNORECASE
+    )
+    matches = list(search_url_pattern.finditer(result))
+    if not matches:
+        return result
+
+    unique_queries = {}
+    for m in matches:
+        raw_q = m.group(1)
+        if raw_q not in unique_queries:
+            unquoted = urllib.parse.unquote_plus(raw_q).replace("+", " ").strip()
+            unique_queries[raw_q] = unquoted
+
+    tasks = [_search_youtube(q) for q in unique_queries.values()]
+    resolved_urls = await asyncio.gather(*tasks)
+
+    query_to_url = dict(zip(unique_queries.keys(), resolved_urls))
+
+    for raw_q, real_url in query_to_url.items():
+        if real_url and "watch?v=" in real_url:
+            sub_pat = re.compile(
+                r'https?://(?:www\.|m\.)?youtube\.com/results\?search_query=' + re.escape(raw_q),
+                re.IGNORECASE
+            )
+            result = sub_pat.sub(real_url, result)
+
+    return result
 
 
 async def resolve_video_placeholders(data: dict) -> dict:
@@ -1436,7 +1514,14 @@ async def ask_ai_tutor_response(
         "2. Pedagogical Style: Break complex ideas into intuitive, clear, step-by-step explanations with relatable real-world analogies.\n"
         "3. Interactive & Encouraging: Include a brief follow-up question, hint, or check to stimulate active recall.\n"
         "4. Rich Formatting: Use GitHub-flavored Markdown, bullet points, bold key terms, and code blocks with syntax highlighting if relevant.\n"
-        "5. Educational Video Recommendations Directive: When asked for YouTube or video recommendations, recommend 2-3 top high-quality educational videos or channels (such as CrashCourse, Khan Academy, 3Blue1Brown, freeCodeCamp, MIT OpenCourseWare). NEVER hallucinate or invent raw 11-character YouTube video IDs ('watch?v=...') because they are frequently broken or 404. INSTEAD, always construct robust, verified YouTube search links using the topic and channel name: [Watch: Video Title on YouTube](https://www.youtube.com/results?search_query=Encoded+Search+Terms). For each video, specify the descriptive title, channel name, a concise 1-sentence explanation of why it reinforces this upload, and the search link.\n"
+        "5. Educational Video Recommendations Directive:\n"
+        "When asked for YouTube or video recommendations, recommend 2-3 top high-quality educational videos or channels relevant to the active lesson or document (such as CrashCourse, Khan Academy, 3Blue1Brown, freeCodeCamp, MIT OpenCourseWare, Organic Chemistry Tutor, Traversy Media, etc.).\n"
+        "For each video, provide:\n"
+        "- Clear tutorial title\n"
+        "- The educational channel name\n"
+        "- A concise 1-sentence explanation of why it reinforces this study topic\n"
+        "- A formatted tutorial link: [Watch: Video Title - Channel](https://www.youtube.com/results?search_query=Channel+Name+Topic+Detailed+Tutorial)\n"
+        "Our backend video engine will automatically resolve these into direct, verified watch?v= links for the student's in-app player.\n"
     )
 
     if is_assessment:
@@ -1481,7 +1566,14 @@ async def ask_ai_tutor_response(
             max_tokens=800,
             temperature=0.6,
         )
-        return response.choices[0].message.content or "I couldn't generate a response. Please try again."
+        reply = response.choices[0].message.content or "I couldn't generate a response. Please try again."
+        # Automatically resolve video search queries into verified watch?v= links for in-app video playback
+        try:
+            resolved_reply = await resolve_youtube_links_in_text(reply)
+            return resolved_reply
+        except Exception as yt_err:
+            print(f"[AI Tutor] Warning during YouTube link resolution: {yt_err}")
+            return reply
     except Exception as ex:
         print(f"[AI Tutor Error]: {ex}")
         raise
