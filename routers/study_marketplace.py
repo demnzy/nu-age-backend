@@ -68,13 +68,31 @@ class AdminUpdatePackPayload(BaseModel):
 # HELPER: WALLET LEDGER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _credit_wallet(db: Session, user_id: uuid.UUID, delta: int, reason: str, ref_id: Optional[str] = None) -> int:
-    """Safely increments or decrements user CreditBalance and logs a CreditLedgerEntry."""
+DEFAULT_STARTING_COINS = 100
+
+
+def _get_or_create_wallet(db: Session, user_id: uuid.UUID) -> CreditBalance:
+    """Fetches user CreditBalance, initializing with 100 welcome coins if not existing."""
     cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
     if not cb:
-        cb = CreditBalance(user_id=user_id, balance=0)
+        cb = CreditBalance(user_id=user_id, balance=DEFAULT_STARTING_COINS)
         db.add(cb)
         db.flush()
+        ledger = CreditLedgerEntry(
+            user_id=user_id,
+            delta=DEFAULT_STARTING_COINS,
+            reason="welcome_bonus",
+            reference_id="initial_signup_bonus",
+            balance_after=DEFAULT_STARTING_COINS
+        )
+        db.add(ledger)
+        db.flush()
+    return cb
+
+
+def _credit_wallet(db: Session, user_id: uuid.UUID, delta: int, reason: str, ref_id: Optional[str] = None) -> int:
+    """Safely increments or decrements user CreditBalance and logs a CreditLedgerEntry."""
+    cb = _get_or_create_wallet(db, user_id)
 
     new_bal = cb.balance + delta
     if new_bal < 0:
@@ -169,9 +187,7 @@ def list_marketplace_packs(
             ).all()
             user_liked_ids = {r[0] for r in like_records}
 
-        cb = db.query(CreditBalance).filter(CreditBalance.user_id == current_user.id).first()
-        if cb:
-            user_balance = cb.balance
+        user_balance = _get_user_balance(db, current_user.id)
 
     items = []
     for p in packs:
@@ -277,9 +293,7 @@ def get_marketplace_pack_detail(
         ).first()
         is_liked = bool(lk)
 
-        cb = db.query(CreditBalance).filter(CreditBalance.user_id == current_user.id).first()
-        if cb:
-            user_balance = cb.balance
+        user_balance = _get_user_balance(db, current_user.id)
 
     creator_name = "Nu-Age Official"
     creator_username = "admin"
@@ -567,8 +581,8 @@ def download_and_import_pack(
 
 
 def _get_user_balance(db: Session, user_id: uuid.UUID) -> int:
-    cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
-    return cb.balance if cb else 0
+    cb = _get_or_create_wallet(db, user_id)
+    return cb.balance
 
 
 # ─────────────────────────────────────────────────────────────────────────────

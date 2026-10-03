@@ -138,6 +138,32 @@ def _run_migrations():
                     CONSTRAINT uq_study_pack_user_like UNIQUE (pack_id, user_id)
                 );
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS credit_balances (
+                    user_id UUID PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+                    balance INTEGER DEFAULT 100 NOT NULL,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS credit_ledger_entries (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    delta INTEGER NOT NULL,
+                    reason VARCHAR(100) NOT NULL,
+                    reference_id VARCHAR(255),
+                    balance_after INTEGER NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """,
+                """
+                INSERT INTO credit_balances (user_id, balance, updated_at)
+                SELECT id, 100, NOW() FROM "user"
+                ON CONFLICT (user_id) DO NOTHING;
+                """,
+                """
+                UPDATE credit_balances SET balance = 100 WHERE balance = 0;
+                """,
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))

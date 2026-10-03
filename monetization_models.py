@@ -61,11 +61,12 @@ class CreditBalance(Base):
     is the only source of truth, mutated only by:
       - the RevenueCat webhook handler (grants, on verified purchase)
       - the generation-spend endpoint (debits, on verified use)
+      - study marketplace pack unlocks and author royalties
     """
     __tablename__ = "credit_balances"
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
-    balance = Column(Integer, default=0, nullable=False)
+    balance = Column(Integer, default=100, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", backref="credit_balance", uselist=False)
