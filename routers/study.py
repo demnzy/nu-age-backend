@@ -20,18 +20,19 @@ router = APIRouter(prefix="/study", tags=["Self Study"])
 # ==========================================
 
 @router.get("/cards/due", response_model=List[schemas.FlashcardResponse])
-def get_due_cards(material_ids: Optional[str] = None, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
+def get_due_cards(material_ids: Optional[str] = None, all_cards: bool = False, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
     query = db.query(models.Flashcard).filter(
         models.Flashcard.user_id == user.id,
-        models.Flashcard.next_review_date <= datetime.now(timezone.utc)
     )
+    if not all_cards:
+        query = query.filter(models.Flashcard.next_review_date <= datetime.now(timezone.utc))
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",")]
         query = query.filter(models.Flashcard.material_id.in_(ids_list))
-    due_cards = query.all()
+    cards_list = query.order_by(models.Flashcard.created_at.asc()).all()
     
     response = []
-    for card in due_cards:
+    for card in cards_list:
         response.append({
             "id": card.id,
             "front": card.front,
@@ -44,6 +45,10 @@ def get_due_cards(material_ids: Optional[str] = None, db: Session = Depends(get_
             }
         })
     return response
+
+@router.get("/cards/all", response_model=List[schemas.FlashcardResponse])
+def get_all_cards(material_ids: Optional[str] = None, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):
+    return get_due_cards(material_ids=material_ids, all_cards=True, db=db, user=user)
 
 @router.post("/review", response_model=schemas.ReviewResponse)
 def review_card(payload: schemas.ReviewPayload, db: Session = Depends(get_db), user = Depends(auth.get_current_user)):

@@ -431,6 +431,13 @@ Do not include markdown, code fences, or preamble. JSON only.
    Write like a brilliant final-year explaining something to a junior who's smart
    but pressed for time. No hedging. No padding. Just the point.
 
+5. RICH MARKDOWN FORMATTING (HIGHLY ENCOURAGED).
+   Use clean, crisp Markdown syntax inside the front, back, and explanation fields to maximize legibility:
+   - Use bold (`**keyword**`) for key terms, definitions, and contrasting concepts.
+   - Use concise bulleted lists (`- item`) when enumerating steps, differences, or key properties.
+   - Use inline code (` `code` `) or short code fences for code, formulas, syntax, or technical keywords.
+   - Ensure the content is scannable and easy to read at a glance.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🧠  QUIZ QUESTION RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -527,16 +534,17 @@ Adhere strictly to the generation size configurations provided.
                 "questions_count": 0,
             }
 
-        # --- THE SMART LIMIT MATH ---
-        cards_per_chunk = max(1, 15 // total_chunks)
-        quiz_per_chunk = max(1, 20 // total_chunks)
-        exam_per_chunk = max(1, 40 // total_chunks)
+        # --- THE SMART HIGH-YIELD LIMIT MATH ---
+        cards_per_chunk = max(12, 32 // total_chunks)
+        quiz_per_chunk = max(8, 20 // total_chunks)
+        exam_per_chunk = max(15, 40 // total_chunks)
         total_fc_saved = 0
         total_q_saved = 0
 
         for index, chunk in enumerate(chunks):
-            pct = int(15 + (75 * index / max(1, total_chunks)))
-            stage_desc = f"Synthesizing flashcards & quiz scenarios (Part {index + 1} of {total_chunks})..."
+            pct = int(15 + (70 * index / max(1, total_chunks)))
+            current_step = 2 if "flashcards" in types_requested else 3
+            stage_desc = f"Step {current_step}/4: Synthesizing active-recall deck & scenarios (Part {index + 1} of {total_chunks})..."
             for mid in material_ids:
                 _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
                     "status": "processing",
@@ -553,7 +561,7 @@ Adhere strictly to the generation size configurations provided.
                 generation_goals = []
 
                 if "flashcards" in types_requested:
-                    generation_goals.append(f"- Generate exactly {cards_per_chunk} Flashcards.")
+                    generation_goals.append(f"- Generate exactly {cards_per_chunk} Flashcards (Rich Markdown, high-yield atomic recall).")
 
                 # Differentiate between Exam mode and Quiz mode
                 if "exam" in types_requested:
@@ -606,14 +614,14 @@ Adhere strictly to the generation size configurations provided.
                             ))
 
                 db.commit()
-                print(f"[SUCCESS] Chunk {index + 1} saved.")
+                print(f"[SUCCESS] Chunk {index + 1} saved ({total_fc_saved} cards, {total_q_saved} questions total).")
 
                 for mid in material_ids:
                     _MATERIAL_PROGRESS[str(mid).strip().lower()] = {
                         "status": "processing",
                         "is_generating": True,
-                        "progress_percent": int(15 + (75 * (index + 1) / max(1, total_chunks))),
-                        "stage": f"Synthesizing flashcards & quiz scenarios (Part {index + 1} of {total_chunks})...",
+                        "progress_percent": int(15 + (70 * (index + 1) / max(1, total_chunks))),
+                        "stage": f"Step 3/4: Verified & indexed {total_fc_saved} flashcards and {total_q_saved} scenarios...",
                         "flashcards_count": total_fc_saved,
                         "questions_count": total_q_saved,
                     }
@@ -653,7 +661,7 @@ Adhere strictly to the generation size configurations provided.
                 "status": "completed",
                 "is_generating": False,
                 "progress_percent": 100,
-                "stage": "AI Study Engine Ready",
+                "stage": f"Step 4/4: Ready · {total_fc_saved} Flashcards & {total_q_saved} Scenarios Indexed",
                 "flashcards_count": total_fc_saved,
                 "questions_count": total_q_saved,
             }
