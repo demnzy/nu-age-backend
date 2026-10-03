@@ -45,7 +45,23 @@ class AdminCuratedPackPayload(BaseModel):
 class AdminReviewPayload(BaseModel):
     action: str = Field(..., pattern="^(approve|reject)$")
     reward_coins: int = Field(default=50, ge=0)
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    price_coins: Optional[int] = Field(default=None, ge=0)
+    cover_image_url: Optional[str] = None
+    is_official: Optional[bool] = None
     review_notes: Optional[str] = None
+
+
+class AdminUpdatePackPayload(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    price_coins: Optional[int] = Field(default=None, ge=0)
+    cover_image_url: Optional[str] = None
+    is_official: Optional[bool] = None
+    status: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -711,6 +727,19 @@ def review_pack_submission(
         pack.reward_coins_granted = payload.reward_coins
         pack.admin_review_notes = payload.review_notes or "Approved by Platform Super Admin"
 
+        if payload.title:
+            pack.title = payload.title.strip()
+        if payload.description is not None:
+            pack.description = payload.description.strip()
+        if payload.category:
+            pack.category = payload.category
+        if payload.price_coins is not None:
+            pack.price_coins = payload.price_coins
+        if payload.cover_image_url is not None:
+            pack.cover_image_url = payload.cover_image_url.strip() or None
+        if payload.is_official is not None:
+            pack.is_official = payload.is_official
+
         # Award reward coins to creator
         if payload.reward_coins > 0 and pack.creator_id:
             _credit_wallet(
@@ -755,6 +784,37 @@ def review_pack_submission(
         "status": pack.status,
         "reward_coins": pack.reward_coins_granted
     }
+
+
+@router.patch("/admin/packs/{pack_id}")
+def update_pack_admin(
+    pack_id: uuid.UUID,
+    payload: AdminUpdatePackPayload,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Direct edit of title, description, category, price, cover image, and status."""
+    pack = db.query(models.StudyPack).filter(models.StudyPack.id == pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study pack not found.")
+
+    if payload.title:
+        pack.title = payload.title.strip()
+    if payload.description is not None:
+        pack.description = payload.description.strip()
+    if payload.category:
+        pack.category = payload.category
+    if payload.price_coins is not None:
+        pack.price_coins = payload.price_coins
+    if payload.cover_image_url is not None:
+        pack.cover_image_url = payload.cover_image_url.strip() or None
+    if payload.is_official is not None:
+        pack.is_official = payload.is_official
+    if payload.status:
+        pack.status = payload.status
+
+    db.commit()
+    return {"success": True, "pack_id": str(pack.id)}
 
 
 @router.post("/admin/packs/create-curated")
