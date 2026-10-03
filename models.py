@@ -827,4 +827,76 @@ class PaymentTransaction(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", foreign_keys=[user_id])
-    organisation = relationship("Organisation", foreign_keys=[organisation_id])
+    organisation = relationship("Organisation", foreign_keys=[organisation_id])
+
+
+# ── SELF-STUDY PACK MARKETPLACE & COMMUNITY HUB ─────────────────────────────
+
+class StudyPack(Base):
+    __tablename__ = "study_packs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    creator_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    title = Column(String(255), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    category = Column(String(100), default="General", nullable=False, index=True)
+    theme_gradient = Column(String(100), default="purple_indigo", nullable=False)
+    cover_image_url = Column(String, nullable=True)
+
+    price_coins = Column(Integer, default=0, nullable=False, index=True)
+    is_official = Column(Boolean, default=False, nullable=False, index=True)
+    status = Column(String(50), default="pending_review", nullable=False, index=True)  # pending_review, approved, rejected
+    admin_review_notes = Column(Text, nullable=True)
+    reward_coins_granted = Column(Integer, default=0, nullable=False)
+
+    downloads_count = Column(Integer, default=0, nullable=False)
+    likes_count = Column(Integer, default=0, nullable=False)
+
+    # Immutable JSON snapshot of { material_title, material_content, source_type, flashcards: [...], questions: [...] }
+    pack_data = Column(JSONB, default=dict, nullable=False)
+    source_material_id = Column(UUID(as_uuid=True), ForeignKey("study_materials.id", ondelete="SET NULL"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    creator = relationship("User", foreign_keys=[creator_id], backref="created_study_packs")
+    downloads = relationship("StudyPackDownload", back_populates="pack", cascade="all, delete-orphan")
+    likes = relationship("StudyPackLike", back_populates="pack", cascade="all, delete-orphan")
+
+
+class StudyPackDownload(Base):
+    __tablename__ = "study_pack_downloads"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    pack_id = Column(UUID(as_uuid=True), ForeignKey("study_packs.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    coins_spent = Column(Integer, default=0, nullable=False)
+    imported_material_id = Column(UUID(as_uuid=True), ForeignKey("study_materials.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        UniqueConstraint("pack_id", "user_id", name="uq_study_pack_user_download"),
+    )
+
+    pack = relationship("StudyPack", back_populates="downloads")
+    user = relationship("User", backref="pack_downloads")
+    imported_material = relationship("StudyMaterial", foreign_keys=[imported_material_id])
+
+
+class StudyPackLike(Base):
+    __tablename__ = "study_pack_likes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    pack_id = Column(UUID(as_uuid=True), ForeignKey("study_packs.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("pack_id", "user_id", name="uq_study_pack_user_like"),
+    )
+
+    pack = relationship("StudyPack", back_populates="likes")
+    user = relationship("User", backref="pack_likes")

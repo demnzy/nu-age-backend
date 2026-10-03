@@ -195,6 +195,26 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception 
         
     return user
+
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl='login', auto_error=False)
+
+def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme_optional), db: Session = Depends(get_db)) -> Optional[models.User]:
+    """Gracefully resolves authenticated user if Bearer token is provided, or returns None."""
+    if not token:
+        return None
+    try:
+        credentials_exception = HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        email = verify_access_token(token, credentials_exception)
+        return db.query(models.User).filter(models.User.email == email).first()
+    except Exception:
+        return None
+
+
 # Add this to the bottom of auth.py
 
 def verify_ws_token(token: str, db: Session):

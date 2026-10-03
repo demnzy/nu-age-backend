@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace
 from models import Base
 from database import engine
 Base.metadata.create_all(bind=engine)
@@ -93,6 +93,51 @@ def _run_migrations():
                     CONSTRAINT uq_user_reply_upvote UNIQUE (user_id, reply_id)
                 );
                 """,
+                """
+                CREATE TABLE IF NOT EXISTS study_packs (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    creator_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    category VARCHAR(100) DEFAULT 'General' NOT NULL,
+                    theme_gradient VARCHAR(100) DEFAULT 'purple_indigo' NOT NULL,
+                    cover_image_url VARCHAR,
+                    price_coins INTEGER DEFAULT 0 NOT NULL,
+                    is_official BOOLEAN DEFAULT FALSE NOT NULL,
+                    status VARCHAR(50) DEFAULT 'pending_review' NOT NULL,
+                    admin_review_notes TEXT,
+                    reward_coins_granted INTEGER DEFAULT 0 NOT NULL,
+                    downloads_count INTEGER DEFAULT 0 NOT NULL,
+                    likes_count INTEGER DEFAULT 0 NOT NULL,
+                    pack_data JSONB DEFAULT '{}'::jsonb NOT NULL,
+                    source_material_id UUID REFERENCES study_materials(id) ON DELETE SET NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    approved_at TIMESTAMPTZ
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_study_packs_status_cat ON study_packs(status, category);",
+                "CREATE INDEX IF NOT EXISTS ix_study_packs_creator ON study_packs(creator_id);",
+                """
+                CREATE TABLE IF NOT EXISTS study_pack_downloads (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    pack_id UUID NOT NULL REFERENCES study_packs(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    coins_spent INTEGER DEFAULT 0 NOT NULL,
+                    imported_material_id UUID REFERENCES study_materials(id) ON DELETE SET NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    CONSTRAINT uq_study_pack_user_download UNIQUE (pack_id, user_id)
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS ix_study_pack_downloads_user ON study_pack_downloads(user_id);",
+                """
+                CREATE TABLE IF NOT EXISTS study_pack_likes (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    pack_id UUID NOT NULL REFERENCES study_packs(id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    CONSTRAINT uq_study_pack_user_like UNIQUE (pack_id, user_id)
+                );
+                """,
             ]
             for stmt in migration_statements:
                 conn.execute(text(stmt))
@@ -147,6 +192,7 @@ app.include_router(platform_admin.router, tags=["Platform Super Admin"])
 app.include_router(notifications.router, tags=["Notifications"])
 app.include_router(discussions.router, tags=["Course Discussions"])
 app.include_router(payments.router, tags=["Payments Foundation"])
+app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(
