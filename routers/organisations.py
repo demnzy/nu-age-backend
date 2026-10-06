@@ -588,8 +588,8 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
     from_="Tobi from Nu Age <support@nu-age.name.ng>",
     to=[email],
     subject=f"You're invited to join {org_name} on Nu Age 🚀",
-    html=html_content,  
-)
+    html=html_content)   
+       print(response)
     except Exception as e:
         print(f"Failed to send invite email to {response}: {e}")
     """try:
