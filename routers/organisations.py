@@ -374,8 +374,7 @@ import resend
 
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
     settings = Settings()
-    client = SendKit(settings.SENDKIT_API_KEY)
-    print(invite_link)
+    client = SendKit(f'{settings.SENDKIT_API_KEY}')
     
     html_content = f"""
     <!DOCTYPE html>
