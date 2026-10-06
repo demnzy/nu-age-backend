@@ -374,7 +374,7 @@ import resend
 
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
     settings = Settings()
-    resend.api_key = settings.RESEND_API_KEY
+    client = SendKit(settings.SENDKIT_API_KEY)
     print(invite_link)
     
     html_content = f"""
@@ -575,28 +575,17 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
     </html>
     """
 
-    params: resend.Emails.SendParams = {
-        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
-        "to": [email],
-        "subject": f"You're invited to join {org_name} on Nu Age 🚀",
-        "html": html_content,
-    }
-    client = SendKit(settings.SENDKIT_API_KEY)
-
     try:
-       response=  client.emails.send(
-    from_="Tobi from Nu Age <support@nu-age.name.ng>",
-    to=[email],
-    subject=f"You're invited to join {org_name} on Nu Age 🚀",
-    html=html_content)   
-       print(response)
+        response = client.emails.send(
+            from_="Tobi from Nu Age <support@nu-age.name.ng>",
+            to=[email],
+            subject=f"You're invited to join {org_name} on Nu Age 🚀",
+            html=html_content,
+        )
+        print(response)
     except Exception as e:
-        print(f"Failed to send invite email to {response}: {e}")
-    """try:
-        resend.Emails.send(params)
-        print(f"Invite sent to {email} for {org_name}!")
-    except Exception as e:
-        print(f"Failed to send invite email to {email}: {e}")"""
+        print(f"Failed to send invite email to {email}: {e}")
+        raise
 
 class JoinProcessRequest(BaseModel):
     token: UUID
