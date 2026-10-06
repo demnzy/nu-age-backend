@@ -9,7 +9,7 @@ from services import utils, auth
 from typing import List
 from datetime import datetime, timezone, timedelta
 import random
-import resend
+from services.email_service import send_email
 import pytz
 import base64
 import uuid
@@ -38,32 +38,18 @@ router = APIRouter(prefix=('/users'))
 # create a user
 # Move the email sending logic into a separate background function
 def send_background_otp(email: str, code: str):
-    settings = Settings()
-    resend.api_key = settings.RESEND_API_KEY
-    params: resend.Emails.SendParams = {
-        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
-        "to": [email],
-        "subject": "Verify your Nu Age Account",
-        "html": f"Thank you for signing up! Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
-    }
-    try:
-        resend.Emails.send(params)
-    except Exception as e:
-        print(f"Failed to send email to {email}: {e}")
+    send_email(
+        email,
+        "Verify your Nu Age Account",
+        f"Thank you for signing up! Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
+    )
 
 def send_password_reset_otp(email: str, code: str):
-    settings = Settings()
-    resend.api_key = settings.RESEND_API_KEY
-    params: resend.Emails.SendParams = {
-        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
-        "to": [email],
-        "subject": "Reset your Nu Age Password",
-        "html": f"You have requested to reset your Nu Age password. Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
-    }
-    try:
-        resend.Emails.send(params)
-    except Exception as e:
-        print(f"Failed to send email to {email}: {e}")
+    send_email(
+        email,
+        "Reset your Nu Age Password",
+        f"You have requested to reset your Nu Age password. Your OTP code is: <strong>{code}</strong>. Please note this code expires in 15 minutes. Not you? You can ignore this email.",
+    )
 
 class DeviceTokenSchema(BaseModel):
     token: str
@@ -255,9 +241,6 @@ async def register_user(
     return user_to_save
 
 def send_general_welcome_email(email: str, first_name: str = "there"):
-    settings = Settings()
-    resend.api_key = settings.RESEND_API_KEY
-    
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -450,18 +433,7 @@ def send_general_welcome_email(email: str, first_name: str = "there"):
     </html>
     """
 
-    params: resend.Emails.SendParams = {
-        "from": " Tobi from Nu Age <support@nu-age.name.ng>",
-        "to": [email],
-        "subject": "Welcome to Nu Age 🚀",
-        "html": html_content,
-    }
-    
-    try:
-        resend.Emails.send(params)
-        print("I sent!")
-    except Exception as e:
-        print(f"Failed to send welcome email to {email}: {e}")
+    send_email(email, "Welcome to Nu Age 🚀", html_content)
 
 @router.post("/auth/verify-email")
 async def verify_email(payload: VerifyEmailSchema, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
