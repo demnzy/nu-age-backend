@@ -533,7 +533,7 @@ class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
  
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
  
     # The opaque token string itself. Store a HASH of it, not the raw value —
     # same principle as passwords: if your DB leaks, raw refresh tokens in
@@ -553,7 +553,7 @@ class RefreshToken(Base):
     # "active sessions" and revoke individual ones later.
     device_label = Column(String, nullable=True)
  
-    user = relationship("models.User", backref="refresh_tokens")
+    user = relationship("models.User", backref="refresh_tokens", cascade="all, delete-orphan", passive_deletes=True)
 
 
 # =========================================================================
@@ -899,4 +899,4 @@ class StudyPackLike(Base):
     )
 
     pack = relationship("StudyPack", back_populates="likes")
-    user = relationship("User", backref="pack_likes")
+    user = relationship("User", backref="pack_likes")
