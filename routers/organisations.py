@@ -577,7 +577,7 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
 
     try:
         response = client.emails.send(
-            from_="Tobi from Nu Age <support@nu-age.name.ng>",
+            from_="Tobi from Nu Age <support@nu-age.com.ng>",
             to=[email],
             subject=f"You're invited to join {org_name} on Nu Age 🚀",
             html=html_content,
