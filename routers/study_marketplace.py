@@ -501,7 +501,7 @@ def download_and_import_pack(
     # ── CLONE INTO BUYER'S VAULT ─────────────────────────────────────────────
     pd = pack.pack_data or {}
     mat_content = pd.get("material_content", "") or ""
-    mat_title = f"{pack.title} (Pack Import)"
+    mat_title = pack.title.strip()
 
     new_mat = models.StudyMaterial(
         user_id=current_user.id,

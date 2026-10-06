@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     PAYSTACK_SECRET_KEY: str = ""
     PAYSTACK_PUBLIC_KEY: str = ""
     PAYSTACK_WEBHOOK_SECRET: str = ""
+    SENDKIT_API_KEY:str = ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def get_paystack_secret_key(self) -> str:

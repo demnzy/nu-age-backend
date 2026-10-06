@@ -369,6 +369,7 @@ async def send_organisation_invite(
     
     return {"message": "Invite sent successfully", "token": new_invite.id}
 
+from sendkit import SendKit
 
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
     settings = Settings()
@@ -579,12 +580,22 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
         "subject": f"You're invited to join {org_name} on Nu Age 🚀",
         "html": html_content,
     }
-    
+    client = SendKit(f'{Settings.SENDKIT_API_KEY}')
+
     try:
+       email=  client.emails.send(
+    from_="Tobi from Nu Age <support@nu-age.name.ng>",
+    to=[email],
+    subject=f"You're invited to join {org_name} on Nu Age 🚀",
+    html=html_content,  
+)
+    except Exception as e:
+        print(f"Failed to send invite email to {email}: {e}")
+    """try:
         resend.Emails.send(params)
         print(f"Invite sent to {email} for {org_name}!")
     except Exception as e:
-        print(f"Failed to send invite email to {email}: {e}")
+        print(f"Failed to send invite email to {email}: {e}")"""
 
 class JoinProcessRequest(BaseModel):
     token: UUID
