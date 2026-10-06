@@ -584,7 +584,8 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
         )
         print(response)
     except Exception as e:
-        print(f"Failed to send invite email to {email}: {e}")
+        print(f"Failed to send invite email to {email}: {e!r}")
+        print(getattr(e, "__dict__", {}))
         raise
 
 class JoinProcessRequest(BaseModel):
