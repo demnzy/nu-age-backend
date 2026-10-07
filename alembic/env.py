@@ -21,7 +21,7 @@ config = context.config
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-
+fileConfig(config.config_file_name, disable_existing_loggers=False)
 # Dynamically set sqlalchemy.url from Settings / environment to protect secrets
 try:
     from database import Settings
