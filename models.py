@@ -6,7 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from schemas import Roles, Gender
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.sql import false
@@ -553,7 +553,14 @@ class RefreshToken(Base):
     # "active sessions" and revoke individual ones later.
     device_label = Column(String, nullable=True)
  
-    user = relationship("models.User", backref="refresh_tokens", cascade="all, delete-orphan", passive_deletes=True)
+    # cascade / passive_deletes belong on the ONE side (User.refresh_tokens), so they go
+    # inside backref(...). Putting cascade="delete-orphan" on this many-to-one side
+    # makes SQLAlchemy raise ArgumentError the first time any query touches the ORM.
+    # ON DELETE CASCADE on the foreign key does the real deleting in Postgres.
+    user = relationship(
+        "models.User",
+        backref=backref("refresh_tokens", cascade="all, delete-orphan", passive_deletes=True),
+    )
 
 
 # =========================================================================

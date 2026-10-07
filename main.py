@@ -7,6 +7,8 @@ import time
 from fastapi import *
 from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace
 from models import Base
+from sqlalchemy.orm import configure_mappers
+configure_mappers()
 from database import engine
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -331,6 +333,7 @@ app.add_middleware(
         "https://nu-age.name.ng",
         "https://www.nu-age.name.ng",
         "https://learn.nu-age.name.ng",
+        "https://learn.nu-age.com.ng",
         "http://localhost:3000",
         "http://localhost:8000",
     ],
