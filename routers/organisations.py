@@ -3,7 +3,6 @@ from http.client import HTTPException
 
 from fastapi import *
 from pytz import timezone
-import resend
 from schemas import *
 from database import get_db,Settings
 from sqlalchemy.orm import Session, joinedload
@@ -14,6 +13,8 @@ from typing import List
 import base64
 from services.bunny_service import upload_bytes_to_bunny
 import uuid
+from html import escape
+from services.email_service import send_email
 router = APIRouter(prefix="/organisations")
 
 DEFAULT_ORG_ID = "584b537e-6521-4852-a7e4-18f6c095126d"
@@ -369,13 +370,10 @@ async def send_organisation_invite(
     
     return {"message": "Invite sent successfully", "token": new_invite.id}
 
-from sendkit import SendKit
-
 def send_organisation_invite_email(email: str, invite_link: str, org_name: str, role: str = "student"):
-    settings = Settings()
-    resend.api_key = settings.RESEND_API_KEY
-    print(invite_link)
-    
+    subject = f"You're invited to join {org_name} on Nu Age 🚀"  # plain text, so use the raw name
+    org_name = escape(org_name)  # user-controlled, so escape before it goes into the HTML
+    role = escape(role)
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -574,17 +572,12 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
     </html>
     """
 
-    params: resend.Emails.SendParams = {
-        "from": "Tobi from Nu Age <support@nu-age.name.ng>",
-        "to": [email],
-        "subject": f"You're invited to join {org_name} on Nu Age 🚀",
-        "html": html_content,
-    }
-    try:
-        resend.Emails.send(params)
-        print(f"Invite sent to {email} for {org_name}!")
-    except Exception as e:
-        print(f"Failed to send invite email to {email}: {e}")
+    result = send_email(email, subject, html_content)
+    if result:
+        provider, msg_id = result
+        print(f"Invite sent to {email} for {org_name} via {provider} (id={msg_id})")
+    else:
+        print(f"Failed to send invite email to {email}: all providers failed")
 
 class JoinProcessRequest(BaseModel):
     token: UUID
