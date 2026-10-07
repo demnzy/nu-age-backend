@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     PAYSTACK_PUBLIC_KEY: str = ""
     PAYSTACK_WEBHOOK_SECRET: str = ""
     SENDKIT_API_KEY:str = ""
+    EMAIL_PROVIDER:str = ""
+    EMAIL_FALLBACK_PROVIDER:str = ""
+    AWS_ACCESS_KEY_ID:str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION:str = ""
+    SES_FROM_EMAIL:str= ""
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     def get_paystack_secret_key(self) -> str:
