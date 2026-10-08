@@ -1,4 +1,5 @@
 import uuid
+import re
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
@@ -399,10 +400,13 @@ def submit_pack_for_review(
         ]
     }
 
+    clean_title = re.sub(r"(?i)\s*[\[\(]\s*pack\s*import\s*[\]\)]\s*[:\-–—]?\s*", " ", payload.title)
+    clean_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", clean_title).strip() or "Study Pack"
+
     new_pack = models.StudyPack(
         creator_id=current_user.id,
         source_material_id=mat.id,
-        title=payload.title.strip(),
+        title=clean_title,
         description=payload.description.strip() if payload.description else "",
         category=payload.category.strip() or "General",
         theme_gradient=payload.theme_gradient or "emerald_teal",
@@ -501,7 +505,8 @@ def download_and_import_pack(
     # ── CLONE INTO BUYER'S VAULT ─────────────────────────────────────────────
     pd = pack.pack_data or {}
     mat_content = pd.get("material_content", "") or ""
-    mat_title = pack.title.strip()
+    mat_title = re.sub(r"(?i)\s*[\[\(]\s*pack\s*import\s*[\]\)]\s*[:\-–—]?\s*", " ", pack.title)
+    mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
 
     new_mat = models.StudyMaterial(
         user_id=current_user.id,
@@ -820,7 +825,108 @@ def update_pack_admin(
         pack.status = payload.status
 
     db.commit()
-    return {"success": True, "pack_id": str(pack.id)}
+    return {"success": True, "pack_id": str(pack.id), "status": pack.status}
+
+
+@router.get("/admin/packs")
+def get_admin_all_packs(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: View all study packs across all statuses (approved, hidden, rejected, pending_review)."""
+    query = db.query(models.StudyPack)
+    if status_filter and status_filter.lower() != "all":
+        query = query.filter(models.StudyPack.status == status_filter.lower())
+    if search:
+        term = f"%{search.strip().lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(models.StudyPack.title).like(term),
+                func.lower(models.StudyPack.description).like(term),
+                func.lower(models.StudyPack.category).like(term)
+            )
+        )
+    total = query.count()
+    packs = query.order_by(models.StudyPack.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
+
+    items = []
+    for p in packs:
+        pd = p.pack_data or {}
+        creator_name = p.creator.name if p.creator else "Unknown Creator"
+        creator_email = p.creator.email if p.creator else ""
+        items.append({
+            "id": str(p.id),
+            "title": p.title,
+            "description": p.description or "",
+            "category": p.category,
+            "theme_gradient": p.theme_gradient,
+            "cover_image_url": p.cover_image_url,
+            "price_coins": p.price_coins,
+            "is_official": p.is_official,
+            "status": p.status,
+            "admin_review_notes": p.admin_review_notes,
+            "reward_coins_granted": p.reward_coins_granted,
+            "downloads_count": p.downloads_count,
+            "likes_count": p.likes_count,
+            "flashcards_count": len(pd.get("flashcards", [])),
+            "questions_count": len(pd.get("questions", [])),
+            "creator": {
+                "id": str(p.creator_id) if p.creator_id else None,
+                "name": creator_name,
+                "email": creator_email
+            },
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "approved_at": p.approved_at.isoformat() if p.approved_at else None,
+        })
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+
+@router.post("/admin/packs/{pack_id}/toggle-visibility")
+def toggle_pack_visibility_admin(
+    pack_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Toggle visibility of a study pack in the public marketplace."""
+    pack = db.query(models.StudyPack).filter(models.StudyPack.id == pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study pack not found.")
+
+    if pack.status == "approved":
+        pack.status = "hidden"
+        msg = f"Pack '{pack.title}' is now hidden from the store."
+    else:
+        pack.status = "approved"
+        msg = f"Pack '{pack.title}' is now live in the store."
+
+    db.commit()
+    return {"success": True, "status": pack.status, "message": msg}
+
+
+@router.delete("/admin/packs/{pack_id}")
+def delete_pack_admin(
+    pack_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Delete study pack entirely from the marketplace catalog."""
+    pack = db.query(models.StudyPack).filter(models.StudyPack.id == pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study pack not found.")
+
+    title = pack.title
+    db.delete(pack)
+    db.commit()
+    return {"success": True, "message": f"Study pack '{title}' was permanently deleted."}
 
 
 @router.post("/admin/packs/create-curated")
