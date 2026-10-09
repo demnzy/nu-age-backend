@@ -202,7 +202,21 @@ def list_marketplace_packs(
     for p in packs:
         pd = p.pack_data or {}
         fc_count = len(pd.get("flashcards", []))
-        q_count = len(pd.get("questions", []))
+        q_list = pd.get("questions", [])
+        q_count = len(q_list)
+        diag_count = sum(1 for q in q_list if q.get("image_url") or q.get("has_diagram"))
+        dur_mins = pd.get("duration_minutes") or (q_count if q_count > 0 else 60)
+
+        # Detect exam board and year from questions if present
+        ex_type = None
+        ex_year = None
+        for q in q_list:
+            if not ex_type and q.get("exam_type"):
+                ex_type = q["exam_type"]
+            if not ex_year and q.get("exam_year"):
+                ex_year = q["exam_year"]
+            if ex_type and ex_year:
+                break
 
         creator_name = "Nu-Age Official"
         creator_username = "admin"
@@ -226,6 +240,10 @@ def list_marketplace_packs(
             "likes_count": p.likes_count,
             "flashcards_count": fc_count,
             "questions_count": q_count,
+            "diagrams_count": diag_count,
+            "duration_minutes": dur_mins,
+            "exam_type": ex_type,
+            "exam_year": ex_year,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "approved_at": p.approved_at.isoformat() if p.approved_at else None,
             "creator": {
@@ -320,6 +338,18 @@ def get_marketplace_pack_detail(
     mat_content = pd.get("material_content", "") or ""
     content_snippet = mat_content[:600] + ("…" if len(mat_content) > 600 else "")
 
+    diag_count = pd.get("diagrams_count")
+    if diag_count is None:
+        diag_count = sum(1 for q in all_questions if isinstance(q, dict) and bool(q.get("image_url")))
+    dur_mins = pd.get("duration_minutes")
+    if not dur_mins and pd.get("duration_seconds"):
+        try:
+            dur_mins = round(int(pd["duration_seconds"]) / 60)
+        except Exception:
+            pass
+    ex_type = pd.get("exam_type")
+    ex_year = pd.get("exam_year")
+
     return {
         "id": str(pack.id),
         "title": pack.title,
@@ -332,6 +362,10 @@ def get_marketplace_pack_detail(
         "status": pack.status,
         "downloads_count": pack.downloads_count,
         "likes_count": pack.likes_count,
+        "diagrams_count": diag_count,
+        "duration_minutes": dur_mins,
+        "exam_type": ex_type,
+        "exam_year": ex_year,
         "created_at": pack.created_at.isoformat() if pack.created_at else None,
         "creator": {
             "id": str(pack.creator_id),
@@ -342,6 +376,10 @@ def get_marketplace_pack_detail(
         "stats": {
             "flashcards_count": len(all_flashcards),
             "questions_count": len(all_questions),
+            "diagrams_count": diag_count,
+            "duration_minutes": dur_mins,
+            "exam_type": ex_type,
+            "exam_year": ex_year,
             "has_material_notes": bool(mat_content.strip()),
         },
         "content_snippet": content_snippet,
@@ -520,10 +558,18 @@ def download_and_import_pack(
     mat_title = re.sub(r"(?i)\s*[\[\(]\s*pack\s*import\s*[\]\)]\s*[:\-–—]?\s*", " ", pack.title)
     mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
 
+    is_cbt = (
+        pd.get("source_type") == "cbt_pack"
+        or bool(pd.get("exam_type"))
+        or pack.category in ("JAMB UTME", "WAEC / NECO", "WAEC WASSCE", "NECO SSCE")
+        or (len(pd.get("questions", [])) > 0 and len(pd.get("flashcards", [])) == 0)
+    )
+    mat_source_type = "cbt_pack" if is_cbt else "pack_import"
+
     new_mat = models.StudyMaterial(
         user_id=current_user.id,
         title=mat_title,
-        source_type="pack_import",
+        source_type=mat_source_type,
         content=mat_content,
         is_generating=False
     )
@@ -1235,11 +1281,19 @@ def download_study_bundle_batch(
         mat_title = re.sub(r"(?i)\s*[\[\(]\s*pack\s*import\s*[\]\)]\s*[:\-–—]?\s*", " ", pack.title)
         mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
 
+        is_cbt = (
+            pd.get("source_type") == "cbt_pack"
+            or bool(pd.get("exam_type"))
+            or pack.category in ("JAMB UTME", "WAEC / NECO", "WAEC WASSCE", "NECO SSCE")
+            or (len(pd.get("questions", [])) > 0 and len(pd.get("flashcards", [])) == 0)
+        )
+        mat_source_type = "cbt_pack" if is_cbt else "pack_import"
+
         # Create cloned material
         new_mat = models.StudyMaterial(
             user_id=current_user.id,
             title=mat_title,
-            source_type="pack_import",
+            source_type=mat_source_type,
             content=mat_content,
             is_generating=False
         )

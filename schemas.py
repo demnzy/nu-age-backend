@@ -261,6 +261,10 @@ class QuestionResponse(BaseModel):
     options: List[str]
     answer: int
     explanation: Optional[str] = None
+    image_url: Optional[str] = None
+    topic: Optional[str] = None
+    exam_type: Optional[str] = None
+    exam_year: Optional[int] = None
     
     class Config:
         from_attributes = True

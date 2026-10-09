@@ -469,7 +469,20 @@ def get_quiz_questions(material_ids: Optional[str] = None, db: Session = Depends
         
     questions = query.order_by(func.random()).limit(10).all()
     
-    return [{"id": q.id, "question": q.question_text, "options": q.options, "answer": q.answer_index, "explanation": q.explanation} for q in questions]
+    return [
+        {
+            "id": q.id,
+            "question": q.question_text,
+            "options": q.options,
+            "answer": q.answer_index,
+            "explanation": q.explanation,
+            "image_url": q.image_url,
+            "topic": q.topic,
+            "exam_type": q.exam_type,
+            "exam_year": q.exam_year,
+        }
+        for q in questions
+    ]
 
 @router.get("/exam/questions", response_model=schemas.ExamResponse)
 def get_exam_questions(
@@ -478,12 +491,23 @@ def get_exam_questions(
     user = Depends(auth.get_current_user)
 ):
     """Pulls up to 50 random questions for a full exam simulation,
-    scoped to the given materials, with a duration computed server-side."""
+    scoped to the given materials, with duration respecting pack settings or computed server-side."""
     query = db.query(models.Question).filter(models.Question.user_id == user.id)
 
+    authoritative_duration = None
     if material_ids:
-        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",")]
+        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
         query = query.filter(models.Question.material_id.in_(ids_list))
+
+        # Check if any material was imported from a curated study pack with authoritative exam duration
+        dl = db.query(models.StudyPackDownload).filter(
+            models.StudyPackDownload.user_id == user.id,
+            models.StudyPackDownload.imported_material_id.in_(ids_list)
+        ).first()
+        if dl:
+            pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
+            if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
+                authoritative_duration = int(pack.pack_data["duration_seconds"])
 
     questions = query.order_by(func.random()).limit(50).all()
 
@@ -494,13 +518,15 @@ def get_exam_questions(
             "options": q.options,
             "answer": q.answer_index,
             "explanation": q.explanation,
+            "image_url": q.image_url,
+            "topic": q.topic,
+            "exam_type": q.exam_type,
+            "exam_year": q.exam_year,
         }
         for q in questions
     ]
 
-    # 90 sec/question, 5 min floor — same policy the frontend used to apply
-    # client-side; now it's authoritative and server-controlled instead.
-    duration_seconds = max(len(question_payload) * 60, 300)
+    duration_seconds = authoritative_duration if authoritative_duration else max(len(question_payload) * 60, 300)
 
     return {
         "questions": question_payload,
