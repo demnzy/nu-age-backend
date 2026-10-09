@@ -257,6 +257,8 @@ class GenerateResponse(BaseModel):
 
 class QuestionResponse(BaseModel):
     id: UUID
+    material_id: Optional[UUID] = None
+    subject: Optional[str] = None
     question: str
     options: List[str]
     answer: int

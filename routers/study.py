@@ -495,25 +495,62 @@ def get_exam_questions(
     query = db.query(models.Question).filter(models.Question.user_id == user.id)
 
     authoritative_duration = None
+    questions = []
+    mat_map = {}
+
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
-        query = query.filter(models.Question.material_id.in_(ids_list))
+        materials = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(ids_list)).all()
+        mat_map = {m.id: m.title for m in materials}
 
-        # Check if any material was imported from a curated study pack with authoritative exam duration
-        dl = db.query(models.StudyPackDownload).filter(
-            models.StudyPackDownload.user_id == user.id,
-            models.StudyPackDownload.imported_material_id.in_(ids_list)
-        ).first()
-        if dl:
-            pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
-            if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
-                authoritative_duration = int(pack.pack_data["duration_seconds"])
+        if len(ids_list) > 1:
+            # Multi-subject bundle sitting: partition questions proportionally per subject (up to 40 per subject)
+            total_duration_acc = 0
+            for mid in ids_list:
+                mat_qs = db.query(models.Question).filter(
+                    models.Question.user_id == user.id,
+                    models.Question.material_id == mid
+                ).order_by(func.random()).limit(40).all()
+                questions.extend(mat_qs)
 
-    questions = query.order_by(func.random()).limit(50).all()
+                # Check pack duration for this subject
+                dl = db.query(models.StudyPackDownload).filter(
+                    models.StudyPackDownload.user_id == user.id,
+                    models.StudyPackDownload.imported_material_id == mid
+                ).first()
+                if dl:
+                    pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
+                    if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
+                        total_duration_acc += int(pack.pack_data["duration_seconds"])
+                    else:
+                        total_duration_acc += 1800
+                else:
+                    total_duration_acc += 1800
+            if total_duration_acc > 0:
+                authoritative_duration = min(total_duration_acc, 7200)
+        else:
+            mid = ids_list[0]
+            questions = db.query(models.Question).filter(
+                models.Question.user_id == user.id,
+                models.Question.material_id == mid
+            ).order_by(func.random()).limit(50).all()
+
+            dl = db.query(models.StudyPackDownload).filter(
+                models.StudyPackDownload.user_id == user.id,
+                models.StudyPackDownload.imported_material_id == mid
+            ).first()
+            if dl:
+                pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
+                if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
+                    authoritative_duration = int(pack.pack_data["duration_seconds"])
+    else:
+        questions = db.query(models.Question).filter(models.Question.user_id == user.id).order_by(func.random()).limit(50).all()
 
     question_payload = [
         {
             "id": q.id,
+            "material_id": q.material_id,
+            "subject": mat_map.get(q.material_id),
             "question": q.question_text,
             "options": q.options,
             "answer": q.answer_index,
