@@ -65,6 +65,13 @@ class AdminUpdatePackPayload(BaseModel):
     status: Optional[str] = None
 
 
+class AIPastQuestionsParsePayload(BaseModel):
+    raw_text: str = Field(..., min_length=10)
+    subject: str = Field(default="General", max_length=100)
+    exam_type: str = Field(default="JAMB UTME", max_length=50)
+    exam_year: Optional[int] = None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPER: WALLET LEDGER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -394,7 +401,11 @@ def submit_pack_for_review(
                 "options": q.options,
                 "answer_index": q.answer_index,
                 "explanation": q.explanation,
-                "difficulty": q.difficulty or "standard"
+                "difficulty": q.difficulty or "standard",
+                "image_url": getattr(q, "image_url", None),
+                "topic": getattr(q, "topic", None),
+                "exam_type": getattr(q, "exam_type", None),
+                "exam_year": getattr(q, "exam_year", None),
             }
             for q in questions
         ]
@@ -550,7 +561,11 @@ def download_and_import_pack(
                 options=opts,
                 answer_index=ans_idx,
                 explanation=expl,
-                difficulty=diff
+                difficulty=diff,
+                image_url=q_dict.get("image_url"),
+                topic=q_dict.get("topic"),
+                exam_type=q_dict.get("exam_type"),
+                exam_year=q_dict.get("exam_year"),
             ))
 
     # Record or update Download entry
@@ -971,3 +986,353 @@ def create_official_curated_pack(
         "status": "approved",
         "message": "Official curated pack created and published successfully!"
     }
+
+
+@router.post("/admin/ai/parse-past-questions")
+async def parse_past_questions_admin(
+    payload: AIPastQuestionsParsePayload,
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """
+    Platform Super Admin: Use AI to parse raw past questions document into structured CBT pack draft.
+    """
+    from services.cbt_parser_service import parse_past_questions_with_ai
+    parsed = await parse_past_questions_with_ai(
+        raw_text=payload.raw_text,
+        subject=payload.subject,
+        exam_type=payload.exam_type,
+        exam_year=payload.exam_year
+    )
+    return {
+        "success": True,
+        "suggested_title": parsed.suggested_title,
+        "subject": parsed.subject,
+        "exam_type": parsed.exam_type,
+        "exam_year": parsed.exam_year,
+        "syllabus_topics": parsed.syllabus_topics,
+        "questions": [q.model_dump() for q in parsed.questions],
+        "questions_count": len(parsed.questions)
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. STUDY BUNDLES (MULTI-PACK COLLECTIONS & 1-CLICK BATCH DOWNLOAD)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CreateBundlePayload(BaseModel):
+    title: str = Field(..., min_length=3, max_length=255)
+    description: Optional[str] = None
+    category: str = Field(default="JAMB UTME", max_length=100)
+    theme_gradient: str = Field(default="purple_indigo", max_length=100)
+    banner_url: Optional[str] = None
+    price_coins: int = Field(default=0, ge=0)
+    discount_percentage: int = Field(default=0, ge=0, le=100)
+    pack_ids: List[uuid.UUID] = Field(..., min_length=1)
+
+
+@router.get("/bundles")
+def list_study_bundles(
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_current_user_optional)
+):
+    """Lists published multi-pack study bundles with constituent subject summaries."""
+    query = db.query(models.StudyBundle).filter(models.StudyBundle.status == "approved")
+    if category and category.lower() != "all":
+        query = query.filter(func.lower(models.StudyBundle.category) == category.lower())
+
+    bundles = query.order_by(models.StudyBundle.created_at.desc()).all()
+
+    # Get user downloads to check ownership
+    downloaded_pack_ids = set()
+    if current_user:
+        dls = db.query(models.StudyPackDownload.pack_id).filter(
+            models.StudyPackDownload.user_id == current_user.id
+        ).all()
+        downloaded_pack_ids = {str(d[0]) for d in dls}
+
+    result = []
+    for b in bundles:
+        items = db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == b.id).order_by(models.StudyBundleItem.order_index).all()
+        pack_ids = [item.pack_id for item in items]
+        packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(pack_ids)).all() if pack_ids else []
+
+        pack_summaries = []
+        total_questions = 0
+        total_flashcards = 0
+        total_original_price = 0
+        all_owned = len(packs) > 0
+
+        for p in packs:
+            pd = p.pack_data or {}
+            q_cnt = len(pd.get("questions", []))
+            fc_cnt = len(pd.get("flashcards", []))
+            total_questions += q_cnt
+            total_flashcards += fc_cnt
+            total_original_price += (p.price_coins or 0)
+            is_owned = str(p.id) in downloaded_pack_ids
+            if not is_owned:
+                all_owned = False
+
+            pack_summaries.append({
+                "id": str(p.id),
+                "title": p.title,
+                "category": p.category,
+                "questions_count": q_cnt,
+                "flashcards_count": fc_cnt,
+                "price_coins": p.price_coins,
+                "is_owned": is_owned
+            })
+
+        result.append({
+            "id": str(b.id),
+            "title": b.title,
+            "description": b.description or "",
+            "category": b.category,
+            "theme_gradient": b.theme_gradient,
+            "banner_url": b.banner_url,
+            "price_coins": b.price_coins,
+            "original_price_coins": total_original_price,
+            "discount_percentage": b.discount_percentage,
+            "is_official": b.is_official,
+            "downloads_count": b.downloads_count,
+            "packs_count": len(packs),
+            "total_questions": total_questions,
+            "total_flashcards": total_flashcards,
+            "is_owned": all_owned and len(packs) > 0,
+            "packs": pack_summaries,
+            "created_at": b.created_at.isoformat() if b.created_at else None
+        })
+
+    return {"bundles": result, "count": len(result)}
+
+
+@router.get("/bundles/{bundle_id}")
+def get_study_bundle_detail(
+    bundle_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: Optional[models.User] = Depends(auth.get_current_user_optional)
+):
+    """Full detail of a multi-pack study bundle."""
+    bundle = db.query(models.StudyBundle).filter(models.StudyBundle.id == bundle_id).first()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Study bundle not found.")
+
+    items = db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == bundle.id).order_by(models.StudyBundleItem.order_index).all()
+    pack_ids = [item.pack_id for item in items]
+    packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(pack_ids)).all() if pack_ids else []
+
+    downloaded_pack_ids = set()
+    if current_user:
+        dls = db.query(models.StudyPackDownload.pack_id).filter(
+            models.StudyPackDownload.user_id == current_user.id
+        ).all()
+        downloaded_pack_ids = {str(d[0]) for d in dls}
+
+    pack_summaries = []
+    total_questions = 0
+    total_flashcards = 0
+    for p in packs:
+        pd = p.pack_data or {}
+        q_cnt = len(pd.get("questions", []))
+        fc_cnt = len(pd.get("flashcards", []))
+        total_questions += q_cnt
+        total_flashcards += fc_cnt
+        pack_summaries.append({
+            "id": str(p.id),
+            "title": p.title,
+            "category": p.category,
+            "questions_count": q_cnt,
+            "flashcards_count": fc_cnt,
+            "price_coins": p.price_coins,
+            "is_owned": str(p.id) in downloaded_pack_ids
+        })
+
+    return {
+        "id": str(bundle.id),
+        "title": bundle.title,
+        "description": bundle.description or "",
+        "category": bundle.category,
+        "theme_gradient": bundle.theme_gradient,
+        "banner_url": bundle.banner_url,
+        "price_coins": bundle.price_coins,
+        "discount_percentage": bundle.discount_percentage,
+        "is_official": bundle.is_official,
+        "downloads_count": bundle.downloads_count,
+        "packs_count": len(packs),
+        "total_questions": total_questions,
+        "total_flashcards": total_flashcards,
+        "packs": pack_summaries
+    }
+
+
+@router.post("/bundles/{bundle_id}/download")
+def download_study_bundle_batch(
+    bundle_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    1-Click Bundle Batch Cloner:
+    Debits bundle coin price in a single transaction, then clones every constituent
+    study pack into the user's StudyMaterial, Flashcard, and Question tables.
+    """
+    bundle = db.query(models.StudyBundle).filter(models.StudyBundle.id == bundle_id).first()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Study bundle not found.")
+
+    items = db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == bundle.id).order_by(models.StudyBundleItem.order_index).all()
+    pack_ids = [item.pack_id for item in items]
+    packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(pack_ids)).all() if pack_ids else []
+
+    if not packs:
+        raise HTTPException(status_code=400, detail="This bundle contains no study packs.")
+
+    # Debit wallet if bundle price > 0
+    balance_after = _get_user_balance(db, current_user.id)
+    if bundle.price_coins > 0:
+        if balance_after < bundle.price_coins:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient Nu-Coins. Bundle costs {bundle.price_coins} coins, you have {balance_after}."
+            )
+        balance_after = _credit_wallet(
+            db,
+            user_id=current_user.id,
+            delta=-bundle.price_coins,
+            reason="marketplace_bundle_download",
+            ref_id=str(bundle.id)
+        )
+
+    imported_materials = []
+    now_utc = datetime.now(timezone.utc)
+
+    for pack in packs:
+        # Check if pack already downloaded
+        existing_dl = db.query(models.StudyPackDownload).filter(
+            models.StudyPackDownload.pack_id == pack.id,
+            models.StudyPackDownload.user_id == current_user.id
+        ).first()
+
+        pd = pack.pack_data or {}
+        mat_content = pd.get("material_content", "") or ""
+        mat_title = re.sub(r"(?i)\s*[\[\(]\s*pack\s*import\s*[\]\)]\s*[:\-–—]?\s*", " ", pack.title)
+        mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
+
+        # Create cloned material
+        new_mat = models.StudyMaterial(
+            user_id=current_user.id,
+            title=mat_title,
+            source_type="pack_import",
+            content=mat_content,
+            is_generating=False
+        )
+        db.add(new_mat)
+        db.flush()
+
+        # Clone flashcards
+        for card_dict in pd.get("flashcards", []):
+            front_text = card_dict.get("front", "").strip()
+            back_text = card_dict.get("back", "").strip()
+            if front_text and back_text:
+                db.add(models.Flashcard(
+                    user_id=current_user.id,
+                    material_id=new_mat.id,
+                    front=front_text,
+                    back=back_text,
+                    repetitions=0,
+                    ease_factor=2.5,
+                    interval_days=0,
+                    next_review_date=now_utc
+                ))
+
+        # Clone questions with CBT metadata
+        for q_dict in pd.get("questions", []):
+            q_text = q_dict.get("question_text", "").strip()
+            opts = q_dict.get("options", [])
+            ans_idx = q_dict.get("answer_index", 0)
+            expl = q_dict.get("explanation", "")
+            diff = q_dict.get("difficulty", "standard")
+            if q_text and opts:
+                db.add(models.Question(
+                    user_id=current_user.id,
+                    material_id=new_mat.id,
+                    question_text=q_text,
+                    options=opts,
+                    answer_index=ans_idx,
+                    explanation=expl,
+                    difficulty=diff,
+                    image_url=q_dict.get("image_url"),
+                    topic=q_dict.get("topic"),
+                    exam_type=q_dict.get("exam_type"),
+                    exam_year=q_dict.get("exam_year"),
+                ))
+
+        # Record download entry
+        if existing_dl:
+            existing_dl.imported_material_id = new_mat.id
+        else:
+            db.add(models.StudyPackDownload(
+                pack_id=pack.id,
+                user_id=current_user.id,
+                coins_spent=0,
+                imported_material_id=new_mat.id
+            ))
+
+        pack.downloads_count = (pack.downloads_count or 0) + 1
+        imported_materials.append({"pack_id": str(pack.id), "material_id": str(new_mat.id), "title": mat_title})
+
+    bundle.downloads_count = (bundle.downloads_count or 0) + 1
+    db.commit()
+
+    return {
+        "success": True,
+        "bundle_id": str(bundle.id),
+        "bundle_title": bundle.title,
+        "imported_materials": imported_materials,
+        "coins_spent": bundle.price_coins,
+        "balance_after": balance_after,
+        "message": f"Successfully imported all {len(imported_materials)} study packs from '{bundle.title}' into your vault!"
+    }
+
+
+@router.post("/admin/bundles")
+def create_study_bundle_admin(
+    payload: CreateBundlePayload,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Create a new multi-pack study bundle."""
+    new_bundle = models.StudyBundle(
+        title=payload.title.strip(),
+        description=payload.description or "",
+        category=payload.category.strip() or "JAMB UTME",
+        theme_gradient=payload.theme_gradient or "purple_indigo",
+        banner_url=payload.banner_url,
+        price_coins=payload.price_coins,
+        discount_percentage=payload.discount_percentage,
+        is_official=True,
+        status="approved"
+    )
+    db.add(new_bundle)
+    db.flush()
+
+    for idx, pid in enumerate(payload.pack_ids):
+        db.add(models.StudyBundleItem(
+            bundle_id=new_bundle.id,
+            pack_id=pid,
+            order_index=idx
+        ))
+
+    db.commit()
+    db.refresh(new_bundle)
+
+    return {
+        "success": True,
+        "bundle_id": str(new_bundle.id),
+        "title": new_bundle.title,
+        "packs_count": len(payload.pack_ids),
+        "message": f"Study Bundle '{new_bundle.title}' created and published successfully!"
+    }
+
+

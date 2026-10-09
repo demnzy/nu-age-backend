@@ -389,6 +389,10 @@ class Question(Base):
     explanation = Column(String, nullable=True)
     
     difficulty = Column(String, default="standard") 
+    image_url = Column(String, nullable=True)
+    topic = Column(String(150), nullable=True)
+    exam_type = Column(String(50), nullable=True)
+    exam_year = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
@@ -907,3 +911,36 @@ class StudyPackLike(Base):
 
     pack = relationship("StudyPack", back_populates="likes")
     user = relationship("User", backref="pack_likes")
+
+
+class StudyBundle(Base):
+    __tablename__ = "study_bundles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    title = Column(String(255), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    category = Column(String(100), default="JAMB UTME", nullable=False, index=True)
+    theme_gradient = Column(String(100), default="purple_indigo", nullable=False)
+    banner_url = Column(String, nullable=True)
+
+    price_coins = Column(Integer, default=0, nullable=False, index=True)
+    discount_percentage = Column(Integer, default=0, nullable=False)
+    is_official = Column(Boolean, default=True, nullable=False, index=True)
+    status = Column(String(50), default="approved", nullable=False, index=True)
+    downloads_count = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    items = relationship("StudyBundleItem", back_populates="bundle", cascade="all, delete-orphan")
+
+
+class StudyBundleItem(Base):
+    __tablename__ = "study_bundle_items"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bundle_id = Column(UUID(as_uuid=True), ForeignKey("study_bundles.id", ondelete="CASCADE"), nullable=False, index=True)
+    pack_id = Column(UUID(as_uuid=True), ForeignKey("study_packs.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, default=0, nullable=False)
+
+    bundle = relationship("StudyBundle", back_populates="items")
+    pack = relationship("StudyPack")

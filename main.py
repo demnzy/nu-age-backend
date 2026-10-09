@@ -217,9 +217,35 @@ MIGRATION_STATEMENTS = [
     SELECT id, 100, NOW() FROM "user"
     ON CONFLICT (user_id) DO NOTHING;
     """,
-    # REMOVED: "UPDATE credit_balances SET balance = 100 WHERE balance = 0;"
-    # It ran on EVERY startup, so anyone who had spent all their credits got
-    # reset to 100 on each deploy/restart. Run it once by hand if you need it.
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_url VARCHAR;",
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS topic VARCHAR(150);",
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS exam_type VARCHAR(50);",
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS exam_year INTEGER;",
+    """
+    CREATE TABLE IF NOT EXISTS study_bundles (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        title VARCHAR(255) NOT NULL,
+        description TEXT,
+        category VARCHAR(100) DEFAULT 'JAMB UTME' NOT NULL,
+        theme_gradient VARCHAR(100) DEFAULT 'purple_indigo' NOT NULL,
+        banner_url VARCHAR,
+        price_coins INTEGER DEFAULT 0 NOT NULL,
+        discount_percentage INTEGER DEFAULT 0 NOT NULL,
+        is_official BOOLEAN DEFAULT TRUE NOT NULL,
+        status VARCHAR(50) DEFAULT 'approved' NOT NULL,
+        downloads_count INTEGER DEFAULT 0 NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS study_bundle_items (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        bundle_id UUID NOT NULL REFERENCES study_bundles(id) ON DELETE CASCADE,
+        pack_id UUID NOT NULL REFERENCES study_packs(id) ON DELETE CASCADE,
+        order_index INTEGER DEFAULT 0 NOT NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_bundle_items_bundle ON study_bundle_items(bundle_id);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
