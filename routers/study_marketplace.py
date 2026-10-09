@@ -41,6 +41,7 @@ class AdminCuratedPackPayload(BaseModel):
     material_content: Optional[str] = ""
     flashcards: List[Dict[str, Any]] = Field(default_factory=list)
     questions: List[Dict[str, Any]] = Field(default_factory=list)
+    duration_minutes: Optional[int] = Field(default=60, ge=1, le=360)
 
 
 class AdminReviewPayload(BaseModel):
@@ -953,10 +954,13 @@ def create_official_curated_pack(
     """
     Super Admin: Directly publish an official curated generation pack with preloaded content.
     """
+    dur_mins = payload.duration_minutes or 60
     pack_data = {
         "material_title": payload.title,
         "material_content": payload.material_content or "",
         "source_type": "curated_official",
+        "duration_minutes": dur_mins,
+        "duration_seconds": dur_mins * 60,
         "flashcards": payload.flashcards,
         "questions": payload.questions
     }
@@ -1028,6 +1032,18 @@ class CreateBundlePayload(BaseModel):
     price_coins: int = Field(default=0, ge=0)
     discount_percentage: int = Field(default=0, ge=0, le=100)
     pack_ids: List[uuid.UUID] = Field(..., min_length=1)
+
+
+class UpdateBundlePayload(BaseModel):
+    title: Optional[str] = Field(None, min_length=3, max_length=255)
+    description: Optional[str] = None
+    category: Optional[str] = Field(None, max_length=100)
+    theme_gradient: Optional[str] = Field(None, max_length=100)
+    banner_url: Optional[str] = None
+    price_coins: Optional[int] = Field(None, ge=0)
+    discount_percentage: Optional[int] = Field(None, ge=0, le=100)
+    pack_ids: Optional[List[uuid.UUID]] = None
+    status: Optional[str] = Field(None, pattern="^(approved|hidden)$")
 
 
 @router.get("/bundles")
@@ -1296,6 +1312,65 @@ def download_study_bundle_batch(
     }
 
 
+@router.get("/admin/bundles")
+def list_study_bundles_admin(
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: List all bundles (including hidden) with metrics and constituent pack summaries."""
+    bundles = db.query(models.StudyBundle).order_by(models.StudyBundle.created_at.desc()).all()
+    result = []
+    for b in bundles:
+        items = db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == b.id).order_by(models.StudyBundleItem.order_index).all()
+        pack_ids = [item.pack_id for item in items]
+        packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(pack_ids)).all() if pack_ids else []
+        pack_map = {p.id: p for p in packs}
+        pack_summaries = []
+        total_questions = 0
+        total_flashcards = 0
+        original_price_sum = 0
+        for item in items:
+            p = pack_map.get(item.pack_id)
+            if p:
+                pd = p.pack_data or {}
+                fc_cnt = len(pd.get("flashcards", []))
+                q_cnt = len(pd.get("questions", []))
+                total_questions += q_cnt
+                total_flashcards += fc_cnt
+                original_price_sum += (p.price_coins or 0)
+                pack_summaries.append({
+                    "id": str(p.id),
+                    "title": p.title,
+                    "category": p.category,
+                    "theme_gradient": p.theme_gradient,
+                    "price_coins": p.price_coins,
+                    "flashcards_count": fc_cnt,
+                    "questions_count": q_cnt,
+                    "status": p.status
+                })
+        result.append({
+            "id": str(b.id),
+            "title": b.title,
+            "description": b.description or "",
+            "category": b.category,
+            "theme_gradient": b.theme_gradient,
+            "banner_url": b.banner_url,
+            "price_coins": b.price_coins,
+            "discount_percentage": b.discount_percentage,
+            "is_official": b.is_official,
+            "status": b.status,
+            "downloads_count": b.downloads_count,
+            "packs_count": len(pack_summaries),
+            "total_questions": total_questions,
+            "total_flashcards": total_flashcards,
+            "original_price_sum": original_price_sum,
+            "packs": pack_summaries,
+            "pack_ids": [str(pid) for pid in pack_ids],
+            "created_at": b.created_at.isoformat() if b.created_at else None
+        })
+    return {"bundles": result, "count": len(result)}
+
+
 @router.post("/admin/bundles")
 def create_study_bundle_admin(
     payload: CreateBundlePayload,
@@ -1303,13 +1378,29 @@ def create_study_bundle_admin(
     admin: models.User = Depends(get_current_super_admin)
 ):
     """Platform Super Admin: Create a new multi-pack study bundle."""
+    # Deduplicate pack_ids while preserving order
+    unique_pids = list(dict.fromkeys(payload.pack_ids))
+    if not unique_pids:
+        raise HTTPException(status_code=400, detail="A bundle must contain at least one study pack.")
+
+    # Validate that packs exist
+    existing_packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(unique_pids)).all()
+    if len(existing_packs) != len(unique_pids):
+        raise HTTPException(status_code=400, detail="One or more specified study packs do not exist in the database.")
+
+    # Compute price if not explicitly given
+    final_price = payload.price_coins
+    if final_price <= 0 and existing_packs:
+        tot_orig = sum(p.price_coins or 0 for p in existing_packs)
+        final_price = max(0, int(tot_orig * (1.0 - (payload.discount_percentage / 100.0))))
+
     new_bundle = models.StudyBundle(
         title=payload.title.strip(),
         description=payload.description or "",
         category=payload.category.strip() or "JAMB UTME",
         theme_gradient=payload.theme_gradient or "purple_indigo",
         banner_url=payload.banner_url,
-        price_coins=payload.price_coins,
+        price_coins=final_price,
         discount_percentage=payload.discount_percentage,
         is_official=True,
         status="approved"
@@ -1317,7 +1408,7 @@ def create_study_bundle_admin(
     db.add(new_bundle)
     db.flush()
 
-    for idx, pid in enumerate(payload.pack_ids):
+    for idx, pid in enumerate(unique_pids):
         db.add(models.StudyBundleItem(
             bundle_id=new_bundle.id,
             pack_id=pid,
@@ -1329,10 +1420,124 @@ def create_study_bundle_admin(
 
     return {
         "success": True,
+        "id": str(new_bundle.id),
         "bundle_id": str(new_bundle.id),
         "title": new_bundle.title,
-        "packs_count": len(payload.pack_ids),
+        "price_coins": new_bundle.price_coins,
+        "discount_percentage": new_bundle.discount_percentage,
+        "packs_count": len(unique_pids),
+        "status": new_bundle.status,
         "message": f"Study Bundle '{new_bundle.title}' created and published successfully!"
+    }
+
+
+@router.put("/admin/bundles/{bundle_id}")
+def update_study_bundle_admin(
+    bundle_id: uuid.UUID,
+    payload: UpdateBundlePayload,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Update metadata, pricing, or constituent packs of a bundle."""
+    bundle = db.query(models.StudyBundle).filter(models.StudyBundle.id == bundle_id).first()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Study bundle not found.")
+
+    if payload.title is not None:
+        bundle.title = payload.title.strip()
+    if payload.description is not None:
+        bundle.description = payload.description.strip()
+    if payload.category is not None:
+        bundle.category = payload.category.strip()
+    if payload.theme_gradient is not None:
+        bundle.theme_gradient = payload.theme_gradient.strip()
+    if payload.banner_url is not None:
+        bundle.banner_url = payload.banner_url
+    if payload.price_coins is not None:
+        bundle.price_coins = payload.price_coins
+    if payload.discount_percentage is not None:
+        bundle.discount_percentage = payload.discount_percentage
+    if payload.status is not None:
+        bundle.status = payload.status
+
+    if payload.pack_ids is not None:
+        unique_pids = list(dict.fromkeys(payload.pack_ids))
+        if not unique_pids:
+            raise HTTPException(status_code=400, detail="A bundle must contain at least one study pack.")
+        existing_packs = db.query(models.StudyPack).filter(models.StudyPack.id.in_(unique_pids)).all()
+        if len(existing_packs) != len(unique_pids):
+            raise HTTPException(status_code=400, detail="One or more specified study packs do not exist.")
+
+        # Re-link items cleanly
+        db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == bundle.id).delete()
+        for idx, pid in enumerate(unique_pids):
+            db.add(models.StudyBundleItem(
+                bundle_id=bundle.id,
+                pack_id=pid,
+                order_index=idx
+            ))
+
+    # If price_coins was not explicitly provided but discount or packs changed, re-calculate
+    if payload.price_coins is None and (payload.discount_percentage is not None or payload.pack_ids is not None):
+        items = db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == bundle.id).all()
+        pids = [it.pack_id for it in items]
+        if pids:
+            packs_for_price = db.query(models.StudyPack).filter(models.StudyPack.id.in_(pids)).all()
+            tot_orig = sum(p.price_coins or 0 for p in packs_for_price)
+            bundle.price_coins = max(0, int(tot_orig * (1.0 - (bundle.discount_percentage / 100.0))))
+
+    db.commit()
+    db.refresh(bundle)
+    return {
+        "success": True,
+        "id": str(bundle.id),
+        "bundle_id": str(bundle.id),
+        "title": bundle.title,
+        "price_coins": bundle.price_coins,
+        "discount_percentage": bundle.discount_percentage,
+        "packs_count": len(unique_pids) if payload.pack_ids is not None else db.query(models.StudyBundleItem).filter(models.StudyBundleItem.bundle_id == bundle.id).count(),
+        "status": bundle.status,
+        "message": f"Study Bundle '{bundle.title}' updated successfully."
+    }
+
+
+@router.patch("/admin/bundles/{bundle_id}/toggle-visibility")
+def toggle_bundle_visibility_admin(
+    bundle_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Toggle a bundle between live (approved) and hidden."""
+    bundle = db.query(models.StudyBundle).filter(models.StudyBundle.id == bundle_id).first()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Study bundle not found.")
+    bundle.status = "hidden" if bundle.status == "approved" else "approved"
+    db.commit()
+    return {
+        "success": True,
+        "bundle_id": str(bundle.id),
+        "status": bundle.status,
+        "is_hidden": (bundle.status == "hidden"),
+        "message": f"Study Bundle '{bundle.title}' is now {'hidden from the store' if bundle.status == 'hidden' else 'published live in the store'}."
+    }
+
+
+@router.delete("/admin/bundles/{bundle_id}")
+def delete_study_bundle_admin(
+    bundle_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Permanently delete a bundle and its item links."""
+    bundle = db.query(models.StudyBundle).filter(models.StudyBundle.id == bundle_id).first()
+    if not bundle:
+        raise HTTPException(status_code=404, detail="Study bundle not found.")
+    title = bundle.title
+    db.delete(bundle)
+    db.commit()
+    return {
+        "success": True,
+        "message": f"Study Bundle '{title}' permanently deleted."
     }
 
 
