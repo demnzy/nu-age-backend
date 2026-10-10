@@ -923,7 +923,11 @@ def get_admin_all_packs(
     items = []
     for p in packs:
         pd = p.pack_data or {}
-        creator_name = p.creator.name if p.creator else "Unknown Creator"
+        creator_name = (
+            f"{p.creator.first_name} {p.creator.last_name}".strip()
+            if p.creator
+            else "Unknown Creator"
+        )
         creator_email = p.creator.email if p.creator else ""
         items.append({
             "id": str(p.id),
