@@ -239,3 +239,92 @@ async def parse_past_questions_with_ai(
 
     # 3. Deterministic regex fallback
     return parse_cbt_text_regex(raw_text, default_subject=subject, default_exam=exam_type, default_year=exam_year)
+
+
+async def parse_past_questions_from_image_with_ai(
+    image_bytes: bytes,
+    mime_type: str = "image/png",
+    subject: str = "General",
+    exam_type: str = "JAMB UTME",
+    exam_year: Optional[int] = None
+) -> ParsedCBTPack:
+    """
+    Parses past questions directly from an exam paper image using Gemini / OpenAI Multimodal Vision.
+    """
+    api_key = _get_api_key()
+    gemini_key = _get_gemini_key()
+
+    system_prompt = (
+        "You are an expert West African Examinations (JAMB UTME, WAEC WASSCE, NECO) CBT ingestion specialist. "
+        "Your task is to transcribe and parse all past questions from the provided exam paper image into a structured CBT test pack.\n"
+        "Guidelines:\n"
+        "1. Remove leading question numbers (e.g. '1.', 'Q2:').\n"
+        "2. Extract exactly 4 options for JAMB/standard exams or 5 options for WAEC/NECO exams: [Option A, B, C, D, (E)]. Remove letter prefixes.\n"
+        "3. Determine the correct answer_index (0 for A, 1 for B, 2 for C, 3 for D, 4 for E).\n"
+        "4. Provide step-by-step mathematical working or conceptual explanation for each answer.\n"
+        "5. Assign a syllabus topic (e.g. 'Mechanics', 'Genetics').\n"
+        "6. Check if question refers to a diagram or figure. If so, set has_diagram=True and describe it.\n"
+        "7. Keep mathematical symbols, exponents, chemical formulas, and scientific units intact."
+    )
+
+    user_instruction = f"Transcribe and parse all questions from this {exam_type} ({exam_year or 'Past Years'}) {subject} exam document image into CBT test questions."
+
+    # 1. Try Gemini Multimodal
+    if gemini_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=gemini_key)
+            image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[system_prompt, image_part, user_instruction],
+                config={"response_mime_type": "application/json", "response_schema": ParsedCBTPack}
+            )
+            parsed = ParsedCBTPack.model_validate_json(resp.text)
+            if parsed and parsed.questions:
+                if not parsed.suggested_title:
+                    parsed.suggested_title = f"{exam_type} {exam_year or ''} {subject} CBT Practice Pack".strip()
+                return parsed
+        except Exception as e:
+            print(f"[CBT AI IMAGE PARSER (Gemini) ERROR]: {e}")
+
+    # 2. Try OpenAI Vision
+    if api_key:
+        try:
+            import base64
+            from openai import AsyncOpenAI
+            b64 = base64.b64encode(image_bytes).decode("utf-8")
+            client = AsyncOpenAI(api_key=api_key, timeout=120.0, max_retries=1)
+            response = await client.beta.chat.completions.parse(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_instruction},
+                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}}
+                        ]
+                    }
+                ],
+                response_format=ParsedCBTPack,
+                temperature=0.2,
+            )
+            parsed = response.choices[0].message.parsed
+            if parsed and parsed.questions:
+                if not parsed.suggested_title:
+                    parsed.suggested_title = f"{exam_type} {exam_year or ''} {subject} CBT Practice Pack".strip()
+                return parsed
+        except Exception as e:
+            print(f"[CBT AI IMAGE PARSER (OpenAI) ERROR]: {e}")
+
+    return ParsedCBTPack(
+        suggested_title=f"{exam_type} {exam_year or ''} {subject} CBT Practice Pack".strip(),
+        subject=subject,
+        exam_type=exam_type,
+        exam_year=exam_year,
+        syllabus_topics=[subject],
+        questions=[]
+    )
+

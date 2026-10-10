@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, File, UploadFile, Form
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, and_, func, desc
 from sqlalchemy.orm import Session
@@ -252,7 +252,8 @@ def list_marketplace_packs(
                 "username": creator_username,
                 "profile_picture_url": creator_avatar,
             },
-            "is_owned": (p.id in user_downloaded_ids) or (current_user and p.creator_id == current_user.id),
+            "is_owned": p.id in user_downloaded_ids,
+            "is_creator": bool(current_user and p.creator_id == current_user.id),
             "is_liked": p.id in user_liked_ids,
         })
 
@@ -304,6 +305,7 @@ def get_marketplace_pack_detail(
     all_questions = pd.get("questions", [])
 
     is_owned = False
+    is_creator = False
     is_liked = False
     user_balance = 0
 
@@ -312,7 +314,8 @@ def get_marketplace_pack_detail(
             models.StudyPackDownload.pack_id == pack.id,
             models.StudyPackDownload.user_id == current_user.id
         ).first()
-        is_owned = bool(dl) or (pack.creator_id == current_user.id)
+        is_owned = bool(dl)
+        is_creator = bool(pack.creator_id == current_user.id)
 
         lk = db.query(models.StudyPackLike).filter(
             models.StudyPackLike.pack_id == pack.id,
@@ -386,6 +389,7 @@ def get_marketplace_pack_detail(
         "preview_flashcards": preview_cards,
         "preview_questions": preview_questions,
         "is_owned": is_owned,
+        "is_creator": is_creator,
         "is_liked": is_liked,
         "user_balance": user_balance,
     }
@@ -559,10 +563,10 @@ def download_and_import_pack(
     mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
 
     is_cbt = (
-        pd.get("source_type") == "cbt_pack"
+        pd.get("source_type") in ("cbt_pack", "cbt")
         or bool(pd.get("exam_type"))
-        or pack.category in ("JAMB UTME", "WAEC / NECO", "WAEC WASSCE", "NECO SSCE")
         or (len(pd.get("questions", [])) > 0 and len(pd.get("flashcards", [])) == 0)
+        or bool(re.search(r"(?i)\b(CBT|JAMB|WAEC|NECO|UTME|WASSCE|SSCE|POST-UTME|SAT|GRE|GMAT)\b", str(pack.category or "") + " " + str(pack.title or "")))
     )
     mat_source_type = "cbt_pack" if is_cbt else "pack_import"
 
@@ -1001,10 +1005,11 @@ def create_official_curated_pack(
     Super Admin: Directly publish an official curated generation pack with preloaded content.
     """
     dur_mins = payload.duration_minutes or 60
+    st_val = "cbt_pack" if (payload.questions and not payload.flashcards) else "curated_official"
     pack_data = {
         "material_title": payload.title,
         "material_content": payload.material_content or "",
-        "source_type": "curated_official",
+        "source_type": st_val,
         "duration_minutes": dur_mins,
         "duration_seconds": dur_mins * 60,
         "flashcards": payload.flashcards,
@@ -1062,6 +1067,130 @@ async def parse_past_questions_admin(
         "syllabus_topics": parsed.syllabus_topics,
         "questions": [q.model_dump() for q in parsed.questions],
         "questions_count": len(parsed.questions)
+    }
+
+
+@router.post("/admin/ai/parse-past-questions-file")
+async def parse_past_questions_file_admin(
+    file: UploadFile = File(...),
+    subject: str = Form("General"),
+    exam_type: str = Form("JAMB UTME"),
+    exam_year: Optional[str] = Form(None),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """
+    Platform Super Admin: Upload an exam document (PDF, TXT, DOCX, MD, Images) to parse into structured CBT questions.
+    """
+    from services.cbt_parser_service import (
+        parse_past_questions_with_ai,
+        parse_past_questions_from_image_with_ai,
+        ParsedCBTPack
+    )
+    filename = (file.filename or "").lower()
+    file_bytes = await file.read()
+    content_text = ""
+    parsed_year = int(exam_year) if (exam_year and str(exam_year).strip().isdigit()) else None
+
+    # 1. Handle image files (scanned past question photos)
+    is_img = any(filename.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"])
+    if is_img:
+        mime = "image/png" if filename.endswith(".png") else "image/jpeg"
+        parsed = await parse_past_questions_from_image_with_ai(
+            image_bytes=file_bytes,
+            mime_type=mime,
+            subject=subject,
+            exam_type=exam_type,
+            exam_year=parsed_year
+        )
+        return {
+            "success": True,
+            "suggested_title": parsed.suggested_title,
+            "subject": parsed.subject,
+            "exam_type": parsed.exam_type,
+            "exam_year": parsed.exam_year,
+            "syllabus_topics": parsed.syllabus_topics,
+            "questions": [q.model_dump() for q in parsed.questions],
+            "questions_count": len(parsed.questions),
+            "extracted_char_count": 0,
+        }
+
+    # 2. Handle PDF documents
+    if filename.endswith(".pdf"):
+        try:
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                content_text += page.get_text() + "\n"
+            
+            # If PDF has no extractable text (e.g. scanned exam paper), render first page to image
+            if len(content_text.strip()) < 30 and len(doc) > 0:
+                pix = doc[0].get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                doc.close()
+                parsed = await parse_past_questions_from_image_with_ai(
+                    image_bytes=img_bytes,
+                    mime_type="image/png",
+                    subject=subject,
+                    exam_type=exam_type,
+                    exam_year=parsed_year
+                )
+                return {
+                    "success": True,
+                    "suggested_title": parsed.suggested_title,
+                    "subject": parsed.subject,
+                    "exam_type": parsed.exam_type,
+                    "exam_year": parsed.exam_year,
+                    "syllabus_topics": parsed.syllabus_topics,
+                    "questions": [q.model_dump() for q in parsed.questions],
+                    "questions_count": len(parsed.questions),
+                    "extracted_char_count": 0,
+                }
+            doc.close()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to extract text from PDF: {e}")
+
+    # 3. Handle Word documents (.docx)
+    elif filename.endswith(".docx"):
+        try:
+            import io, zipfile, xml.etree.ElementTree as ET
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                xml_content = z.read("word/document.xml")
+                tree = ET.fromstring(xml_content)
+                texts = []
+                for elem in tree.iter():
+                    if elem.tag.endswith('}t'):
+                        if elem.text:
+                            texts.append(elem.text)
+                    elif elem.tag.endswith('}p'):
+                        texts.append('\n')
+                content_text = "".join(texts)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to extract text from DOCX: {e}")
+
+    # 4. Handle text/markdown documents
+    else:
+        content_text = file_bytes.decode("utf-8", errors="ignore")
+
+    content_text = content_text.strip()
+    if len(content_text) < 10:
+        raise HTTPException(status_code=400, detail="Document text is empty or could not be extracted.")
+
+    parsed = await parse_past_questions_with_ai(
+        raw_text=content_text,
+        subject=subject,
+        exam_type=exam_type,
+        exam_year=parsed_year
+    )
+    return {
+        "success": True,
+        "suggested_title": parsed.suggested_title,
+        "subject": parsed.subject,
+        "exam_type": parsed.exam_type,
+        "exam_year": parsed.exam_year,
+        "syllabus_topics": parsed.syllabus_topics,
+        "questions": [q.model_dump() for q in parsed.questions],
+        "questions_count": len(parsed.questions),
+        "extracted_char_count": len(content_text),
     }
 
 
@@ -1282,10 +1411,10 @@ def download_study_bundle_batch(
         mat_title = re.sub(r"(?i)^pack\s*import\s*[:\-–—]?\s*", "", mat_title).strip() or "Study Pack"
 
         is_cbt = (
-            pd.get("source_type") == "cbt_pack"
+            pd.get("source_type") in ("cbt_pack", "cbt")
             or bool(pd.get("exam_type"))
-            or pack.category in ("JAMB UTME", "WAEC / NECO", "WAEC WASSCE", "NECO SSCE")
             or (len(pd.get("questions", [])) > 0 and len(pd.get("flashcards", [])) == 0)
+            or bool(re.search(r"(?i)\b(CBT|JAMB|WAEC|NECO|UTME|WASSCE|SSCE|POST-UTME|SAT|GRE|GMAT)\b", str(pack.category or "") + " " + str(pack.title or "")))
         )
         mat_source_type = "cbt_pack" if is_cbt else "pack_import"
 
@@ -1352,17 +1481,37 @@ def download_study_bundle_batch(
         pack.downloads_count = (pack.downloads_count or 0) + 1
         imported_materials.append({"pack_id": str(pack.id), "material_id": str(new_mat.id), "title": mat_title})
 
+    # Create top-level CBT Combo material entry in vault for unified bundle cockpit
+    bundle_meta = json.dumps({
+        "bundle_id": str(bundle.id),
+        "bundle_title": bundle.title,
+        "banner_url": bundle.banner_url,
+        "category": bundle.category,
+        "item_ids": [str(m["material_id"]) for m in imported_materials],
+        "item_titles": [m["title"] for m in imported_materials],
+    })
+    bundle_mat = models.StudyMaterial(
+        user_id=current_user.id,
+        title=f"Combo: {bundle.title}",
+        source_type="cbt_bundle",
+        content=bundle_meta,
+        is_generating=False
+    )
+    db.add(bundle_mat)
+    db.flush()
+
     bundle.downloads_count = (bundle.downloads_count or 0) + 1
     db.commit()
 
     return {
         "success": True,
         "bundle_id": str(bundle.id),
+        "bundle_material_id": str(bundle_mat.id),
         "bundle_title": bundle.title,
         "imported_materials": imported_materials,
         "coins_spent": bundle.price_coins,
         "balance_after": balance_after,
-        "message": f"Successfully imported all {len(imported_materials)} study packs from '{bundle.title}' into your vault!"
+        "message": f"Successfully imported CBT combo '{bundle.title}' into your vault!"
     }
 
 
