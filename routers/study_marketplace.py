@@ -1127,27 +1127,41 @@ async def parse_past_questions_file_admin(
             for page in doc:
                 content_text += page.get_text() + "\n"
             
-            # If PDF has no extractable text (e.g. scanned exam paper), render first page to image
+            # If PDF has no extractable text (e.g. scanned exam paper), render all pages to images
             if len(content_text.strip()) < 30 and len(doc) > 0:
-                pix = doc[0].get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("png")
+                all_scanned_questions = []
+                final_title = f"{exam_type} {parsed_year or ''} {subject} Past Questions CBT".strip()
+                all_topics = set()
+                max_scanned_pages = min(len(doc), 20)
+                for page_idx in range(max_scanned_pages):
+                    try:
+                        pix = doc[page_idx].get_pixmap(dpi=150)
+                        img_bytes = pix.tobytes("png")
+                        p_parsed = await parse_past_questions_from_image_with_ai(
+                            image_bytes=img_bytes,
+                            mime_type="image/png",
+                            subject=subject,
+                            exam_type=exam_type,
+                            exam_year=parsed_year
+                        )
+                        if p_parsed.questions:
+                            all_scanned_questions.extend(p_parsed.questions)
+                        if p_parsed.suggested_title and not final_title:
+                            final_title = p_parsed.suggested_title
+                        all_topics.update(p_parsed.syllabus_topics)
+                    except Exception as err:
+                        print(f"[CBT PDF SCAN] Error parsing page {page_idx + 1}: {err}")
+
                 doc.close()
-                parsed = await parse_past_questions_from_image_with_ai(
-                    image_bytes=img_bytes,
-                    mime_type="image/png",
-                    subject=subject,
-                    exam_type=exam_type,
-                    exam_year=parsed_year
-                )
                 return {
                     "success": True,
-                    "suggested_title": parsed.suggested_title,
-                    "subject": parsed.subject,
-                    "exam_type": parsed.exam_type,
-                    "exam_year": parsed.exam_year,
-                    "syllabus_topics": parsed.syllabus_topics,
-                    "questions": [q.model_dump() for q in parsed.questions],
-                    "questions_count": len(parsed.questions),
+                    "suggested_title": final_title,
+                    "subject": subject,
+                    "exam_type": exam_type,
+                    "exam_year": parsed_year,
+                    "syllabus_topics": list(all_topics) or [subject],
+                    "questions": [q.model_dump() for q in all_scanned_questions],
+                    "questions_count": len(all_scanned_questions),
                     "extracted_char_count": 0,
                 }
             doc.close()
@@ -1197,6 +1211,38 @@ async def parse_past_questions_file_admin(
         "questions_count": len(parsed.questions),
         "extracted_char_count": len(content_text),
     }
+
+
+@router.post("/admin/cbt/upload-image")
+async def upload_cbt_question_image(
+    file: UploadFile = File(...),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """
+    Platform Super Admin: Upload an image/figure for CBT questions directly to BunnyCDN.
+    Returns the public CDN URL.
+    """
+    from services.bunny_service import upload_bytes_to_bunny
+    from pathlib import Path
+
+    ext = Path(file.filename).suffix if file.filename else ".png"
+    if not ext:
+        ext = ".png"
+    safe_filename = f"cbt_diag_{uuid.uuid4().hex[:12]}{ext}"
+    file_bytes = await file.read()
+    try:
+        cdn_url = await upload_bytes_to_bunny(file_bytes, safe_filename, folder_path="cbt_diagrams")
+    except Exception as e:
+        print(f"[CBT Image Upload] CDN upload error: {e}")
+        import os
+        upload_dir = os.path.join("static", "uploads", "cbt_diagrams")
+        os.makedirs(upload_dir, exist_ok=True)
+        local_path = os.path.join(upload_dir, safe_filename)
+        with open(local_path, "wb") as f:
+            f.write(file_bytes)
+        cdn_url = f"/static/uploads/cbt_diagrams/{safe_filename}"
+
+    return {"url": cdn_url, "view_url": cdn_url, "filename": safe_filename}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

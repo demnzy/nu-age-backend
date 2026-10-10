@@ -159,49 +159,41 @@ def parse_cbt_text_regex(raw_text: str, default_subject: str = "General", defaul
     )
 
 
-async def parse_past_questions_with_ai(
-    raw_text: str,
-    subject: str = "General",
-    exam_type: str = "JAMB UTME",
-    exam_year: Optional[int] = None
-) -> ParsedCBTPack:
-    """
-    Parses past questions using OpenAI / Gemini / AgentRouter structured outputs.
-    Falls back to deterministic regex parser if API keys are missing or calls fail.
-    """
-    api_key = _get_api_key()
-    gemini_key = _get_gemini_key()
-
-    if not api_key and not gemini_key:
-        return parse_cbt_text_regex(raw_text, default_subject=subject, default_exam=exam_type, default_year=exam_year)
-
+async def _parse_single_chunk_with_ai(
+    chunk_text: str,
+    subject: str,
+    exam_type: str,
+    exam_year: Optional[int],
+    api_key: str,
+    gemini_key: str,
+    chunk_index: int = 1,
+    total_chunks: int = 1,
+) -> List[ParsedCBTQuestion]:
+    """Parses an isolated chunk of past questions using OpenAI or Gemini."""
     system_prompt = (
         "You are an expert West African Examinations (JAMB UTME, WAEC WASSCE, NECO) CBT ingestion specialist. "
-        "Your task is to parse raw past exam papers and syllabus documents into a clean, structured CBT test pack.\n"
-        "Guidelines:\n"
-        "1. Remove leading question numbers (e.g. '1.', 'Q2:').\n"
-        "2. Extract exactly 4 options for JAMB/standard exams or 5 options for WAEC/NECO exams: [Option A, B, C, D, (E)]. Remove letter prefixes (like 'A.').\n"
-        "3. Determine the correct answer_index (0 for A, 1 for B, 2 for C, 3 for D, 4 for E).\n"
-        "4. Provide step-by-step mathematical working or conceptual explanation for each answer.\n"
-        "5. Assign a syllabus topic (e.g. 'Waves & Optics', 'Organic Chemistry', 'Calculus').\n"
-        "6. Check if question refers to a diagram, graph, circuit, map, or figure. If so, set has_diagram=True and describe the diagram.\n"
-        "7. Keep mathematical symbols, exponents, chemical formulas, and scientific units intact."
+        "Your task is to parse raw past exam papers and syllabus documents into clean, structured CBT test questions.\n"
+        "MANDATORY REQUIREMENTS:\n"
+        "1. You MUST extract and parse EVERY SINGLE question present in the input text without omission. Do NOT stop after 10 questions. Do NOT sample or truncate.\n"
+        "2. Remove leading question numbers (e.g. '1.', 'Q2:').\n"
+        "3. Extract exactly 4 options for JAMB/standard exams or 5 options for WAEC/NECO exams: [Option A, B, C, D, (E)]. Remove letter prefixes (like 'A.').\n"
+        "4. Determine the correct answer_index (0 for A, 1 for B, 2 for C, 3 for D, 4 for E).\n"
+        "5. Provide step-by-step mathematical working or conceptual explanation for each answer.\n"
+        "6. Assign a syllabus topic (e.g. 'Waves & Optics', 'Organic Chemistry', 'Calculus').\n"
+        "7. Check if question refers to a diagram, graph, circuit, map, or figure. If so, set has_diagram=True and describe the diagram.\n"
+        "8. Keep mathematical symbols, exponents, chemical formulas, and scientific units intact."
     )
 
     user_prompt = (
-        f"Parse the following {exam_type} ({exam_year or 'Past Years'}) {subject} exam material into CBT questions:\n\n"
-        f"{raw_text[:75000]}"
+        f"Section {chunk_index} of {total_chunks}: Parse EVERY question in the following {exam_type} ({exam_year or 'Past Years'}) {subject} material without omission:\n\n"
+        f"{chunk_text}"
     )
 
-    # 1. Try OpenAI if API key exists
+    # 1. Try OpenAI
     if api_key:
         try:
             from openai import AsyncOpenAI
-            client = AsyncOpenAI(
-                api_key=api_key,
-                timeout=120.0,
-                max_retries=1
-            )
+            client = AsyncOpenAI(api_key=api_key, timeout=120.0, max_retries=1)
             response = await client.beta.chat.completions.parse(
                 model="gpt-4o-mini",
                 messages=[
@@ -210,16 +202,15 @@ async def parse_past_questions_with_ai(
                 ],
                 response_format=ParsedCBTPack,
                 temperature=0.2,
+                max_tokens=16384,
             )
             parsed = response.choices[0].message.parsed
             if parsed and parsed.questions:
-                if not parsed.suggested_title:
-                    parsed.suggested_title = f"{exam_type} {exam_year or ''} {subject} CBT Practice Pack".strip()
-                return parsed
+                return parsed.questions
         except Exception as e:
-            print(f"[CBT AI PARSER (OpenAI) ERROR]: {e}")
+            print(f"[CBT AI CHUNK PARSER (OpenAI) ERROR in chunk {chunk_index}]: {e}")
 
-    # 2. Try Gemini via google.genai if key exists
+    # 2. Try Gemini
     if gemini_key:
         try:
             from google import genai
@@ -231,13 +222,95 @@ async def parse_past_questions_with_ai(
             )
             parsed = ParsedCBTPack.model_validate_json(resp.text)
             if parsed and parsed.questions:
-                if not parsed.suggested_title:
-                    parsed.suggested_title = f"{exam_type} {exam_year or ''} {subject} CBT Practice Pack".strip()
-                return parsed
+                return parsed.questions
         except Exception as e:
-            print(f"[CBT AI PARSER (Gemini) ERROR]: {e}")
+            print(f"[CBT AI CHUNK PARSER (Gemini) ERROR in chunk {chunk_index}]: {e}")
 
-    # 3. Deterministic regex fallback
+    # 3. Regex fallback on this chunk
+    chunk_parsed = parse_cbt_text_regex(chunk_text, default_subject=subject, default_exam=exam_type, default_year=exam_year)
+    return chunk_parsed.questions
+
+
+async def parse_past_questions_with_ai(
+    raw_text: str,
+    subject: str = "General",
+    exam_type: str = "JAMB UTME",
+    exam_year: Optional[int] = None
+) -> ParsedCBTPack:
+    """
+    Parses past questions using OpenAI / Gemini / AgentRouter structured outputs.
+    Intelligently splits large past question papers into chunks so 100% of questions
+    (e.g. all 40, 50, 60, or 100 questions) are extracted without artificial 10-question truncation.
+    Falls back to deterministic regex parser if API keys are missing or calls fail.
+    """
+    api_key = _get_api_key()
+    gemini_key = _get_gemini_key()
+
+    if not api_key and not gemini_key:
+        return parse_cbt_text_regex(raw_text, default_subject=subject, default_exam=exam_type, default_year=exam_year)
+
+    # 1. Detect question blocks using boundary regex
+    question_blocks = re.split(r'(?=(?:^|\n)\s*(?:Question\s+|\bQ\s*)?\d+[\.\)\:\-]\s+)', raw_text)
+    question_blocks = [b.strip() for b in question_blocks if b.strip()]
+
+    chunks = []
+    if len(question_blocks) >= 12:
+        # Group into batches of 15 questions per chunk to stay well within LLM output token budgets
+        chunk_size = 15
+        for i in range(0, len(question_blocks), chunk_size):
+            chunk_slice = question_blocks[i:i + chunk_size]
+            chunks.append("\n\n".join(chunk_slice))
+    elif len(raw_text) > 9000:
+        # Split on paragraph boundaries into ~7500 char chunks
+        paragraphs = raw_text.split("\n\n")
+        cur_buf = []
+        cur_len = 0
+        for p in paragraphs:
+            p_len = len(p)
+            if cur_len + p_len > 7500 and cur_buf:
+                chunks.append("\n\n".join(cur_buf))
+                cur_buf = [p]
+                cur_len = p_len
+            else:
+                cur_buf.append(p)
+                cur_len += p_len
+        if cur_buf:
+            chunks.append("\n\n".join(cur_buf))
+    else:
+        chunks = [raw_text[:75000]]
+
+    # 2. Parse all chunks
+    all_extracted_questions: List[ParsedCBTQuestion] = []
+    total_chunks = len(chunks)
+
+    for idx, chunk_text in enumerate(chunks, 1):
+        chunk_questions = await _parse_single_chunk_with_ai(
+            chunk_text=chunk_text,
+            subject=subject,
+            exam_type=exam_type,
+            exam_year=exam_year,
+            api_key=api_key,
+            gemini_key=gemini_key,
+            chunk_index=idx,
+            total_chunks=total_chunks,
+        )
+        all_extracted_questions.extend(chunk_questions)
+
+    # If AI extracted questions, assemble the final pack
+    if all_extracted_questions:
+        title_year = f"{exam_year} " if exam_year else ""
+        suggested_title = f"{exam_type} {title_year}{subject} Past Questions CBT".strip()
+        syllabus_topics = list({q.topic for q in all_extracted_questions if q.topic})
+        return ParsedCBTPack(
+            suggested_title=suggested_title,
+            subject=subject,
+            exam_type=exam_type,
+            exam_year=exam_year,
+            syllabus_topics=syllabus_topics or [subject],
+            questions=all_extracted_questions,
+        )
+
+    # Deterministic regex fallback across entire raw text
     return parse_cbt_text_regex(raw_text, default_subject=subject, default_exam=exam_type, default_year=exam_year)
 
 
@@ -257,17 +330,18 @@ async def parse_past_questions_from_image_with_ai(
     system_prompt = (
         "You are an expert West African Examinations (JAMB UTME, WAEC WASSCE, NECO) CBT ingestion specialist. "
         "Your task is to transcribe and parse all past questions from the provided exam paper image into a structured CBT test pack.\n"
-        "Guidelines:\n"
-        "1. Remove leading question numbers (e.g. '1.', 'Q2:').\n"
-        "2. Extract exactly 4 options for JAMB/standard exams or 5 options for WAEC/NECO exams: [Option A, B, C, D, (E)]. Remove letter prefixes.\n"
-        "3. Determine the correct answer_index (0 for A, 1 for B, 2 for C, 3 for D, 4 for E).\n"
-        "4. Provide step-by-step mathematical working or conceptual explanation for each answer.\n"
-        "5. Assign a syllabus topic (e.g. 'Mechanics', 'Genetics').\n"
-        "6. Check if question refers to a diagram or figure. If so, set has_diagram=True and describe it.\n"
-        "7. Keep mathematical symbols, exponents, chemical formulas, and scientific units intact."
+        "MANDATORY REQUIREMENTS:\n"
+        "1. You MUST transcribe and parse EVERY SINGLE question visible in the exam document image without omission. Do NOT stop after 10 questions. Do NOT sample or truncate.\n"
+        "2. Remove leading question numbers (e.g. '1.', 'Q2:').\n"
+        "3. Extract exactly 4 options for JAMB/standard exams or 5 options for WAEC/NECO exams: [Option A, B, C, D, (E)]. Remove letter prefixes.\n"
+        "4. Determine the correct answer_index (0 for A, 1 for B, 2 for C, 3 for D, 4 for E).\n"
+        "5. Provide step-by-step mathematical working or conceptual explanation for each answer.\n"
+        "6. Assign a syllabus topic (e.g. 'Mechanics', 'Genetics').\n"
+        "7. Check if question refers to a diagram or figure. If so, set has_diagram=True and describe it.\n"
+        "8. Keep mathematical symbols, exponents, chemical formulas, and scientific units intact."
     )
 
-    user_instruction = f"Transcribe and parse all questions from this {exam_type} ({exam_year or 'Past Years'}) {subject} exam document image into CBT test questions."
+    user_instruction = f"Transcribe and parse EVERY SINGLE question visible in this {exam_type} ({exam_year or 'Past Years'}) {subject} exam document image into CBT test questions without omission."
 
     # 1. Try Gemini Multimodal
     if gemini_key:
@@ -310,6 +384,7 @@ async def parse_past_questions_from_image_with_ai(
                 ],
                 response_format=ParsedCBTPack,
                 temperature=0.2,
+                max_tokens=16384,
             )
             parsed = response.choices[0].message.parsed
             if parsed and parsed.questions:
