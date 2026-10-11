@@ -17,6 +17,13 @@ try:
 except Exception as fb_init_err:
     print(f"[notifications] Firebase initialization warning: {fb_init_err}")
 
+import time
+
+# Module-level sliding-window cache to safeguard against duplicate dispatches
+_RECENT_DISPATCHES: dict[str, float] = {}
+_DEDUP_WINDOW_SECONDS = 10.0
+
+
 def dispatch_notification(
     db: Session,
     recipient_user_ids: list = None,
@@ -36,9 +43,10 @@ def dispatch_notification(
     """
     Unified, reliable notification dispatcher:
     1. Deduplicates recipient user IDs and excludes sender unless allow_self_notify=True.
-    2. Persists a UserNotification record in PostgreSQL for every recipient.
-    3. Fires targeted push notifications via OneSignal & FCM with deep-link routing.
-    4. Synchronizes with in-app notifications tab, bell badge, and mobile system trays.
+    2. Drops rapid duplicate dispatches within 10s sliding window.
+    3. Persists a UserNotification record in PostgreSQL for every recipient.
+    4. Fires targeted push notifications via OneSignal & FCM with deep-link routing.
+    5. Synchronizes with in-app notifications tab, bell badge, and mobile system trays.
     """
     import uuid
     import httpx
@@ -75,6 +83,20 @@ def dispatch_notification(
 
     if not valid_recipients_str:
         return []
+
+    # 1b. Sliding-window deduplication guard (Anti-Spam / Anti-Double Tap)
+    now_ts = time.time()
+    # Prune stale entries older than 60s
+    stale_keys = [k for k, ts in _RECENT_DISPATCHES.items() if now_ts - ts > 60.0]
+    for k in stale_keys:
+        _RECENT_DISPATCHES.pop(k, None)
+
+    targets_key = ",".join(sorted(valid_recipients_str))
+    dedup_key = f"{sender_str}:{targets_key}:{category}:{collapse_id or title.strip()[:40]}"
+    if dedup_key in _RECENT_DISPATCHES and (now_ts - _RECENT_DISPATCHES[dedup_key] < _DEDUP_WINDOW_SECONDS):
+        print(f"[notifications] Safeguard triggered: Dropped duplicate dispatch within {_DEDUP_WINDOW_SECONDS}s window ({dedup_key})")
+        return []
+    _RECENT_DISPATCHES[dedup_key] = now_ts
 
     # 2. Normalize routing and payload
     clean_route = str(action_route).strip() if action_route else None
@@ -121,6 +143,11 @@ def dispatch_notification(
                 db.refresh(n)
             except Exception:
                 pass
+
+        # Inject created UserNotification id into clean_data for client-side push/poll parity
+        if created_notifs and getattr(created_notifs[0], "id", None):
+            clean_data["id"] = str(created_notifs[0].id)
+            clean_data["notif_id"] = str(created_notifs[0].id)
     except Exception as db_err:
         print(f"[notifications] Error saving user_notifications to DB: {db_err}")
         try:
@@ -178,14 +205,16 @@ def dispatch_notification(
                     errors = res_json.get("errors")
                     warnings = res_json.get("warnings")
 
-                    if res.status_code in (200, 201) and bool(notif_id) and not errors:
+                    # In OneSignal REST API, receiving a valid notification ID with 200/201 means
+                    # the push is accepted and queued by OneSignal.
+                    if res.status_code in (200, 201) and bool(notif_id):
                         onesignal_sent = True
                         print(f"[OneSignal] Push SUCCESS: id={notif_id}, recipients={recipients}, warnings={warnings}")
                     else:
                         print(f"[OneSignal] Push issue: status={res.status_code}, id={notif_id}, recipients={recipients}, errors={errors}, warnings={warnings}, raw={res_text}")
 
-                        # Resilient fallback: If alias targeting failed (e.g. invalid_aliases or 400), retry with legacy include_external_user_ids
-                        if (res.status_code == 400 or (errors and isinstance(errors, dict) and "invalid_aliases" in errors)) and valid_recipients_str:
+                        # Resilient fallback: ONLY if no notification ID was issued and alias targeting failed
+                        if not bool(notif_id) and (res.status_code == 400 or (errors and isinstance(errors, dict) and "invalid_aliases" in errors)) and valid_recipients_str:
                             print(f"[OneSignal] Retrying with legacy include_external_user_ids targeting...")
                             fallback_payload = dict(body_payload)
                             fallback_payload.pop("include_aliases", None)
@@ -197,7 +226,7 @@ def dispatch_notification(
                             except Exception:
                                 fb_json = {}
                             fb_id = fb_json.get("id")
-                            if res_fallback.status_code in (200, 201) and bool(fb_id) and not fb_json.get("errors"):
+                            if res_fallback.status_code in (200, 201) and bool(fb_id):
                                 onesignal_sent = True
                                 print(f"[OneSignal] Fallback SUCCESS: id={fb_id}, recipients={fb_json.get('recipients', 0)}")
                             else:

@@ -5,7 +5,7 @@ import re
 import sys
 import time
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives
 from models import Base
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
@@ -302,6 +302,76 @@ MIGRATION_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_partner_challenges_partnership ON partner_challenges(partnership_id);",
     "CREATE INDEX IF NOT EXISTS ix_partner_challenges_status ON partner_challenges(status);",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS coins_balance INTEGER DEFAULT 0;",
+    "ALTER TABLE partner_challenges ADD COLUMN IF NOT EXISTS pack_id UUID REFERENCES study_packs(id) ON DELETE SET NULL;",
+    """
+    CREATE TABLE IF NOT EXISTS partnership_shared_packs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        partnership_id UUID NOT NULL REFERENCES study_partnerships(id) ON DELETE CASCADE,
+        pack_id UUID NOT NULL REFERENCES study_packs(id) ON DELETE CASCADE,
+        sender_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        recipient_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        status VARCHAR(30) DEFAULT 'pending' NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        accepted_at TIMESTAMPTZ
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_shared_packs_partnership ON partnership_shared_packs(partnership_id);",
+    "CREATE INDEX IF NOT EXISTS ix_shared_packs_recipient ON partnership_shared_packs(recipient_id, status);",
+    """
+    CREATE TABLE IF NOT EXISTS coin_transactions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        amount INTEGER NOT NULL,
+        category VARCHAR(50) NOT NULL,
+        source_type VARCHAR(50),
+        reference_id VARCHAR(100),
+        description VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_coin_trans_user ON coin_transactions(user_id, created_at DESC);",
+    """
+    CREATE TABLE IF NOT EXISTS platform_objectives (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code VARCHAR(50) UNIQUE NOT NULL,
+        title VARCHAR(100) NOT NULL,
+        description VARCHAR(255) NOT NULL,
+        category VARCHAR(50) DEFAULT 'general' NOT NULL,
+        target_value INTEGER DEFAULT 1 NOT NULL,
+        target_unit VARCHAR(30) DEFAULT 'count' NOT NULL,
+        coin_reward INTEGER DEFAULT 50 NOT NULL,
+        icon VARCHAR(50) DEFAULT 'EMOJI_TROPHY' NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS user_objective_progress (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        objective_code VARCHAR(50) NOT NULL,
+        current_value INTEGER DEFAULT 0 NOT NULL,
+        target_value INTEGER DEFAULT 1 NOT NULL,
+        is_completed BOOLEAN DEFAULT FALSE NOT NULL,
+        completed_at TIMESTAMPTZ,
+        is_claimed BOOLEAN DEFAULT FALSE NOT NULL,
+        claimed_at TIMESTAMPTZ,
+        CONSTRAINT uq_user_objective UNIQUE (user_id, objective_code)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_user_obj_user ON user_objective_progress(user_id);",
+    """
+    INSERT INTO platform_objectives (code, title, description, category, target_value, target_unit, coin_reward, icon)
+    VALUES
+        ('finish_course', 'Course Finisher', 'Complete all lessons and exams in any course', 'courses', 1, 'courses', 150, 'SCHOOL'),
+        ('streak_5_day', '5-Day Streak Master', 'Maintain a study streak for 5 consecutive days', 'streaks', 5, 'days', 100, 'LOCAL_FIRE_DEPARTMENT'),
+        ('study_time_60m', 'Deep Focus Hour', 'Log 60 minutes of active study in Self-Study Hub in one day', 'self_study', 60, 'minutes', 40, 'TIMER'),
+        ('practice_100q', 'Question Grinder', 'Answer 100 practice questions across CBT or Flashcards', 'self_study', 100, 'questions', 50, 'QUIZ'),
+        ('win_duel', 'Duel Champion', 'Win a 15-question Quickfire Duel against your study partner', 'duels', 1, 'duels', 35, 'MILITARY_TECH'),
+        ('share_pack', 'Knowledge Partner', 'Share a Study Pack with your study partner', 'sharing', 1, 'packs', 20, 'SHARE')
+    ON CONFLICT (code) DO NOTHING;
+    """,
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
@@ -408,6 +478,7 @@ app.include_router(discussions.router, tags=["Course Discussions"])
 app.include_router(payments.router, tags=["Payments Foundation"])
 app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
 app.include_router(study_partners.router, tags=["Study Partnerships"])
+app.include_router(objectives.router, tags=["Objectives & Nu-Coins"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

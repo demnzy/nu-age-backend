@@ -35,6 +35,7 @@ class User(Base):
     role = Column(Enum(Roles), nullable=False)
     university = Column(String, nullable=True)
     streak = Column(Integer, default=0, nullable=True)
+    coins_balance = Column(Integer, default=0, nullable=True)
     last_login_date = Column(Date, nullable=True)
     is_verified = Column(Boolean, default=False)
     profile_picture_url = Column(String, nullable=True)
@@ -996,15 +997,16 @@ class PartnerChallenge(Base):
     partnership_id = Column(UUID(as_uuid=True), ForeignKey("study_partnerships.id", ondelete="CASCADE"), nullable=False, index=True)
     challenger_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
     challenged_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    pack_id = Column(UUID(as_uuid=True), ForeignKey("study_packs.id", ondelete="SET NULL"), nullable=True, index=True)
 
-    challenge_type = Column(String(50), default="cbt_past_questions", nullable=False)  # cbt_past_questions, quiz_duel
+    challenge_type = Column(String(50), default="quickfire_duel", nullable=False)  # quickfire_duel, cbt_past_questions, quiz_duel
     title = Column(String(255), nullable=False)
     subject = Column(String(100), default="General", nullable=False)
 
-    # Seeded Question Payload (Snapshot ensuring both take identical questions)
+    # Seeded Question Payload (Snapshot ensuring both take identical 15 questions)
     question_snapshot = Column(JSONB, default=list, nullable=False)
-    total_questions = Column(Integer, default=10, nullable=False)
-    duration_seconds = Column(Integer, default=600, nullable=False)
+    total_questions = Column(Integer, default=15, nullable=False)
+    duration_seconds = Column(Integer, default=180, nullable=False)
 
     # Status: challenger_done, completed, expired
     status = Column(String(30), default="challenger_done", nullable=False, index=True)
@@ -1026,4 +1028,70 @@ class PartnerChallenge(Base):
 
     partnership = relationship("StudyPartnership", back_populates="challenges")
     challenger = relationship("User", foreign_keys=[challenger_id])
-    challenged = relationship("User", foreign_keys=[challenged_id])
+    challenged = relationship("User", foreign_keys=[challenged_id])
+    pack = relationship("StudyPack")
+
+
+class PartnershipSharedPack(Base):
+    __tablename__ = "partnership_shared_packs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    partnership_id = Column(UUID(as_uuid=True), ForeignKey("study_partnerships.id", ondelete="CASCADE"), nullable=False, index=True)
+    pack_id = Column(UUID(as_uuid=True), ForeignKey("study_packs.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = Column(String(30), default="pending", nullable=False, index=True)  # pending, accepted, declined
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    partnership = relationship("StudyPartnership", backref="shared_packs")
+    pack = relationship("StudyPack")
+    sender = relationship("User", foreign_keys=[sender_id])
+    recipient = relationship("User", foreign_keys=[recipient_id])
+
+
+class CoinTransaction(Base):
+    __tablename__ = "coin_transactions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)  # positive for reward, negative for spend
+    category = Column(String(50), nullable=False, index=True)  # streak_milestone, objective, duel_win, duel_complete, pack_share, streak_shield
+    source_type = Column(String(50), nullable=True)  # partnership, challenge, objective, pack
+    reference_id = Column(String(100), nullable=True)
+    description = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User", backref="coin_transactions")
+
+
+class PlatformObjective(Base):
+    __tablename__ = "platform_objectives"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    code = Column(String(50), unique=True, nullable=False, index=True)
+    title = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=False)
+    category = Column(String(50), default="general", nullable=False)  # courses, streaks, self_study, duels, sharing
+    target_value = Column(Integer, default=1, nullable=False)
+    target_unit = Column(String(30), default="count", nullable=False)  # days, minutes, questions, courses
+    coin_reward = Column(Integer, default=50, nullable=False)
+    icon = Column(String(50), default="EMOJI_TROPHY", nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserObjectiveProgress(Base):
+    __tablename__ = "user_objective_progress"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    objective_code = Column(String(50), nullable=False, index=True)
+    current_value = Column(Integer, default=0, nullable=False)
+    target_value = Column(Integer, default=1, nullable=False)
+    is_completed = Column(Boolean, default=False, nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    is_claimed = Column(Boolean, default=False, nullable=False)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", backref="objective_progress")

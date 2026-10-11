@@ -1027,54 +1027,56 @@ def broadcast_bulk_push_notification(
     except Exception as os_ex:
         print(f"[platform_admin] OneSignal broadcast exception: {os_ex!r}")
 
-    # ── 3. Direct FCM Device Token Broadcast (Fallback/Secondary) ─────────────
-    if payload.audience == "all":
-        tokens = db.query(models.DeviceToken).all()
-    elif user_ids:
-        tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all()
-    else:
-        tokens = []
-    token_strings = [t.token for t in tokens if t.token]
-
+    # ── 3. Direct FCM Device Token Broadcast (Exclusive Fallback when OneSignal does not deliver) ──
     sent_count = 0
     failure_count = 0
     dead_tokens = []
+    token_strings = []
 
-    if token_strings:
-        try:
-            import firebase_admin
-            from firebase_admin import messaging
+    if not onesignal_sent:
+        if payload.audience == "all":
+            tokens = db.query(models.DeviceToken).all()
+        elif user_ids:
+            tokens = db.query(models.DeviceToken).filter(models.DeviceToken.user_id.in_(user_ids)).all()
+        else:
+            tokens = []
+        token_strings = [t.token for t in tokens if t.token]
 
-            data_payload = {"route": payload.action_route or "/notifications"}
+        if token_strings:
+            try:
+                import firebase_admin
+                from firebase_admin import messaging
 
-            chunk_size = 500
-            for i in range(0, len(token_strings), chunk_size):
-                chunk = token_strings[i : i + chunk_size]
-                msg = messaging.MulticastMessage(
-                    notification=messaging.Notification(
-                        title=payload.title.strip(),
-                        body=payload.body.strip(),
-                        image=payload.image_url.strip() if payload.image_url else None,
-                    ),
-                    data=data_payload,
-                    tokens=chunk,
-                )
-                response = messaging.send_each_for_multicast(msg)
-                sent_count += response.success_count
-                failure_count += response.failure_count
+                data_payload = {"route": payload.action_route or "/notifications"}
 
-                if response.failure_count > 0:
-                    for idx, resp in enumerate(response.responses):
-                        if not resp.success:
-                            if getattr(resp.exception, "code", "") == "messaging/registration-token-not-registered":
-                                dead_tokens.append(chunk[idx])
+                chunk_size = 500
+                for i in range(0, len(token_strings), chunk_size):
+                    chunk = token_strings[i : i + chunk_size]
+                    msg = messaging.MulticastMessage(
+                        notification=messaging.Notification(
+                            title=payload.title.strip(),
+                            body=payload.body.strip(),
+                            image=payload.image_url.strip() if payload.image_url else None,
+                        ),
+                        data=data_payload,
+                        tokens=chunk,
+                    )
+                    response = messaging.send_each_for_multicast(msg)
+                    sent_count += response.success_count
+                    failure_count += response.failure_count
 
-            if dead_tokens:
-                db.query(models.DeviceToken).filter(models.DeviceToken.token.in_(dead_tokens)).delete(synchronize_session=False)
-                db.commit()
+                    if response.failure_count > 0:
+                        for idx, resp in enumerate(response.responses):
+                            if not resp.success:
+                                if getattr(resp.exception, "code", "") == "messaging/registration-token-not-registered":
+                                    dead_tokens.append(chunk[idx])
 
-        except Exception as ex:
-            print(f"[platform_admin] Direct FCM broadcast warning: {ex}")
+                if dead_tokens:
+                    db.query(models.DeviceToken).filter(models.DeviceToken.token.in_(dead_tokens)).delete(synchronize_session=False)
+                    db.commit()
+
+            except Exception as ex:
+                print(f"[platform_admin] Direct FCM broadcast warning: {ex}")
 
     # ── 4. Record Broadcast Audit Log ─────────────────────────────────────────
     total_targeted = onesignal_recipients or len(token_strings) or (len(user_ids) if user_ids else 0)

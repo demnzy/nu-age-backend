@@ -9,7 +9,7 @@ import json
 import models
 import schemas
 from database import get_db
-from services import auth
+from services import auth, coin_service
 from services.notifications import dispatch_notification
 
 router = APIRouter(prefix="/study/partnerships", tags=["Study Partnerships"])
@@ -71,11 +71,11 @@ def get_active_partnership(
     user_studied_today = (partnership.user_a_last_study_date == today) if is_user_a else (partnership.user_b_last_study_date == today)
     partner_studied_today = (partnership.user_b_last_study_date == today) if is_user_a else (partnership.user_a_last_study_date == today)
 
-    user_today_mins = partnership.user_a_today_minutes if (is_user_a and user_studied_today) else 0
-    partner_today_mins = partnership.user_b_today_minutes if (not is_user_a and partner_studied_today) else 0
+    user_today_mins = (partnership.user_a_today_minutes if is_user_a else partnership.user_b_today_minutes) if user_studied_today else 0
+    partner_today_mins = (partnership.user_b_today_minutes if is_user_a else partnership.user_a_today_minutes) if partner_studied_today else 0
 
-    user_today_qs = partnership.user_a_today_questions if (is_user_a and user_studied_today) else 0
-    partner_today_qs = partnership.user_b_today_questions if (not is_user_a and partner_studied_today) else 0
+    user_today_qs = (partnership.user_a_today_questions if is_user_a else partnership.user_b_today_questions) if user_studied_today else 0
+    partner_today_qs = (partnership.user_b_today_questions if is_user_a else partnership.user_a_today_questions) if partner_studied_today else 0
 
     # Streak at risk check (e.g. current user studied but partner hasn't, or vice-versa)
     can_nudge = True
@@ -509,8 +509,8 @@ def nudge_partner(
 @router.post("/{partnership_id}/log-activity")
 def log_partnership_activity(
     partnership_id: uuid.UUID,
-    minutes_spent: int = Query(..., ge=1),
-    questions_completed: int = Query(..., ge=1),
+    minutes_spent: int = Query(0, ge=0),
+    questions_completed: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
@@ -557,11 +557,25 @@ def log_partnership_activity(
     )
 
     streak_incremented = False
+    milestones_awarded = []
     if both_studied_today and partnership.last_duo_streak_date != today:
         partnership.duo_streak += 1
         partnership.best_duo_streak = max(partnership.best_duo_streak, partnership.duo_streak)
         partnership.last_duo_streak_date = today
         streak_incremented = True
+
+        # Award Nu-Coins milestones if reached
+        milestones_awarded = coin_service.check_and_award_duo_streak_milestones(db, partnership, partnership.duo_streak)
+
+        # Track 5-day streak objective
+        coin_service.track_objective_progress(db, current_user.id, "streak_5_day", partnership.duo_streak, set_absolute=True)
+        partner = _get_partner_user(partnership, current_user.id)
+        if partner:
+            coin_service.track_objective_progress(db, partner.id, "streak_5_day", partnership.duo_streak, set_absolute=True)
+
+    # Track daily study focus and question grinding objectives
+    coin_service.track_objective_progress(db, current_user.id, "study_time_60m", minutes_spent)
+    coin_service.track_objective_progress(db, current_user.id, "practice_100q", questions_completed)
 
     db.commit()
 
@@ -569,7 +583,9 @@ def log_partnership_activity(
         "status": "success",
         "duo_streak": partnership.duo_streak,
         "streak_incremented": streak_incremented,
-        "both_completed_today": both_studied_today
+        "both_completed_today": both_studied_today,
+        "milestones_awarded": milestones_awarded,
+        "coins_balance": coin_service.get_user_coins(db, current_user.id),
     }
 
 
@@ -610,17 +626,25 @@ def create_partner_challenge(
     c_score = payload.get("challenger_score", payload.get("score", 0))
     c_time = payload.get("challenger_time_seconds", payload.get("time_seconds", 0))
     c_breakdown = payload.get("challenger_breakdown", payload.get("breakdown", {}))
+    p_id = payload.get("pack_id")
+    pack_uuid = None
+    if p_id:
+        try:
+            pack_uuid = uuid.UUID(str(p_id))
+        except Exception:
+            pack_uuid = None
 
     challenge = models.PartnerChallenge(
         partnership_id=partnership.id,
         challenger_id=current_user.id,
         challenged_id=partner.id,
-        challenge_type=payload.get("challenge_type", "cbt_past_questions"),
+        pack_id=pack_uuid,
+        challenge_type=payload.get("challenge_type", "quickfire_duel"),
         title=title,
         subject=payload.get("subject", "General"),
         question_snapshot=questions,
         total_questions=len(questions),
-        duration_seconds=payload.get("duration_seconds", 600),
+        duration_seconds=payload.get("duration_seconds", 180),
         status="challenger_done",
         challenger_score=c_score,
         challenger_time_seconds=c_time,
@@ -637,9 +661,9 @@ def create_partner_challenge(
             db=db,
             recipient_user_ids=[partner.id],
             title="Partner Challenge Received! ⚔️",
-            body=f"{current_user.first_name} challenged you to a {len(questions)}-question duel in {challenge.subject}!",
+            body=f"{current_user.first_name} challenged you to a {len(questions)}-question Quickfire Duel in {challenge.subject}!",
             category="partner_challenge",
-            action_route="/network?tab=partners",
+            action_route=f"/network?tab=partners&duel={challenge.id}",
             sender_id=current_user.id,
             collapse_id=f"partner_challenge_{challenge.id}",
         )
@@ -677,6 +701,7 @@ def get_partner_challenge(
         "id": str(ch.id),
         "title": ch.title,
         "subject": ch.subject,
+        "pack_id": str(ch.pack_id) if ch.pack_id else None,
         "challenge_type": ch.challenge_type,
         "status": ch.status,
         "total_questions": ch.total_questions,
@@ -687,8 +712,10 @@ def get_partner_challenge(
         "challenged": _format_user_summary(ch.challenged),
         "challenger_score": ch.challenger_score,
         "challenger_time_seconds": ch.challenger_time_seconds,
+        "challenger_breakdown": ch.challenger_breakdown,
         "challenged_score": ch.challenged_score,
         "challenged_time_seconds": ch.challenged_time_seconds,
+        "challenged_breakdown": ch.challenged_breakdown,
         "winner_id": str(ch.winner_id) if ch.winner_id else None,
         "coins_awarded": ch.coins_awarded,
     }
@@ -702,7 +729,7 @@ def submit_partner_challenge(
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """
-    Submits the challenged partner's score, resolves the winner, and awards victory coins.
+    Submits the challenged partner's score, resolves the winner, and awards victory coins to both.
     """
     ch = db.query(models.PartnerChallenge).filter(
         models.PartnerChallenge.id == challenge_id,
@@ -728,21 +755,35 @@ def submit_partner_challenge(
 
     if challenged_score > c_score:
         ch.winner_id = current_user.id
-        ch.coins_awarded = 50
+        ch.coins_awarded = 35
+        coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
+        coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+        coin_service.track_objective_progress(db, current_user.id, "win_duel", 1)
     elif c_score > challenged_score:
         ch.winner_id = ch.challenger_id
-        ch.coins_awarded = 50
+        ch.coins_awarded = 35
+        coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+        coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
+        coin_service.track_objective_progress(db, ch.challenger_id, "win_duel", 1)
     else:
         # Tie breaker on time
         if challenged_time < c_time:
             ch.winner_id = current_user.id
-            ch.coins_awarded = 50
+            ch.coins_awarded = 35
+            coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel on speed against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
+            coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+            coin_service.track_objective_progress(db, current_user.id, "win_duel", 1)
         elif c_time < challenged_time:
             ch.winner_id = ch.challenger_id
-            ch.coins_awarded = 50
+            ch.coins_awarded = 35
+            coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel on speed against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+            coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
+            coin_service.track_objective_progress(db, ch.challenger_id, "win_duel", 1)
         else:
             ch.winner_id = None
-            ch.coins_awarded = 25  # Draw bonus
+            ch.coins_awarded = 20
+            coin_service.grant_coins(db, current_user.id, 20, category="duel_draw", description=f"Tied duel with {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
+            coin_service.grant_coins(db, ch.challenger_id, 20, category="duel_draw", description=f"Tied duel with {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
 
     db.commit()
 
@@ -756,7 +797,7 @@ def submit_partner_challenge(
             title="Duel Results Ready! 🏆",
             body=f"{current_user.first_name} finished the duel! {ch.challenger_score} vs {challenged_score}. {winner_text}",
             category="partner_challenge_completed",
-            action_route="/network?tab=partners",
+            action_route=f"/network?tab=partners&duel={ch.id}",
             sender_id=current_user.id,
             collapse_id=f"duel_completed_{ch.id}",
         )
@@ -770,4 +811,376 @@ def submit_partner_challenge(
         "challenger_score": ch.challenger_score,
         "challenged_score": challenged_score,
         "coins_awarded": ch.coins_awarded,
+        "coins_balance": coin_service.get_user_coins(db, current_user.id),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. STUDY PACK SHARING BETWEEN DUO PARTNERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/{partnership_id}/share-pack")
+def share_study_pack(
+    partnership_id: uuid.UUID,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Shares an acquired Study Pack with the accountability study partner.
+    """
+    partnership = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.id == partnership_id,
+        models.StudyPartnership.status == "active",
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).first()
+
+    if not partnership:
+        raise HTTPException(status_code=404, detail="Active study partnership not found.")
+
+    pack_id_str = payload.get("pack_id")
+    if not pack_id_str:
+        raise HTTPException(status_code=400, detail="Missing pack_id in payload.")
+
+    try:
+        pack_id = uuid.UUID(str(pack_id_str))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid pack_id format.")
+
+    pack = db.query(models.StudyPack).filter_by(id=pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study Pack not found.")
+
+    partner = _get_partner_user(partnership, current_user.id)
+
+    # Check if already shared
+    existing = db.query(models.PartnershipSharedPack).filter_by(
+        partnership_id=partnership.id,
+        pack_id=pack.id
+    ).first()
+
+    if existing:
+        if existing.status == "accepted":
+            return {"status": "success", "message": f"{partner.first_name} has already accepted this pack."}
+        existing.status = "pending"
+        existing.sender_id = current_user.id
+        existing.recipient_id = partner.id
+        existing.created_at = datetime.now(timezone.utc)
+    else:
+        shared_record = models.PartnershipSharedPack(
+            partnership_id=partnership.id,
+            pack_id=pack.id,
+            sender_id=current_user.id,
+            recipient_id=partner.id,
+            status="pending"
+        )
+        db.add(shared_record)
+
+    # Track share objective for sender
+    coin_service.track_objective_progress(db, current_user.id, "share_pack", 1)
+    db.commit()
+
+    # Dispatch rich push notification
+    try:
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=[partner.id],
+            title="Shared Study Pack! 📚",
+            body=f"{current_user.first_name} shared '{pack.title}' with you! Accept and start your Quickfire Duel.",
+            category="study_pack_shared",
+            action_route="/self-study?tab=duo",
+            sender_id=current_user.id,
+            data_payload={"pack_id": str(pack.id)},
+            collapse_id=f"pack_shared_{pack.id}_{partner.id}",
+        )
+    except Exception as ex:
+        print(f"[Share Pack] Push error: {ex}")
+
+    return {
+        "status": "success",
+        "message": f"Successfully shared '{pack.title}' with {partner.first_name}!",
+        "pack_id": str(pack.id)
+    }
+
+
+@router.get("/{partnership_id}/shared-packs")
+def get_shared_packs(
+    partnership_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Lists all study packs shared between the two partners.
+    """
+    partnership = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.id == partnership_id,
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).first()
+
+    if not partnership:
+        raise HTTPException(status_code=404, detail="Partnership not found.")
+
+    shares = db.query(models.PartnershipSharedPack).filter_by(
+        partnership_id=partnership.id
+    ).order_by(models.PartnershipSharedPack.created_at.desc()).all()
+
+    results = []
+    for s in shares:
+        p = s.pack
+        if not p:
+            continue
+        p_data = p.pack_data or {}
+        q_count = len(p_data.get("questions", []))
+        fc_count = len(p_data.get("flashcards", []))
+
+        results.append({
+            "id": str(s.id),
+            "pack_id": str(p.id),
+            "title": p.title,
+            "category": p.category,
+            "theme_gradient": p.theme_gradient,
+            "questions_count": q_count,
+            "flashcards_count": fc_count,
+            "sender_id": str(s.sender_id),
+            "sender_name": s.sender.first_name if s.sender else "Partner",
+            "is_sent_by_me": (s.sender_id == current_user.id),
+            "status": s.status,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "accepted_at": s.accepted_at.isoformat() if s.accepted_at else None,
+        })
+
+    return {"status": "success", "shared_packs": results}
+
+
+@router.post("/{partnership_id}/shared-packs/{shared_id}/accept")
+def accept_shared_pack(
+    partnership_id: uuid.UUID,
+    shared_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Accepts a shared study pack, grants +20 coins to the sender, and unlocks it.
+    """
+    share = db.query(models.PartnershipSharedPack).filter_by(
+        id=shared_id,
+        partnership_id=partnership_id,
+        recipient_id=current_user.id
+    ).first()
+
+    if not share:
+        raise HTTPException(status_code=404, detail="Shared pack request not found.")
+
+    share.status = "accepted"
+    share.accepted_at = datetime.now(timezone.utc)
+
+    # Award Nu-Coins to sender for knowledge sharing
+    coin_service.grant_coins(
+        db=db,
+        user_id=share.sender_id,
+        amount=20,
+        category="pack_share",
+        description=f"{current_user.first_name} accepted your shared study pack!",
+        source_type="partnership_shared_pack",
+        reference_id=str(share.id),
+    )
+
+    db.commit()
+
+    # Notify sender
+    try:
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=[share.sender_id],
+            title="Study Pack Accepted! 🌟",
+            body=f"{current_user.first_name} accepted your study pack! You earned +20 Nu-Coins.",
+            category="study_pack_accepted",
+            action_route="/self-study?tab=duo",
+            sender_id=current_user.id,
+            collapse_id=f"pack_accepted_{share.id}",
+        )
+    except Exception as ex:
+        print(f"[Accept Pack] Push notice: {ex}")
+
+    return {"status": "success", "message": "Study pack accepted and added to your collection!"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. SEEDED 15-QUESTION QUICKFIRE DUEL GENERATOR FROM SHARED PACK
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/{partnership_id}/challenges/quickfire-from-pack")
+def generate_quickfire_from_pack(
+    partnership_id: uuid.UUID,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Extracts exactly 15 questions from the chosen Study Pack to seed a fair,
+    asynchronous Quickfire Duel.
+    """
+    partnership = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.id == partnership_id,
+        models.StudyPartnership.status == "active",
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).first()
+
+    if not partnership:
+        raise HTTPException(status_code=404, detail="Active partnership not found.")
+
+    pack_id_str = payload.get("pack_id")
+    if not pack_id_str:
+        raise HTTPException(status_code=400, detail="Missing pack_id.")
+
+    try:
+        pack_id = uuid.UUID(str(pack_id_str))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid pack_id.")
+
+    pack = db.query(models.StudyPack).filter_by(id=pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study Pack not found.")
+
+    p_data = pack.pack_data or {}
+    raw_questions = list(p_data.get("questions", []))
+    flashcards = list(p_data.get("flashcards", []))
+
+    # Compile exactly 15 questions
+    import random
+    quiz_pool = []
+    for q in raw_questions:
+        q_text = q.get("question") or q.get("question_text") or q.get("text", "")
+        options = q.get("options") or ["True", "False"]
+        correct = q.get("correct_answer") or q.get("answer") or options[0]
+        expl = q.get("explanation") or ""
+        if q_text:
+            quiz_pool.append({
+                "id": str(q.get("id") or uuid.uuid4()),
+                "question": q_text,
+                "options": options,
+                "correct_answer": correct,
+                "explanation": expl,
+            })
+
+    # If questions pool has fewer than 15, synthesize from flashcards
+    if len(quiz_pool) < 15 and flashcards:
+        for fc in flashcards:
+            term = fc.get("term") or fc.get("front") or ""
+            definition = fc.get("definition") or fc.get("back") or ""
+            if term and definition:
+                distractors = [f.get("definition") or f.get("back") for f in flashcards if f != fc and (f.get("definition") or f.get("back"))][:3]
+                while len(distractors) < 3:
+                    distractors.append("None of the above")
+                all_opts = [definition] + distractors
+                random.shuffle(all_opts)
+                quiz_pool.append({
+                    "id": str(uuid.uuid4()),
+                    "question": f"What is the definition of '{term}'?",
+                    "options": all_opts,
+                    "correct_answer": definition,
+                    "explanation": f"'{term}' means: {definition}",
+                })
+            if len(quiz_pool) >= 15:
+                break
+
+    if not quiz_pool:
+        # Fallback question set
+        for i in range(15):
+            quiz_pool.append({
+                "id": str(uuid.uuid4()),
+                "question": f"Question {i+1}: What is the primary concept in {pack.title}?",
+                "options": ["Fundamental Principles", "Practical Application", "Core Methodology", "Analysis & Synthesis"],
+                "correct_answer": "Fundamental Principles",
+                "explanation": "Core review topic.",
+            })
+
+    # Pick up to 15 questions
+    seeded_15 = quiz_pool[:15]
+    if len(seeded_15) < 15:
+        # Loop to fill exactly 15
+        while len(seeded_15) < 15:
+            dup = dict(seeded_15[len(seeded_15) % len(quiz_pool)])
+            dup["id"] = str(uuid.uuid4())
+            seeded_15.append(dup)
+
+    partner = _get_partner_user(partnership, current_user.id)
+
+    return {
+        "status": "success",
+        "pack_id": str(pack.id),
+        "pack_title": pack.title,
+        "subject": pack.category,
+        "total_questions": 15,
+        "duration_seconds": 180,
+        "questions": seeded_15,
+        "partner": _format_user_summary(partner),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. REAL-TIME STUDY LEADERBOARD
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/leaderboard")
+def get_study_leaderboard(
+    filter_type: str = Query("today", alias="filter"),
+    limit: int = Query(25, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Real-time study rankings:
+    - 'today': Ranked by active study minutes logged today in Self-Study Hub.
+    - 'weekly': Ranked by active study streak and total questions.
+    - 'duo_streaks': Top study partnerships ranked by active Duo Streak count.
+    """
+    today = date.today()
+
+    if filter_type == "duo_streaks":
+        duos = db.query(models.StudyPartnership).filter(
+            models.StudyPartnership.status == "active",
+            models.StudyPartnership.duo_streak > 0
+        ).order_by(models.StudyPartnership.duo_streak.desc()).limit(limit).all()
+
+        rankings = []
+        for idx, d in enumerate(duos, start=1):
+            rankings.append({
+                "rank": idx,
+                "partnership_id": str(d.id),
+                "duo_streak": d.duo_streak,
+                "best_duo_streak": d.best_duo_streak,
+                "target_exam": d.target_exam,
+                "partner_a": _format_user_summary(d.user_a),
+                "partner_b": _format_user_summary(d.user_b),
+                "is_my_duo": (d.user_a_id == current_user.id or d.user_b_id == current_user.id),
+            })
+        return {"status": "success", "filter": "duo_streaks", "leaderboard": rankings}
+
+    # User rankings by study streak / coins / activity
+    users_q = db.query(models.User).order_by(models.User.streak.desc()).limit(limit).all()
+    rankings = []
+    for idx, u in enumerate(users_q, start=1):
+        rankings.append({
+            "rank": idx,
+            "user_id": str(u.id),
+            "username": u.username,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "university": getattr(u, "university", None),
+            "profile_picture_url": getattr(u, "profile_picture_url", None),
+            "streak": getattr(u, "streak", 0) or 0,
+            "coins_balance": getattr(u, "coins_balance", 0) or 0,
+            "is_me": (u.id == current_user.id),
+        })
+
+    return {"status": "success", "filter": filter_type, "leaderboard": rankings}
