@@ -279,6 +279,7 @@ def get_incoming_partnership_requests(
         "target_exam": req.target_exam,
         "target_subjects": req.target_subjects or [],
         "user": _format_user_summary(req.user_a),
+        "partner": _format_user_summary(req.user_a),
         "created_at": req.created_at.isoformat() if req.created_at else None,
     } for req in requests]
 
@@ -298,6 +299,7 @@ def get_sent_partnership_requests(
         "target_exam": req.target_exam,
         "target_subjects": req.target_subjects or [],
         "user": _format_user_summary(req.user_b),
+        "partner": _format_user_summary(req.user_b),
         "created_at": req.created_at.isoformat() if req.created_at else None,
     } for req in requests]
 
@@ -346,10 +348,12 @@ def invite_study_partner(
     try:
         dispatch_notification(
             db=db,
-            user_id=target_user_id,
+            recipient_user_ids=[target_user_id],
             title="Study Partner Invitation! 🤝",
-            body=f"{current_user.first_name} invited you to become a Study Partner for {target_exam}!",
-            notification_type="study_partner_invite",
+            body=f"{current_user.first_name} invited you to become an Accountability Study Partner!",
+            category="study_partner_invite",
+            action_route="/network?tab=partners",
+            sender_id=current_user.id,
             collapse_id=f"partner_invite_{target_user_id}",
         )
     except Exception as e:
@@ -381,10 +385,12 @@ def accept_partnership(
     try:
         dispatch_notification(
             db=db,
-            user_id=partnership.user_a_id,
+            recipient_user_ids=[partnership.user_a_id],
             title="Study Partnership Formed! 🔥",
             body=f"{current_user.first_name} accepted your study partnership. Start your Duo Streak today!",
-            notification_type="study_partner_accepted",
+            category="study_partner_accepted",
+            action_route="/self-study",
+            sender_id=current_user.id,
             collapse_id=f"partner_accepted_{partnership.id}",
         )
     except Exception as e:
@@ -482,10 +488,12 @@ def nudge_partner(
     try:
         dispatch_notification(
             db=db,
-            user_id=partner.id,
+            recipient_user_ids=[partner.id],
             title=f"{current_user.first_name} nudged you! ⏰",
             body=f"{streak_text} Log into Nu-age and complete your daily questions.",
-            notification_type="study_partner_nudge",
+            category="study_partner_nudge",
+            action_route="/self-study",
+            sender_id=current_user.id,
             collapse_id=f"partner_nudge_{partnership.id}",
         )
     except Exception as e:
@@ -595,9 +603,13 @@ def create_partner_challenge(
     partner = _get_partner_user(partnership, current_user.id)
 
     title = payload.get("title") or f"{payload.get('subject', 'CBT')} Partner Duel"
-    questions = payload.get("questions") or []
+    questions = payload.get("question_snapshot") or payload.get("questions") or []
     if not questions:
         raise HTTPException(status_code=400, detail="Challenge must contain at least 1 question snapshot.")
+
+    c_score = payload.get("challenger_score", payload.get("score", 0))
+    c_time = payload.get("challenger_time_seconds", payload.get("time_seconds", 0))
+    c_breakdown = payload.get("challenger_breakdown", payload.get("breakdown", {}))
 
     challenge = models.PartnerChallenge(
         partnership_id=partnership.id,
@@ -610,9 +622,9 @@ def create_partner_challenge(
         total_questions=len(questions),
         duration_seconds=payload.get("duration_seconds", 600),
         status="challenger_done",
-        challenger_score=payload.get("score", 0),
-        challenger_time_seconds=payload.get("time_seconds", 0),
-        challenger_breakdown=payload.get("breakdown", {}),
+        challenger_score=c_score,
+        challenger_time_seconds=c_time,
+        challenger_breakdown=c_breakdown,
         challenger_completed_at=datetime.now(timezone.utc),
     )
 
@@ -623,10 +635,12 @@ def create_partner_challenge(
     try:
         dispatch_notification(
             db=db,
-            user_id=partner.id,
+            recipient_user_ids=[partner.id],
             title="Partner Challenge Received! ⚔️",
             body=f"{current_user.first_name} challenged you to a {len(questions)}-question duel in {challenge.subject}!",
-            notification_type="partner_challenge",
+            category="partner_challenge",
+            action_route="/network?tab=partners",
+            sender_id=current_user.id,
             collapse_id=f"partner_challenge_{challenge.id}",
         )
     except Exception as e:
@@ -738,10 +752,12 @@ def submit_partner_challenge(
         winner_text = f"Winner: {winner_name}!" if ch.winner_id else "It's a draw!"
         dispatch_notification(
             db=db,
-            user_id=ch.challenger_id,
+            recipient_user_ids=[ch.challenger_id],
             title="Duel Results Ready! 🏆",
             body=f"{current_user.first_name} finished the duel! {ch.challenger_score} vs {challenged_score}. {winner_text}",
-            notification_type="partner_challenge_completed",
+            category="partner_challenge_completed",
+            action_route="/network?tab=partners",
+            sender_id=current_user.id,
             collapse_id=f"duel_completed_{ch.id}",
         )
     except Exception as e:

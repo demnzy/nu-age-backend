@@ -19,15 +19,19 @@ except Exception as fb_init_err:
 
 def dispatch_notification(
     db: Session,
-    recipient_user_ids: list,
-    title: str,
-    body: str,
+    recipient_user_ids: list = None,
+    title: str = "",
+    body: str = "",
     category: str = "general",
     action_route: str = None,
     sender_id = None,
     data_payload: dict = None,
     send_push: bool = True,
-    allow_self_notify: bool = False
+    allow_self_notify: bool = False,
+    user_id = None,
+    notification_type: str = None,
+    collapse_id: str = None,
+    **kwargs
 ) -> list:
     """
     Unified, reliable notification dispatcher:
@@ -38,6 +42,12 @@ def dispatch_notification(
     """
     import uuid
     import httpx
+
+    # Normalize aliases & compatibility arguments
+    if recipient_user_ids is None and user_id is not None:
+        recipient_user_ids = [user_id]
+    if notification_type and category == "general":
+        category = notification_type
 
     # 1. Normalize and deduplicate recipients
     if not isinstance(recipient_user_ids, (list, tuple, set)):
@@ -72,6 +82,8 @@ def dispatch_notification(
         clean_route = "/" + clean_route
 
     clean_data = dict(data_payload or {})
+    if collapse_id and "collapse_id" not in clean_data:
+        clean_data["collapse_id"] = str(collapse_id).strip()
     if clean_route:
         clean_data["route"] = clean_route
         clean_data["action_route"] = clean_route
