@@ -5,7 +5,7 @@ import re
 import sys
 import time
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners
 from models import Base
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
@@ -246,6 +246,62 @@ MIGRATION_STATEMENTS = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS ix_bundle_items_bundle ON study_bundle_items(bundle_id);",
+    """
+    CREATE TABLE IF NOT EXISTS study_partnerships (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_a_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        user_b_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        status VARCHAR(30) DEFAULT 'pending' NOT NULL,
+        goal_type VARCHAR(50) DEFAULT 'cbt_exam' NOT NULL,
+        target_exam VARCHAR(100) DEFAULT 'JAMB UTME',
+        target_subjects JSONB DEFAULT '[]'::jsonb NOT NULL,
+        daily_target_minutes INTEGER DEFAULT 30 NOT NULL,
+        daily_target_questions INTEGER DEFAULT 15 NOT NULL,
+        duo_streak INTEGER DEFAULT 0 NOT NULL,
+        best_duo_streak INTEGER DEFAULT 0 NOT NULL,
+        last_duo_streak_date DATE,
+        user_a_last_study_date DATE,
+        user_b_last_study_date DATE,
+        user_a_today_minutes INTEGER DEFAULT 0 NOT NULL,
+        user_b_today_minutes INTEGER DEFAULT 0 NOT NULL,
+        user_a_today_questions INTEGER DEFAULT 0 NOT NULL,
+        user_b_today_questions INTEGER DEFAULT 0 NOT NULL,
+        last_nudge_at TIMESTAMPTZ,
+        last_nudge_by_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_study_partnerships_users ON study_partnerships(user_a_id, user_b_id);",
+    "CREATE INDEX IF NOT EXISTS ix_study_partnerships_status ON study_partnerships(status);",
+    """
+    CREATE TABLE IF NOT EXISTS partner_challenges (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        partnership_id UUID NOT NULL REFERENCES study_partnerships(id) ON DELETE CASCADE,
+        challenger_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        challenged_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        challenge_type VARCHAR(50) DEFAULT 'cbt_past_questions' NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        subject VARCHAR(100) DEFAULT 'General' NOT NULL,
+        question_snapshot JSONB DEFAULT '[]'::jsonb NOT NULL,
+        total_questions INTEGER DEFAULT 10 NOT NULL,
+        duration_seconds INTEGER DEFAULT 600 NOT NULL,
+        status VARCHAR(30) DEFAULT 'challenger_done' NOT NULL,
+        challenger_score INTEGER,
+        challenger_time_seconds INTEGER,
+        challenger_breakdown JSONB DEFAULT '{}'::jsonb,
+        challenger_completed_at TIMESTAMPTZ,
+        challenged_score INTEGER,
+        challenged_time_seconds INTEGER,
+        challenged_breakdown JSONB DEFAULT '{}'::jsonb,
+        challenged_completed_at TIMESTAMPTZ,
+        winner_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+        coins_awarded INTEGER DEFAULT 0 NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_partner_challenges_partnership ON partner_challenges(partnership_id);",
+    "CREATE INDEX IF NOT EXISTS ix_partner_challenges_status ON partner_challenges(status);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
@@ -351,6 +407,7 @@ app.include_router(notifications.router, tags=["Notifications"])
 app.include_router(discussions.router, tags=["Course Discussions"])
 app.include_router(payments.router, tags=["Payments Foundation"])
 app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
+app.include_router(study_partners.router, tags=["Study Partnerships"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

@@ -943,4 +943,87 @@ class StudyBundleItem(Base):
     order_index = Column(Integer, default=0, nullable=False)
 
     bundle = relationship("StudyBundle", back_populates="items")
-    pack = relationship("StudyPack")
+    pack = relationship("StudyPack")
+
+
+# ── STUDY PARTNERSHIPS & ACCOUNTABILITY DUOS ──────────────────────────────
+
+class StudyPartnership(Base):
+    __tablename__ = "study_partnerships"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_a_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_b_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    status = Column(String(30), default="pending", nullable=False, index=True)  # pending, active, paused, dissolved
+
+    # Target Focus
+    goal_type = Column(String(50), default="cbt_exam", nullable=False)          # cbt_exam, course, daily_habit
+    target_exam = Column(String(100), default="JAMB UTME", nullable=True)
+    target_subjects = Column(JSONB, default=list, nullable=False)
+    daily_target_minutes = Column(Integer, default=30, nullable=False)
+    daily_target_questions = Column(Integer, default=15, nullable=False)
+
+    # Duo Streak
+    duo_streak = Column(Integer, default=0, nullable=False)
+    best_duo_streak = Column(Integer, default=0, nullable=False)
+    last_duo_streak_date = Column(Date, nullable=True)
+
+    # Daily Activity Tracking
+    user_a_last_study_date = Column(Date, nullable=True)
+    user_b_last_study_date = Column(Date, nullable=True)
+    user_a_today_minutes = Column(Integer, default=0, nullable=False)
+    user_b_today_minutes = Column(Integer, default=0, nullable=False)
+    user_a_today_questions = Column(Integer, default=0, nullable=False)
+    user_b_today_questions = Column(Integer, default=0, nullable=False)
+
+    # Nudge Cooldown
+    last_nudge_at = Column(DateTime(timezone=True), nullable=True)
+    last_nudge_by_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user_a = relationship("User", foreign_keys=[user_a_id], backref="partnerships_as_a")
+    user_b = relationship("User", foreign_keys=[user_b_id], backref="partnerships_as_b")
+    challenges = relationship("PartnerChallenge", back_populates="partnership", cascade="all, delete-orphan")
+
+
+class PartnerChallenge(Base):
+    __tablename__ = "partner_challenges"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    partnership_id = Column(UUID(as_uuid=True), ForeignKey("study_partnerships.id", ondelete="CASCADE"), nullable=False, index=True)
+    challenger_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    challenged_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    challenge_type = Column(String(50), default="cbt_past_questions", nullable=False)  # cbt_past_questions, quiz_duel
+    title = Column(String(255), nullable=False)
+    subject = Column(String(100), default="General", nullable=False)
+
+    # Seeded Question Payload (Snapshot ensuring both take identical questions)
+    question_snapshot = Column(JSONB, default=list, nullable=False)
+    total_questions = Column(Integer, default=10, nullable=False)
+    duration_seconds = Column(Integer, default=600, nullable=False)
+
+    # Status: challenger_done, completed, expired
+    status = Column(String(30), default="challenger_done", nullable=False, index=True)
+
+    challenger_score = Column(Integer, nullable=True)
+    challenger_time_seconds = Column(Integer, nullable=True)
+    challenger_breakdown = Column(JSONB, default=dict)
+    challenger_completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    challenged_score = Column(Integer, nullable=True)
+    challenged_time_seconds = Column(Integer, nullable=True)
+    challenged_breakdown = Column(JSONB, default=dict)
+    challenged_completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    winner_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    coins_awarded = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    partnership = relationship("StudyPartnership", back_populates="challenges")
+    challenger = relationship("User", foreign_keys=[challenger_id])
+    challenged = relationship("User", foreign_keys=[challenged_id])
