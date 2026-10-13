@@ -279,22 +279,28 @@ async def parse_past_questions_with_ai(
     else:
         chunks = [raw_text[:75000]]
 
-    # 2. Parse all chunks
+    # 2. Parse all chunks concurrently with semaphore to prevent long timeouts
     all_extracted_questions: List[ParsedCBTQuestion] = []
     total_chunks = len(chunks)
+    sem = asyncio.Semaphore(4)
 
-    for idx, chunk_text in enumerate(chunks, 1):
-        chunk_questions = await _parse_single_chunk_with_ai(
-            chunk_text=chunk_text,
-            subject=subject,
-            exam_type=exam_type,
-            exam_year=exam_year,
-            api_key=api_key,
-            gemini_key=gemini_key,
-            chunk_index=idx,
-            total_chunks=total_chunks,
-        )
-        all_extracted_questions.extend(chunk_questions)
+    async def _parse_with_sem(idx: int, c_text: str):
+        async with sem:
+            return await _parse_single_chunk_with_ai(
+                chunk_text=c_text,
+                subject=subject,
+                exam_type=exam_type,
+                exam_year=exam_year,
+                api_key=api_key,
+                gemini_key=gemini_key,
+                chunk_index=idx,
+                total_chunks=total_chunks,
+            )
+
+    chunk_results = await asyncio.gather(*[_parse_with_sem(idx, c) for idx, c in enumerate(chunks, 1)])
+    for chunk_qs in chunk_results:
+        if chunk_qs:
+            all_extracted_questions.extend(chunk_qs)
 
     # If AI extracted questions, assemble the final pack
     if all_extracted_questions:

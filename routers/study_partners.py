@@ -97,14 +97,21 @@ def get_active_partnership(
             "id": str(ch.id),
             "title": ch.title,
             "subject": ch.subject,
+            "pack_id": str(ch.pack_id) if ch.pack_id else None,
             "challenge_type": ch.challenge_type,
             "total_questions": ch.total_questions,
+            "duration_seconds": ch.duration_seconds,
             "status": ch.status,
             "is_challenger": is_my_challenge,
             "needs_my_response": (not is_my_challenge and ch.status == "challenger_done"),
+            "challenger_name": ch.challenger.first_name if ch.challenger else "Partner",
+            "challenged_name": ch.challenged.first_name if ch.challenged else "Partner",
             "challenger_score": ch.challenger_score,
+            "challenger_time_seconds": ch.challenger_time_seconds,
             "challenged_score": ch.challenged_score,
+            "challenged_time_seconds": ch.challenged_time_seconds,
             "winner_id": str(ch.winner_id) if ch.winner_id else None,
+            "question_snapshot": ch.question_snapshot or [],
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
         })
 
@@ -112,6 +119,7 @@ def get_active_partnership(
         "has_partnership": True,
         "partnership": {
             "id": str(partnership.id),
+            "current_user_id": str(current_user.id),
             "status": partnership.status,
             "goal_type": partnership.goal_type,
             "target_exam": partnership.target_exam,
@@ -1166,6 +1174,45 @@ def get_study_leaderboard(
             })
         return {"status": "success", "filter": "duo_streaks", "leaderboard": rankings}
 
+    if filter_type == "today":
+        # Rank by actual minutes studied today
+        active_partnerships = db.query(models.StudyPartnership).filter(
+            models.StudyPartnership.status == "active",
+            or_(
+                models.StudyPartnership.user_a_last_study_date == today,
+                models.StudyPartnership.user_b_last_study_date == today,
+            )
+        ).all()
+        user_mins_map = {}
+        for p in active_partnerships:
+            if p.user_a_last_study_date == today and p.user_a_today_minutes > 0:
+                user_mins_map[p.user_a_id] = user_mins_map.get(p.user_a_id, 0) + p.user_a_today_minutes
+            if p.user_b_last_study_date == today and p.user_b_today_minutes > 0:
+                user_mins_map[p.user_b_id] = user_mins_map.get(p.user_b_id, 0) + p.user_b_today_minutes
+
+        if user_mins_map:
+            sorted_uids = sorted(user_mins_map.keys(), key=lambda uid: user_mins_map[uid], reverse=True)[:limit]
+            users_by_id = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(sorted_uids)).all()}
+            rankings = []
+            for idx, uid in enumerate(sorted_uids, start=1):
+                u = users_by_id.get(uid)
+                if not u:
+                    continue
+                rankings.append({
+                    "rank": idx,
+                    "user_id": str(u.id),
+                    "username": u.username,
+                    "first_name": u.first_name,
+                    "last_name": u.last_name,
+                    "university": getattr(u, "university", None),
+                    "profile_picture_url": getattr(u, "profile_picture_url", None),
+                    "study_minutes": user_mins_map[uid],
+                    "streak": getattr(u, "streak", 0) or 0,
+                    "coins_balance": getattr(u, "coins_balance", 0) or 0,
+                    "is_me": (u.id == current_user.id),
+                })
+            return {"status": "success", "filter": "today", "leaderboard": rankings}
+
     # User rankings by study streak / coins / activity
     users_q = db.query(models.User).order_by(models.User.streak.desc()).limit(limit).all()
     rankings = []
@@ -1178,6 +1225,7 @@ def get_study_leaderboard(
             "last_name": u.last_name,
             "university": getattr(u, "university", None),
             "profile_picture_url": getattr(u, "profile_picture_url", None),
+            "study_minutes": 0,
             "streak": getattr(u, "streak", 0) or 0,
             "coins_balance": getattr(u, "coins_balance", 0) or 0,
             "is_me": (u.id == current_user.id),
