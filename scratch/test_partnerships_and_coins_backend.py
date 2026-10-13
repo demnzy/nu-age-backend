@@ -285,6 +285,22 @@ def run_all_tests():
     assert coin_service.get_user_coins(db, user_a.id) == bal_a_before_duel + 10
     print(f"  [PASS] Duel completed: Winner B got +35 coins, Runner-up A got +10 coins")
 
+    # Test challenge history endpoint
+    from routers.study_partners import get_challenge_history, preview_shared_study_pack
+    hist = get_challenge_history(partnership_id=partnership.id, limit=10, db=db, current_user=user_b)
+    assert len(hist["challenges"]) >= 1, "Should have at least 1 completed duel in history"
+    entry = hist["challenges"][0]
+    assert entry["my_score"] == 14, f"User B score must be 14, got {entry['my_score']}"
+    assert entry["partner_score"] == 12, f"Partner A score must be 12, got {entry['partner_score']}"
+    assert entry["outcome"] == "won", f"Outcome must be 'won' for User B, got {entry['outcome']}"
+    print("  [PASS] get_challenge_history accurately mapped persistent scores and outcome!")
+
+    # Test flashcard-only preview (questions withheld)
+    prev = preview_shared_study_pack(partnership_id=partnership.id, pack_id=pack.id, db=db, current_user=user_b)
+    assert prev["title"] == "JAMB Physics Mastery"
+    assert "questions" not in prev, "Questions must be strictly withheld in preview!"
+    print("  [PASS] preview_shared_study_pack withheld questions and returned clean preview!")
+
     # ─────────────────────────────────────────────────────────────────────────
     print("\n>>> 7. TESTING NOTIFICATION DEDUPLICATION SAFEGUARD <<<")
     _RECENT_DISPATCHES.clear()

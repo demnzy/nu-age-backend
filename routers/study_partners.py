@@ -93,6 +93,10 @@ def get_active_partnership(
     challenge_list = []
     for ch in challenges:
         is_my_challenge = (ch.challenger_id == current_user.id)
+        my_score = ch.challenger_score if is_my_challenge else ch.challenged_score
+        partner_score = ch.challenged_score if is_my_challenge else ch.challenger_score
+        my_time = ch.challenger_time_seconds if is_my_challenge else ch.challenged_time_seconds
+        partner_time = ch.challenged_time_seconds if is_my_challenge else ch.challenger_time_seconds
         challenge_list.append({
             "id": str(ch.id),
             "title": ch.title,
@@ -102,15 +106,22 @@ def get_active_partnership(
             "total_questions": ch.total_questions,
             "duration_seconds": ch.duration_seconds,
             "status": ch.status,
+            "challenger_id": str(ch.challenger_id),
+            "challenged_id": str(ch.challenged_id),
             "is_challenger": is_my_challenge,
             "needs_my_response": (not is_my_challenge and ch.status == "challenger_done"),
             "challenger_name": ch.challenger.first_name if ch.challenger else "Partner",
             "challenged_name": ch.challenged.first_name if ch.challenged else "Partner",
+            "my_score": my_score,
+            "partner_score": partner_score,
+            "my_time_seconds": my_time,
+            "partner_time_seconds": partner_time,
             "challenger_score": ch.challenger_score,
             "challenger_time_seconds": ch.challenger_time_seconds,
             "challenged_score": ch.challenged_score,
             "challenged_time_seconds": ch.challenged_time_seconds,
             "winner_id": str(ch.winner_id) if ch.winner_id else None,
+            "coins_awarded": ch.coins_awarded,
             "question_snapshot": ch.question_snapshot or [],
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
         })
@@ -703,7 +714,10 @@ def get_partner_challenge(
         raise HTTPException(status_code=404, detail="Challenge not found.")
 
     is_challenger = (ch.challenger_id == current_user.id)
-    partner = ch.challenged if is_challenger else ch.challenger
+    my_score = ch.challenger_score if is_challenger else ch.challenged_score
+    partner_score = ch.challenged_score if is_challenger else ch.challenger_score
+    my_time = ch.challenger_time_seconds if is_challenger else ch.challenged_time_seconds
+    partner_time = ch.challenged_time_seconds if is_challenger else ch.challenger_time_seconds
 
     return {
         "id": str(ch.id),
@@ -715,7 +729,16 @@ def get_partner_challenge(
         "total_questions": ch.total_questions,
         "duration_seconds": ch.duration_seconds,
         "question_snapshot": ch.question_snapshot,
+        "challenger_id": str(ch.challenger_id),
+        "challenged_id": str(ch.challenged_id),
+        "challenger_name": ch.challenger.first_name if ch.challenger else "Challenger",
+        "challenged_name": ch.challenged.first_name if ch.challenged else "Partner",
         "is_challenger": is_challenger,
+        "needs_my_response": (not is_challenger and ch.status == "challenger_done"),
+        "my_score": my_score,
+        "partner_score": partner_score,
+        "my_time_seconds": my_time,
+        "partner_time_seconds": partner_time,
         "challenger": _format_user_summary(ch.challenger),
         "challenged": _format_user_summary(ch.challenged),
         "challenger_score": ch.challenger_score,
@@ -727,6 +750,72 @@ def get_partner_challenge(
         "winner_id": str(ch.winner_id) if ch.winner_id else None,
         "coins_awarded": ch.coins_awarded,
     }
+
+
+@router.get("/{partnership_id}/challenges/history")
+def get_challenge_history(
+    partnership_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Returns the complete chronological history of completed 15-Q Duels for the duo,
+    with full score breakdown, winner badges, and coins awarded.
+    """
+    partnership = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.id == partnership_id,
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).first()
+
+    if not partnership:
+        raise HTTPException(status_code=404, detail="Partnership not found.")
+
+    challenges = db.query(models.PartnerChallenge).filter(
+        models.PartnerChallenge.partnership_id == partnership.id,
+        models.PartnerChallenge.status.in_(["completed", "expired"])
+    ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
+
+    history = []
+    for ch in challenges:
+        is_my_challenge = (ch.challenger_id == current_user.id)
+        partner = ch.challenged if is_my_challenge else ch.challenger
+        my_score = ch.challenger_score if is_my_challenge else ch.challenged_score
+        partner_score = ch.challenged_score if is_my_challenge else ch.challenger_score
+        my_time = ch.challenger_time_seconds if is_my_challenge else ch.challenged_time_seconds
+        partner_time = ch.challenged_time_seconds if is_my_challenge else ch.challenger_time_seconds
+
+        outcome = "tie"
+        if ch.winner_id:
+            outcome = "won" if ch.winner_id == current_user.id else "lost"
+
+        history.append({
+            "id": str(ch.id),
+            "title": ch.title,
+            "subject": ch.subject,
+            "pack_id": str(ch.pack_id) if ch.pack_id else None,
+            "challenge_type": ch.challenge_type,
+            "total_questions": ch.total_questions,
+            "duration_seconds": ch.duration_seconds,
+            "status": ch.status,
+            "is_challenger": is_my_challenge,
+            "challenger_id": str(ch.challenger_id),
+            "challenged_id": str(ch.challenged_id),
+            "partner_name": partner.first_name if partner else "Partner",
+            "my_score": my_score,
+            "partner_score": partner_score,
+            "my_time_seconds": my_time,
+            "partner_time_seconds": partner_time,
+            "outcome": outcome,
+            "winner_id": str(ch.winner_id) if ch.winner_id else None,
+            "coins_awarded": ch.coins_awarded,
+            "completed_at": (ch.challenged_completed_at or ch.created_at).isoformat() if (ch.challenged_completed_at or ch.created_at) else None,
+        })
+
+    return {"challenges": history}
 
 
 @router.post("/challenges/{challenge_id}/submit")
@@ -957,7 +1046,7 @@ def share_study_pack(
             db=db,
             recipient_user_ids=[partner.id],
             title="Shared Study Pack! 📚",
-            body=f"{current_user.first_name} shared '{pack.title}' with you! Accept and start your Quickfire Duel.",
+            body=f"{current_user.first_name} shared '{pack.title}'! This pack is now unlocked for 15-Q Duels. Preview flashcards and start a duel.",
             category="study_pack_shared",
             action_route="/self-study?tab=duo",
             sender_id=current_user.id,
@@ -971,6 +1060,49 @@ def share_study_pack(
         "status": "success",
         "message": f"Successfully shared '{pack.title}' with {partner.first_name}!",
         "pack_id": str(pack.id)
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7.1. SHARED STUDY PACKS FLASHCARD-ONLY PREVIEW
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/{partnership_id}/shared-packs/{pack_id}/preview")
+def preview_shared_study_pack(
+    partnership_id: uuid.UUID,
+    pack_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Returns a flashcard-only preview for a shared study pack.
+    Quiz questions are strictly withheld during preview to preserve competition integrity!
+    """
+    partnership = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.id == partnership_id,
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).first()
+
+    if not partnership:
+        raise HTTPException(status_code=404, detail="Partnership not found.")
+
+    pack = _resolve_study_pack_or_material(db, pack_id, current_user.id)
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study Pack not found.")
+
+    p_data = pack.pack_data or {}
+    flashcards = list(p_data.get("flashcards", []))
+
+    return {
+        "pack_id": str(pack.id),
+        "title": pack.title,
+        "description": pack.description,
+        "category": pack.category,
+        "total_flashcards": len(flashcards),
+        "flashcards": flashcards,
     }
 
 
