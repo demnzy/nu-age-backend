@@ -825,7 +825,67 @@ def submit_partner_challenge(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. STUDY PACK SHARING BETWEEN DUO PARTNERS
-# ─────────────────────────────────────────────────────────────────────────────
+def _resolve_study_pack_or_material(db: Session, item_id: uuid.UUID, user_id: uuid.UUID) -> Optional[models.StudyPack]:
+    """
+    Resolves either a marketplace StudyPack or a personal vault StudyMaterial.
+    If a StudyMaterial is shared, automatically synthesizes a StudyPack snapshot
+    containing its flashcards and quiz questions for seamless duo sharing.
+    """
+    # 1. Direct StudyPack match
+    pack = db.query(models.StudyPack).filter_by(id=item_id).first()
+    if pack:
+        return pack
+
+    # 2. Check if item_id matches a personal StudyMaterial in the vault
+    mat = db.query(models.StudyMaterial).filter_by(id=item_id).first()
+    if not mat:
+        # Check if item_id is an existing source_material_id
+        return db.query(models.StudyPack).filter_by(source_material_id=item_id).first()
+
+    # Find existing pack created from this material
+    existing = db.query(models.StudyPack).filter_by(source_material_id=mat.id).first()
+    if existing:
+        return existing
+
+    # Synthesize a StudyPack snapshot from the StudyMaterial
+    fc_list = [{"front": fc.front, "back": fc.back} for fc in (mat.flashcards or [])]
+    q_list = []
+    for q in (mat.questions or []):
+        opts = q.options if isinstance(q.options, list) else []
+        ans_idx = getattr(q, "answer_index", 0) or 0
+        correct_ans = opts[ans_idx] if (0 <= ans_idx < len(opts)) else (opts[0] if opts else "Option A")
+        q_text = getattr(q, "question_text", None) or getattr(q, "question", "")
+        q_list.append({
+            "question": q_text,
+            "options": opts,
+            "answer_index": ans_idx,
+            "correct_answer": correct_ans,
+            "explanation": getattr(q, "explanation", "") or "",
+        })
+
+    pack_data = {
+        "title": mat.title,
+        "source_type": mat.source_type,
+        "flashcards": fc_list,
+        "questions": q_list,
+    }
+
+    new_pack = models.StudyPack(
+        creator_id=mat.user_id,
+        title=mat.title,
+        description=f"Shared study material: {mat.title}",
+        category="Duo Study",
+        theme_gradient="green_emerald",
+        price_coins=0,
+        status="approved",
+        is_official=False,
+        pack_data=pack_data,
+        source_material_id=mat.id,
+    )
+    db.add(new_pack)
+    db.flush()
+    return new_pack
+
 
 @router.post("/{partnership_id}/share-pack")
 def share_study_pack(
@@ -858,7 +918,7 @@ def share_study_pack(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid pack_id format.")
 
-    pack = db.query(models.StudyPack).filter_by(id=pack_id).first()
+    pack = _resolve_study_pack_or_material(db, pack_id, current_user.id)
     if not pack:
         raise HTTPException(status_code=404, detail="Study Pack not found.")
 
@@ -988,6 +1048,41 @@ def accept_shared_pack(
     share.status = "accepted"
     share.accepted_at = datetime.now(timezone.utc)
 
+    # Clone pack into recipient's study vault as StudyMaterial if not already present
+    pack = share.pack
+    if pack:
+        existing_mat = db.query(models.StudyMaterial).filter_by(
+            user_id=current_user.id,
+            title=pack.title
+        ).first()
+        if not existing_mat:
+            new_mat = models.StudyMaterial(
+                user_id=current_user.id,
+                title=pack.title,
+                source_type="pack_import",
+                content=f"Imported from duo partner: {pack.title}",
+            )
+            db.add(new_mat)
+            db.flush()
+            p_data = pack.pack_data or {}
+            for fc in p_data.get("flashcards", []):
+                db.add(models.Flashcard(
+                    user_id=current_user.id,
+                    material_id=new_mat.id,
+                    front=fc.get("front", ""),
+                    back=fc.get("back", ""),
+                ))
+            for q in p_data.get("questions", []):
+                db.add(models.Question(
+                    user_id=current_user.id,
+                    material_id=new_mat.id,
+                    question_text=q.get("question") or q.get("question_text", ""),
+                    options=q.get("options", []),
+                    answer_index=q.get("answer_index", 0),
+                    explanation=q.get("explanation", ""),
+                ))
+            db.flush()
+
     # Award Nu-Coins to sender for knowledge sharing
     coin_service.grant_coins(
         db=db,
@@ -1055,7 +1150,7 @@ def generate_quickfire_from_pack(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid pack_id.")
 
-    pack = db.query(models.StudyPack).filter_by(id=pack_id).first()
+    pack = _resolve_study_pack_or_material(db, pack_id, current_user.id)
     if not pack:
         raise HTTPException(status_code=404, detail="Study Pack not found.")
 

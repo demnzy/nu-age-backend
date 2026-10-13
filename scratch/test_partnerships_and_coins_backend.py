@@ -48,6 +48,9 @@ def run_all_tests():
         models.PartnerChallenge.__table__,
         models.PartnershipSharedPack.__table__,
         models.StudyPack.__table__,
+        models.StudyMaterial.__table__,
+        models.Flashcard.__table__,
+        models.Question.__table__,
         models.UserNotification.__table__,
     ]
     models.Base.metadata.create_all(bind=engine, tables=target_tables)
@@ -210,6 +213,28 @@ def run_all_tests():
     bal_sender_after = coin_service.get_user_coins(db, user_a.id)
     assert bal_sender_after == bal_sender_before + 20
     print(f"  [PASS] Pack acceptance awarded +20 coins to sender A: {bal_sender_after}")
+
+    # Test sharing personal vault StudyMaterial (synthesizing StudyPack)
+    from routers.study_partners import _resolve_study_pack_or_material
+    vault_mat = models.StudyMaterial(
+        user_id=user_a.id,
+        title="Personal Cell Biology Notes",
+        source_type="text",
+        content="Cell notes",
+    )
+    db.add(vault_mat)
+    db.commit()
+    fc = models.Flashcard(user_id=user_a.id, material_id=vault_mat.id, front="Mitochondria", back="Powerhouse of cell")
+    q1 = models.Question(user_id=user_a.id, material_id=vault_mat.id, question_text="What is ATP?", options=["Energy currency", "Protein", "Lipid", "DNA"], answer_index=0)
+    db.add_all([fc, q1])
+    db.commit()
+
+    synthesized_pack = _resolve_study_pack_or_material(db, vault_mat.id, user_a.id)
+    assert synthesized_pack is not None, "Must resolve StudyMaterial to a StudyPack"
+    assert synthesized_pack.title == "Personal Cell Biology Notes"
+    assert len(synthesized_pack.pack_data.get("flashcards", [])) == 1
+    assert len(synthesized_pack.pack_data.get("questions", [])) == 1
+    print("  [PASS] _resolve_study_pack_or_material successfully synthesized StudyPack from vault StudyMaterial!")
 
     # ─────────────────────────────────────────────────────────────────────────
     print("\n>>> 6. TESTING REAL 15-QUESTION QUICKFIRE DUEL FLOW <<<")
