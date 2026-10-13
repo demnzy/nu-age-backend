@@ -52,18 +52,7 @@ def get_active_partnership(
     Fetches the authenticated user's active study partnership, partner details,
     Duo streak, today's dual check-in progress, and active challenges.
     """
-    today = date.today()
-    partnership = db.query(models.StudyPartnership).filter(
-        models.StudyPartnership.status == "active",
-        or_(
-            models.StudyPartnership.user_a_id == current_user.id,
-            models.StudyPartnership.user_b_id == current_user.id
-        )
-    ).first()
-
-    if not partnership:
-        return {"has_partnership": False, "partnership": None}
-
+def _format_active_partnership_payload(partnership, current_user, db: Session, today: date) -> dict:
     is_user_a = (partnership.user_a_id == current_user.id)
     partner = partnership.user_b if is_user_a else partnership.user_a
 
@@ -127,28 +116,59 @@ def get_active_partnership(
         })
 
     return {
+        "id": str(partnership.id),
+        "current_user_id": str(current_user.id),
+        "status": partnership.status,
+        "goal_type": partnership.goal_type,
+        "target_exam": partnership.target_exam,
+        "target_subjects": partnership.target_subjects or [],
+        "daily_target_minutes": partnership.daily_target_minutes,
+        "daily_target_questions": partnership.daily_target_questions,
+        "duo_streak": partnership.duo_streak,
+        "best_duo_streak": partnership.best_duo_streak,
+        "user_studied_today": user_studied_today,
+        "partner_studied_today": partner_studied_today,
+        "user_today_minutes": user_today_mins,
+        "partner_today_minutes": partner_today_mins,
+        "user_today_questions": user_today_qs,
+        "partner_today_questions": partner_today_qs,
+        "can_nudge": can_nudge,
+        "partner": _format_user_summary(partner),
+        "recent_challenges": challenge_list,
+    }
+
+
+@router.get("/active")
+def get_active_partnership(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Fetches the authenticated user's active study partnerships, partner details,
+    Duo streak, today's dual check-in progress, and active challenges.
+    Supports learners with multiple simultaneous active duo partnerships.
+    """
+    today = date.today()
+    partnerships = db.query(models.StudyPartnership).filter(
+        models.StudyPartnership.status == "active",
+        or_(
+            models.StudyPartnership.user_a_id == current_user.id,
+            models.StudyPartnership.user_b_id == current_user.id
+        )
+    ).order_by(models.StudyPartnership.duo_streak.desc(), models.StudyPartnership.updated_at.desc()).all()
+
+    if not partnerships:
+        return {"has_partnership": False, "partnership": None, "partnerships": []}
+
+    formatted_list = [
+        _format_active_partnership_payload(p, current_user, db, today)
+        for p in partnerships
+    ]
+
+    return {
         "has_partnership": True,
-        "partnership": {
-            "id": str(partnership.id),
-            "current_user_id": str(current_user.id),
-            "status": partnership.status,
-            "goal_type": partnership.goal_type,
-            "target_exam": partnership.target_exam,
-            "target_subjects": partnership.target_subjects or [],
-            "daily_target_minutes": partnership.daily_target_minutes,
-            "daily_target_questions": partnership.daily_target_questions,
-            "duo_streak": partnership.duo_streak,
-            "best_duo_streak": partnership.best_duo_streak,
-            "user_studied_today": user_studied_today,
-            "partner_studied_today": partner_studied_today,
-            "user_today_minutes": user_today_mins,
-            "partner_today_minutes": partner_today_mins,
-            "user_today_questions": user_today_qs,
-            "partner_today_questions": partner_today_qs,
-            "can_nudge": can_nudge,
-            "partner": _format_user_summary(partner),
-            "recent_challenges": challenge_list,
-        }
+        "partnership": formatted_list[0],
+        "partnerships": formatted_list,
     }
 
 
@@ -1383,18 +1403,21 @@ def get_study_leaderboard(
 
     if filter_type == "duo_streaks":
         duos = db.query(models.StudyPartnership).filter(
-            models.StudyPartnership.status == "active",
-            models.StudyPartnership.duo_streak > 0
-        ).order_by(models.StudyPartnership.duo_streak.desc()).limit(limit).all()
+            models.StudyPartnership.status == "active"
+        ).order_by(
+            models.StudyPartnership.duo_streak.desc(),
+            models.StudyPartnership.best_duo_streak.desc(),
+            models.StudyPartnership.created_at.desc()
+        ).limit(limit).all()
 
         rankings = []
         for idx, d in enumerate(duos, start=1):
             rankings.append({
                 "rank": idx,
                 "partnership_id": str(d.id),
-                "duo_streak": d.duo_streak,
-                "best_duo_streak": d.best_duo_streak,
-                "target_exam": d.target_exam,
+                "duo_streak": d.duo_streak or 0,
+                "best_duo_streak": d.best_duo_streak or 0,
+                "target_exam": d.target_exam or "JAMB / Post-UTME",
                 "partner_a": _format_user_summary(d.user_a),
                 "partner_b": _format_user_summary(d.user_b),
                 "is_my_duo": (d.user_a_id == current_user.id or d.user_b_id == current_user.id),
