@@ -20,3 +20,10 @@
 - **Collapse & Grouping Keys**: All chat-related push notifications MUST include a `collapse_id` (e.g. `collapse_id=f"chat_{channel_id}"`) in the OneSignal payload so rapid consecutive messages in the same channel do not spam separate alerts in the device notification tray.
 - **OneSignal Asynchronous Acceptance Invariant**: A response from OneSignal REST API with `status_code in (200, 201)`, a non-empty `id`, and no `errors` indicates successful queuing. Never treat `recipients: 0` as a failure, as recipient evaluation is performed asynchronously.
 - **Self-Mention Invariant**: Senders must be unconditionally excluded from push delivery unless `allow_self_notify=True` is explicitly specified for developer test dispatches.
+
+## 4. FastAPI Routing & Route Precedence Invariants
+- **Static Over Parameterized Route Ordering**: Static paths on the same prefix (e.g. `/challenges/history`, `/requests/incoming`) MUST ALWAYS be declared BEFORE parameterized routes with path variables (e.g. `/challenges/{challenge_id}`, `/{partnership_id}`). Placing parameterized routes first causes FastAPI to attempt parsing static segments as UUIDs, crashing clients with HTTP `422 Unprocessable Entity`.
+- **Zero Orphan Route Stubs**: Never leave empty function stubs or duplicate route decorators. Ensure every endpoint has its complete implementation body before another route with the same path or method is declared.
+
+## 5. Channel-Scoped Access & Mention Invariants
+- **Strict Channel Membership Verification for Mentions**: When processing `@` mentions or `mention_ids`, the backend MUST strictly verify that each mentioned user ID is an active member of the channel (`models.ChannelMember.channel_id == channel_id`). Never dispatch push notifications or mention alerts to users who do not belong to the channel.

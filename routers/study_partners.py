@@ -871,12 +871,12 @@ def submit_partner_challenge(
     if not ch:
         raise HTTPException(status_code=404, detail="Challenge not found or already completed.")
 
-    challenged_score = int(payload.get("score", 0))
-    challenged_time = int(payload.get("time_seconds", 0))
+    challenged_score = int(payload.get("challenged_score", payload.get("score", 0)))
+    challenged_time = int(payload.get("challenged_time_seconds", payload.get("time_seconds", 0)))
 
     ch.challenged_score = challenged_score
     ch.challenged_time_seconds = challenged_time
-    ch.challenged_breakdown = payload.get("breakdown", {})
+    ch.challenged_breakdown = payload.get("challenged_breakdown", payload.get("breakdown", {}))
     ch.challenged_completed_at = datetime.now(timezone.utc)
     ch.status = "completed"
 
