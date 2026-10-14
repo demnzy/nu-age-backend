@@ -484,15 +484,77 @@ def get_quiz_questions(material_ids: Optional[str] = None, db: Session = Depends
         for q in questions
     ]
 
+def _compute_smart_exam_duration(qs, mat_titles_str="", auth_dur=None) -> int:
+    """Computes exam duration cognizant of real-world exam standards (JAMB, WAEC, NECO, Post-UTME, etc.)."""
+    if auth_dur and auth_dur > 0:
+        return auth_dur
+    if not qs:
+        return 300
+
+    # 1. Check explicit exam_type on questions
+    exam_std = None
+    for q in qs:
+        et = str(getattr(q, "exam_type", None) or (q.get("exam_type") if isinstance(q, dict) else None) or "").strip().upper()
+        if et:
+            exam_std = et
+            break
+
+    # 2. Fallback: inspect material titles / subject keywords
+    if not exam_std and mat_titles_str:
+        t_up = mat_titles_str.upper()
+        if "POST-UTME" in t_up or "PUTME" in t_up:
+            exam_std = "POST-UTME"
+        elif "JAMB" in t_up or "UTME" in t_up:
+            exam_std = "JAMB"
+        elif "WAEC" in t_up or "WASSCE" in t_up:
+            exam_std = "WAEC"
+        elif "NECO" in t_up:
+            exam_std = "NECO"
+        elif "SAT" in t_up:
+            exam_std = "SAT"
+        elif any(x in t_up for x in ("NCLEX", "MCAT", "USMLE")):
+            exam_std = "NCLEX"
+
+    # 3. Apply official testing board pacing specifications (seconds per question)
+    if exam_std:
+        if "POST-UTME" in exam_std or "PUTME" in exam_std:
+            # Post-UTME speed screening: ~42s per question (50 Qs = 35 mins)
+            sec_per_q = 42
+        elif "JAMB" in exam_std or "UTME" in exam_std:
+            # JAMB CBT standard: ~48s per question (50 Qs = 40 mins)
+            sec_per_q = 48
+        elif "WAEC" in exam_std or "WASSCE" in exam_std:
+            # WAEC/WASSCE Objective: ~72s per question (50 Qs = 60 mins)
+            sec_per_q = 72
+        elif "NECO" in exam_std:
+            # NECO Objective standard: ~60s per question (60 Qs = 60 mins)
+            sec_per_q = 60
+        elif "SAT" in exam_std:
+            # SAT Digital standard: ~75s per question
+            sec_per_q = 75
+        elif any(x in exam_std for x in ("NCLEX", "MCAT", "USMLE")):
+            # Clinical reasoning: ~84s per question
+            sec_per_q = 84
+        else:
+            sec_per_q = 60
+    else:
+        sec_per_q = 60
+
+    total_secs = len(qs) * sec_per_q
+    mins = max(5, round(total_secs / 60))
+    return mins * 60
+
+
 @router.get("/exam/questions", response_model=schemas.ExamResponse)
 def get_exam_questions(
     material_ids: Optional[str] = None,
+    limit: Optional[int] = 50,
     db: Session = Depends(get_db),
     user = Depends(auth.get_current_user)
 ):
-    """Pulls up to 50 random questions for a full exam simulation,
-    scoped to the given materials, with duration respecting pack settings or computed server-side."""
-    query = db.query(models.Question).filter(models.Question.user_id == user.id)
+    """Pulls random questions for a full exam simulation,
+    scoped to the given materials, with duration cognizant of official exam standards (JAMB, WAEC, NECO, etc.)."""
+    effective_limit = min(max(5, int(limit or 50)), 200)
 
     authoritative_duration = None
     questions = []
@@ -533,7 +595,7 @@ def get_exam_questions(
             questions = db.query(models.Question).filter(
                 models.Question.user_id == user.id,
                 models.Question.material_id == mid
-            ).order_by(func.random()).limit(50).all()
+            ).order_by(func.random()).limit(effective_limit).all()
 
             dl = db.query(models.StudyPackDownload).filter(
                 models.StudyPackDownload.user_id == user.id,
@@ -544,7 +606,7 @@ def get_exam_questions(
                 if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
                     authoritative_duration = int(pack.pack_data["duration_seconds"])
     else:
-        questions = db.query(models.Question).filter(models.Question.user_id == user.id).order_by(func.random()).limit(50).all()
+        questions = db.query(models.Question).filter(models.Question.user_id == user.id).order_by(func.random()).limit(effective_limit).all()
 
     question_payload = [
         {
@@ -563,7 +625,8 @@ def get_exam_questions(
         for q in questions
     ]
 
-    duration_seconds = authoritative_duration if authoritative_duration else max(len(question_payload) * 60, 300)
+    mat_titles_combined = " ".join(str(t) for t in mat_map.values())
+    duration_seconds = _compute_smart_exam_duration(questions, mat_titles_combined, authoritative_duration)
 
     return {
         "questions": question_payload,

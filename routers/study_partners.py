@@ -772,6 +772,65 @@ def get_partner_challenge(
     }
 
 
+def _format_challenge_history_item(ch: models.PartnerChallenge, current_user: models.User) -> dict:
+    is_my_challenge = (ch.challenger_id == current_user.id)
+    partner = ch.challenged if is_my_challenge else ch.challenger
+    my_score = ch.challenger_score if is_my_challenge else ch.challenged_score
+    partner_score = ch.challenged_score if is_my_challenge else ch.challenger_score
+    my_time = ch.challenger_time_seconds if is_my_challenge else ch.challenged_time_seconds
+    partner_time = ch.challenged_time_seconds if is_my_challenge else ch.challenger_time_seconds
+
+    outcome = "tie"
+    if ch.status == "challenger_done":
+        outcome = "pending" if is_my_challenge else "needs_action"
+    elif ch.winner_id:
+        outcome = "won" if ch.winner_id == current_user.id else "lost"
+
+    return {
+        "id": str(ch.id),
+        "title": ch.title,
+        "subject": ch.subject,
+        "pack_id": str(ch.pack_id) if ch.pack_id else None,
+        "challenge_type": ch.challenge_type,
+        "total_questions": ch.total_questions,
+        "duration_seconds": ch.duration_seconds,
+        "status": ch.status,
+        "is_challenger": is_my_challenge,
+        "challenger_id": str(ch.challenger_id),
+        "challenged_id": str(ch.challenged_id),
+        "partner_name": partner.first_name if partner else "Partner",
+        "my_score": my_score,
+        "partner_score": partner_score,
+        "my_time_seconds": my_time,
+        "partner_time_seconds": partner_time,
+        "outcome": outcome,
+        "winner_id": str(ch.winner_id) if ch.winner_id else None,
+        "coins_awarded": ch.coins_awarded if ch.coins_awarded is not None else (35 if outcome == "won" else (10 if outcome in ("lost", "tie") else 0)),
+        "completed_at": (ch.challenged_completed_at or ch.created_at).isoformat() if (ch.challenged_completed_at or ch.created_at) else None,
+    }
+
+
+@router.get("/challenges/history")
+def get_all_challenges_history(
+    limit: int = Query(20, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Returns the complete chronological history of 15-Q Duels for the user across any partnership,
+    including active pending duels, completed duels, score breakdowns, and coins awarded.
+    """
+    challenges = db.query(models.PartnerChallenge).filter(
+        or_(
+            models.PartnerChallenge.challenger_id == current_user.id,
+            models.PartnerChallenge.challenged_id == current_user.id
+        ),
+        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done"])
+    ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
+
+    return {"challenges": [_format_challenge_history_item(ch, current_user) for ch in challenges]}
+
+
 @router.get("/{partnership_id}/challenges/history")
 def get_challenge_history(
     partnership_id: uuid.UUID,
@@ -780,7 +839,7 @@ def get_challenge_history(
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """
-    Returns the complete chronological history of completed 15-Q Duels for the duo,
+    Returns the complete chronological history of 15-Q Duels for the duo,
     with full score breakdown, winner badges, and coins awarded.
     """
     partnership = db.query(models.StudyPartnership).filter(
@@ -796,46 +855,10 @@ def get_challenge_history(
 
     challenges = db.query(models.PartnerChallenge).filter(
         models.PartnerChallenge.partnership_id == partnership.id,
-        models.PartnerChallenge.status.in_(["completed", "expired"])
+        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done"])
     ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
 
-    history = []
-    for ch in challenges:
-        is_my_challenge = (ch.challenger_id == current_user.id)
-        partner = ch.challenged if is_my_challenge else ch.challenger
-        my_score = ch.challenger_score if is_my_challenge else ch.challenged_score
-        partner_score = ch.challenged_score if is_my_challenge else ch.challenger_score
-        my_time = ch.challenger_time_seconds if is_my_challenge else ch.challenged_time_seconds
-        partner_time = ch.challenged_time_seconds if is_my_challenge else ch.challenger_time_seconds
-
-        outcome = "tie"
-        if ch.winner_id:
-            outcome = "won" if ch.winner_id == current_user.id else "lost"
-
-        history.append({
-            "id": str(ch.id),
-            "title": ch.title,
-            "subject": ch.subject,
-            "pack_id": str(ch.pack_id) if ch.pack_id else None,
-            "challenge_type": ch.challenge_type,
-            "total_questions": ch.total_questions,
-            "duration_seconds": ch.duration_seconds,
-            "status": ch.status,
-            "is_challenger": is_my_challenge,
-            "challenger_id": str(ch.challenger_id),
-            "challenged_id": str(ch.challenged_id),
-            "partner_name": partner.first_name if partner else "Partner",
-            "my_score": my_score,
-            "partner_score": partner_score,
-            "my_time_seconds": my_time,
-            "partner_time_seconds": partner_time,
-            "outcome": outcome,
-            "winner_id": str(ch.winner_id) if ch.winner_id else None,
-            "coins_awarded": ch.coins_awarded,
-            "completed_at": (ch.challenged_completed_at or ch.created_at).isoformat() if (ch.challenged_completed_at or ch.created_at) else None,
-        })
-
-    return {"challenges": history}
+    return {"challenges": [_format_challenge_history_item(ch, current_user) for ch in challenges]}
 
 
 @router.post("/challenges/{challenge_id}/submit")
