@@ -112,6 +112,9 @@ def _credit_wallet(db: Session, user_id: uuid.UUID, delta: int, reason: str, ref
         )
 
     cb.balance = new_bal
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+    if u:
+        u.coins_balance = new_bal
     ledger = CreditLedgerEntry(
         user_id=user_id,
         delta=delta,

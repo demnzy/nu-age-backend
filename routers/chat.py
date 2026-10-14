@@ -310,7 +310,7 @@ async def chat_websocket(
                 notified_user_ids = set()
 
                 # Automatically extract mentions from message content and metadata
-                raw_mentions = list(meta_dict.get("mentions", [])) + re.findall(r'@([a-zA-Z0-9_.-]+)', new_msg.content or "")
+                raw_mentions = list(meta_dict.get("mentions", [])) + re.findall(r'@([\w.-]+)', new_msg.content or "")
                 mentioned = []
                 seen_handles = set()
                 for mh in raw_mentions:

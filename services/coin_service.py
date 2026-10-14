@@ -27,10 +27,29 @@ DUO_STREAK_MILESTONES = {
 }
 
 
-def get_user_coins(db: Session, user_id: uuid.UUID) -> int:
-    """Returns the user's current verified Nu-Coin balance."""
+def _get_or_sync_wallet(db: Session, user_id: uuid.UUID):
+    """Retrieves CreditBalance, initializing to 100 if missing, and syncs User.coins_balance."""
+    from monetization_models import CreditBalance
+    cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
     u = db.query(models.User).filter(models.User.id == user_id).first()
-    return getattr(u, "coins_balance", 0) or 0
+    if not cb:
+        init_val = getattr(u, "coins_balance", None)
+        bal = init_val if (init_val is not None and init_val > 0) else 100
+        cb = CreditBalance(user_id=user_id, balance=bal)
+        db.add(cb)
+        if u:
+            u.coins_balance = bal
+        db.commit()
+    elif u and u.coins_balance != cb.balance:
+        u.coins_balance = cb.balance
+        db.commit()
+    return cb, u
+
+
+def get_user_coins(db: Session, user_id: uuid.UUID) -> int:
+    """Returns the user's unified Nu-Coin balance across the platform."""
+    cb, u = _get_or_sync_wallet(db, user_id)
+    return cb.balance if cb else 0
 
 
 def grant_coins(
@@ -43,20 +62,23 @@ def grant_coins(
     reference_id: Optional[str] = None,
 ) -> Tuple[bool, int]:
     """
-    Grants Nu-Coins to a user, appends an immutable transaction record, and updates User.coins_balance.
+    Grants Nu-Coins to a user, appends transaction ledger records to both tables,
+    and updates CreditBalance and User.coins_balance in lockstep.
     Returns (success, new_balance).
     """
     if amount <= 0:
         return False, get_user_coins(db, user_id)
 
-    u = db.query(models.User).filter(models.User.id == user_id).first()
-    if not u:
+    cb, u = _get_or_sync_wallet(db, user_id)
+    if not cb:
         return False, 0
 
-    curr = getattr(u, "coins_balance", 0) or 0
-    new_balance = curr + amount
-    u.coins_balance = new_balance
+    new_balance = cb.balance + amount
+    cb.balance = new_balance
+    if u:
+        u.coins_balance = new_balance
 
+    # Record in platform CoinTransaction
     tx = models.CoinTransaction(
         user_id=user_id,
         amount=amount,
@@ -66,6 +88,21 @@ def grant_coins(
         description=description or f"Earned +{amount} Nu-Coins ({category})",
     )
     db.add(tx)
+
+    # Also log in CreditLedgerEntry for marketplace audit parity
+    try:
+        from monetization_models import CreditLedgerEntry
+        ledger = CreditLedgerEntry(
+            user_id=user_id,
+            delta=amount,
+            reason=f"reward_{category}",
+            reference_id=str(reference_id) if reference_id else "objective_or_duel_grant",
+            balance_after=new_balance,
+        )
+        db.add(ledger)
+    except Exception:
+        pass
+
     db.commit()
     return True, new_balance
 
@@ -80,22 +117,24 @@ def spend_coins(
     reference_id: Optional[str] = None,
 ) -> Tuple[bool, int, str]:
     """
-    Spends Nu-Coins from user balance.
+    Spends Nu-Coins from the unified user wallet.
     Returns (success, new_balance, message).
     """
     if amount <= 0:
         return False, get_user_coins(db, user_id), "Invalid spend amount."
 
-    u = db.query(models.User).filter(models.User.id == user_id).first()
-    if not u:
-        return False, 0, "User not found."
+    cb, u = _get_or_sync_wallet(db, user_id)
+    if not cb:
+        return False, 0, "User wallet not found."
 
-    curr = getattr(u, "coins_balance", 0) or 0
+    curr = cb.balance
     if curr < amount:
         return False, curr, f"Insufficient Nu-Coins balance ({curr} available, {amount} required)."
 
     new_balance = curr - amount
-    u.coins_balance = new_balance
+    cb.balance = new_balance
+    if u:
+        u.coins_balance = new_balance
 
     tx = models.CoinTransaction(
         user_id=user_id,
@@ -106,6 +145,20 @@ def spend_coins(
         description=description or f"Spent {amount} Nu-Coins ({category})",
     )
     db.add(tx)
+
+    try:
+        from monetization_models import CreditLedgerEntry
+        ledger = CreditLedgerEntry(
+            user_id=user_id,
+            delta=-amount,
+            reason=f"spend_{category}",
+            reference_id=str(reference_id) if reference_id else "item_unlock",
+            balance_after=new_balance,
+        )
+        db.add(ledger)
+    except Exception:
+        pass
+
     db.commit()
     return True, new_balance, "Success"
 
