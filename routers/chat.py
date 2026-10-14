@@ -382,10 +382,11 @@ async def chat_websocket(
                     )
                     specific_recipients = set()
 
+                    channel_member_ids = {u.id for u in channel_member_users}
                     for m_uid in mention_ids:
                         try:
                             u_target = db.query(models.User).filter_by(id=m_uid).first()
-                            if u_target and u_target.id != user.id and u_target.id not in notified_user_ids:
+                            if u_target and u_target.id != user.id and u_target.id in channel_member_ids and u_target.id not in notified_user_ids:
                                 specific_recipients.add(u_target.id)
                         except Exception:
                             pass

@@ -43,15 +43,6 @@ def _format_user_summary(user: models.User, badge: Optional[str] = None) -> Dict
 # 1. ACTIVE PARTNERSHIP & DASHBOARD COCKPIT
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/active")
-def get_active_partnership(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
-):
-    """
-    Fetches the authenticated user's active study partnership, partner details,
-    Duo streak, today's dual check-in progress, and active challenges.
-    """
 def _format_active_partnership_payload(partnership, current_user, db: Session, today: date) -> dict:
     is_user_a = (partnership.user_a_id == current_user.id)
     partner = partnership.user_b if is_user_a else partnership.user_a
@@ -716,62 +707,6 @@ def create_partner_challenge(
     }
 
 
-@router.get("/challenges/{challenge_id}")
-def get_partner_challenge(
-    challenge_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(auth.get_current_user)
-):
-    ch = db.query(models.PartnerChallenge).filter(
-        models.PartnerChallenge.id == challenge_id,
-        or_(
-            models.PartnerChallenge.challenger_id == current_user.id,
-            models.PartnerChallenge.challenged_id == current_user.id
-        )
-    ).first()
-
-    if not ch:
-        raise HTTPException(status_code=404, detail="Challenge not found.")
-
-    is_challenger = (ch.challenger_id == current_user.id)
-    my_score = ch.challenger_score if is_challenger else ch.challenged_score
-    partner_score = ch.challenged_score if is_challenger else ch.challenger_score
-    my_time = ch.challenger_time_seconds if is_challenger else ch.challenged_time_seconds
-    partner_time = ch.challenged_time_seconds if is_challenger else ch.challenger_time_seconds
-
-    return {
-        "id": str(ch.id),
-        "title": ch.title,
-        "subject": ch.subject,
-        "pack_id": str(ch.pack_id) if ch.pack_id else None,
-        "challenge_type": ch.challenge_type,
-        "status": ch.status,
-        "total_questions": ch.total_questions,
-        "duration_seconds": ch.duration_seconds,
-        "question_snapshot": ch.question_snapshot,
-        "challenger_id": str(ch.challenger_id),
-        "challenged_id": str(ch.challenged_id),
-        "challenger_name": ch.challenger.first_name if ch.challenger else "Challenger",
-        "challenged_name": ch.challenged.first_name if ch.challenged else "Partner",
-        "is_challenger": is_challenger,
-        "needs_my_response": (not is_challenger and ch.status == "challenger_done"),
-        "my_score": my_score,
-        "partner_score": partner_score,
-        "my_time_seconds": my_time,
-        "partner_time_seconds": partner_time,
-        "challenger": _format_user_summary(ch.challenger),
-        "challenged": _format_user_summary(ch.challenged),
-        "challenger_score": ch.challenger_score,
-        "challenger_time_seconds": ch.challenger_time_seconds,
-        "challenger_breakdown": ch.challenger_breakdown,
-        "challenged_score": ch.challenged_score,
-        "challenged_time_seconds": ch.challenged_time_seconds,
-        "challenged_breakdown": ch.challenged_breakdown,
-        "winner_id": str(ch.winner_id) if ch.winner_id else None,
-        "coins_awarded": ch.coins_awarded,
-    }
-
-
 def _format_challenge_history_item(ch: models.PartnerChallenge, current_user: models.User) -> dict:
     is_my_challenge = (ch.challenger_id == current_user.id)
     partner = ch.challenged if is_my_challenge else ch.challenger
@@ -829,6 +764,62 @@ def get_all_challenges_history(
     ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
 
     return {"challenges": [_format_challenge_history_item(ch, current_user) for ch in challenges]}
+
+
+@router.get("/challenges/{challenge_id}")
+def get_partner_challenge(
+    challenge_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    ch = db.query(models.PartnerChallenge).filter(
+        models.PartnerChallenge.id == challenge_id,
+        or_(
+            models.PartnerChallenge.challenger_id == current_user.id,
+            models.PartnerChallenge.challenged_id == current_user.id
+        )
+    ).first()
+
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found.")
+
+    is_challenger = (ch.challenger_id == current_user.id)
+    my_score = ch.challenger_score if is_challenger else ch.challenged_score
+    partner_score = ch.challenged_score if is_challenger else ch.challenger_score
+    my_time = ch.challenger_time_seconds if is_challenger else ch.challenged_time_seconds
+    partner_time = ch.challenged_time_seconds if is_challenger else ch.challenger_time_seconds
+
+    return {
+        "id": str(ch.id),
+        "title": ch.title,
+        "subject": ch.subject,
+        "pack_id": str(ch.pack_id) if ch.pack_id else None,
+        "challenge_type": ch.challenge_type,
+        "status": ch.status,
+        "total_questions": ch.total_questions,
+        "duration_seconds": ch.duration_seconds,
+        "question_snapshot": ch.question_snapshot,
+        "challenger_id": str(ch.challenger_id),
+        "challenged_id": str(ch.challenged_id),
+        "challenger_name": ch.challenger.first_name if ch.challenger else "Challenger",
+        "challenged_name": ch.challenged.first_name if ch.challenged else "Partner",
+        "is_challenger": is_challenger,
+        "needs_my_response": (not is_challenger and ch.status == "challenger_done"),
+        "my_score": my_score,
+        "partner_score": partner_score,
+        "my_time_seconds": my_time,
+        "partner_time_seconds": partner_time,
+        "challenger": _format_user_summary(ch.challenger),
+        "challenged": _format_user_summary(ch.challenged),
+        "challenger_score": ch.challenger_score,
+        "challenger_time_seconds": ch.challenger_time_seconds,
+        "challenger_breakdown": ch.challenger_breakdown,
+        "challenged_score": ch.challenged_score,
+        "challenged_time_seconds": ch.challenged_time_seconds,
+        "challenged_breakdown": ch.challenged_breakdown,
+        "winner_id": str(ch.winner_id) if ch.winner_id else None,
+        "coins_awarded": ch.coins_awarded,
+    }
 
 
 @router.get("/{partnership_id}/challenges/history")
