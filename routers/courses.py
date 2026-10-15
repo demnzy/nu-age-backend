@@ -116,7 +116,7 @@ def get_all_courses(
     org: UUID = Query(None),
     is_public: str = Query(None),
     id: UUID = Query(None),
-    progress: int = Query(None), 
+    progress: float = Query(None), 
     user = Depends(auth.get_current_user), 
     db: Session = Depends(get_db)
 ):
@@ -153,10 +153,19 @@ def get_all_courses(
     
     # THE FIX: Join Enrollments to check this specific user's progress
     if progress is not None:
-        query = query.join(models.Enrollment, models.Course.id == models.Enrollment.course_id).filter(
-            models.Enrollment.student_id == user.id,
-            models.Enrollment.progress == progress
-        )
+        if progress >= 100 or progress >= 99.9:
+            query = query.join(models.Enrollment, models.Course.id == models.Enrollment.course_id).filter(
+                models.Enrollment.student_id == user.id,
+                or_(
+                    models.Enrollment.progress >= 99.9,
+                    models.Enrollment.completed_at.isnot(None)
+                )
+            )
+        else:
+            query = query.join(models.Enrollment, models.Course.id == models.Enrollment.course_id).filter(
+                models.Enrollment.student_id == user.id,
+                models.Enrollment.progress == progress
+            )
 
     return query.all()
 

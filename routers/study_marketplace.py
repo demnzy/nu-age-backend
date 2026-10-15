@@ -267,6 +267,7 @@ def list_marketplace_packs(
     # Available categories summary
     categories_agg = db.query(
         models.StudyPack.category,
+        func.count(models.StudyPack.id)
     ).filter(
         models.StudyPack.status == "approved",
         models.StudyPack.category != "Duo Study"

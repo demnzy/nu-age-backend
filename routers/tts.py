@@ -132,6 +132,22 @@ def get_stream_user(
     return user
 
 
+def _get_lesson_or_404(db: Session, lesson_id: str) -> models.Lesson:
+    """Safely sanitizes and resolves a Lesson by UUID or string, returning 404 if missing."""
+    clean_id = str(lesson_id or "").strip().strip('"').strip("'")
+    if not clean_id:
+        raise HTTPException(status_code=404, detail="Lesson ID is required.")
+    try:
+        lesson_uuid = UUID(clean_id)
+        lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_uuid).first()
+    except (ValueError, TypeError):
+        lesson = db.query(models.Lesson).filter(models.Lesson.id == clean_id).first()
+    if not lesson:
+        logger.warning(f"[TTS] Lesson '{clean_id}' not found in database.")
+        raise HTTPException(status_code=404, detail="Lesson not found.")
+    return lesson
+
+
 # ==============================================================================
 # 1. STREAM LESSON AUDIO ENDPOINT
 # ==============================================================================
@@ -157,9 +173,7 @@ async def stream_lesson_audio(
         raise HTTPException(status_code=400, detail="Supported languages are 'en', 'ha', and 'fr'.")
 
     # 1. Fetch Lesson
-    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found.")
+    lesson = _get_lesson_or_404(db, lesson_id)
 
     raw_text = extract_lesson_narratable_text(lesson)
     content_hash = compute_content_hash(raw_text)
@@ -263,10 +277,11 @@ async def _record_audio_cache(
     """Background task to store the cache entry in PostgreSQL with atomic upsert."""
     from database import SessionLocal
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+    clean_lid = str(lesson_id).strip().strip('"').strip("'")
     db = SessionLocal()
     try:
         stmt = pg_insert(models.LessonAudioCache).values(
-            lesson_id=UUID(lesson_id),
+            lesson_id=UUID(clean_lid),
             language=lang,
             content_hash=content_hash,
             audio_url=cdn_url,
@@ -286,7 +301,7 @@ async def _record_audio_cache(
         # Resilient fallback to query-and-update
         try:
             existing = db.query(models.LessonAudioCache).filter_by(
-                lesson_id=UUID(lesson_id),
+                lesson_id=UUID(clean_lid),
                 language=lang,
                 content_hash=content_hash,
             ).first()
@@ -371,9 +386,7 @@ async def prepare_lesson_audio(
     if lang not in ("en", "ha", "fr"):
         raise HTTPException(status_code=400, detail="Supported languages are 'en', 'ha', and 'fr'.")
 
-    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found.")
+    lesson = _get_lesson_or_404(db, lesson_id)
 
     raw_text = extract_lesson_narratable_text(lesson)
     content_hash = compute_content_hash(raw_text)
@@ -436,9 +449,7 @@ async def get_lesson_audio_info(
     current_user: models.User = Depends(get_stream_user),
 ):
     """Returns available audio translations, cached status, and active generation state for a lesson."""
-    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
-    if not lesson:
-        raise HTTPException(status_code=404, detail="Lesson not found.")
+    lesson = _get_lesson_or_404(db, lesson_id)
 
     is_supported = lesson.type not in UNSUPPORTED_LESSON_TYPES
 
