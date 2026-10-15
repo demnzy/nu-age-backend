@@ -25,6 +25,7 @@ router = APIRouter(prefix="/courses/lessons", tags=["Lesson TTS Audio"])
 # Lesson types that cannot be meaningfully narrated
 UNSUPPORTED_LESSON_TYPES = {"video", "document", "code_lab"}
 settings = Settings()
+_active_generation_tasks: set = set()
 
 
 def extract_lesson_narratable_text(lesson: models.Lesson) -> str:
@@ -259,28 +260,173 @@ async def _record_audio_cache(
     content_hash: str,
     cdn_url: str,
 ):
-    """Background task to store the cache entry in PostgreSQL."""
+    """Background task to store the cache entry in PostgreSQL with atomic upsert."""
     from database import SessionLocal
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
     db = SessionLocal()
     try:
-        cache_entry = models.LessonAudioCache(
+        stmt = pg_insert(models.LessonAudioCache).values(
             lesson_id=UUID(lesson_id),
             language=lang,
             content_hash=content_hash,
             audio_url=cdn_url,
             format="mp3",
+        ).on_conflict_do_update(
+            index_elements=["lesson_id", "language", "content_hash"],
+            set_={
+                "audio_url": cdn_url,
+                "format": "mp3",
+            },
         )
-        db.merge(cache_entry)
+        db.execute(stmt)
         db.commit()
         logger.info(f"Successfully recorded LessonAudioCache for lesson {lesson_id} [{lang}] -> {cdn_url}")
     except Exception as e:
-        logger.error(f"Failed to record lesson audio cache in DB: {e}")
+        db.rollback()
+        # Resilient fallback to query-and-update
+        try:
+            existing = db.query(models.LessonAudioCache).filter_by(
+                lesson_id=UUID(lesson_id),
+                language=lang,
+                content_hash=content_hash,
+            ).first()
+            if existing:
+                existing.audio_url = cdn_url
+                db.commit()
+                logger.info(f"Updated LessonAudioCache for lesson {lesson_id} [{lang}] -> {cdn_url}")
+            else:
+                logger.warning(f"Notice while recording lesson audio cache in DB: {e}")
+        except Exception as ex:
+            db.rollback()
+            logger.warning(f"Fallback cache record notice: {ex}")
     finally:
         db.close()
 
 
+async def _background_synthesize_and_cache(
+    lesson_id: str,
+    title: str,
+    content_text: str,
+    lang: str,
+    content_hash: str,
+):
+    """
+    Robust background worker that consumes speech synthesis from Nu-Voice to completion,
+    independent of any client HTTP connection, ensuring the lesson audio is saved to Bunny CDN
+    and indexed in PostgreSQL (models.LessonAudioCache) so any learner gets instant playback.
+    """
+    task_key = (str(lesson_id), str(lang))
+    try:
+        logger.info(f"Background audio synthesis initiated for lesson {lesson_id} [{lang}]")
+        pull_zone = (getattr(settings, "PULL_ZONE_URL", "") or "").rstrip("/")
+        cdn_url = f"{pull_zone}/lessons/audio/{lesson_id}_{lang}_{content_hash}.mp3" if pull_zone else ""
+
+        chunk_count = 0
+        async for chunk in stream_lesson_speech(
+            lesson_id=str(lesson_id),
+            title=title or "",
+            content_text=content_text,
+            target_lang=lang,
+            source_lang="en",
+            audio_format="mp3",
+        ):
+            chunk_count += 1
+
+        if chunk_count > 0 and cdn_url:
+            await _record_audio_cache(
+                lesson_id=str(lesson_id),
+                lang=lang,
+                content_hash=content_hash,
+                cdn_url=cdn_url,
+            )
+            logger.info(f"Background synthesis completed & cached in DB for lesson {lesson_id} [{lang}]")
+        else:
+            logger.warning(f"Background synthesis produced no audio chunks for lesson {lesson_id} [{lang}]")
+    except Exception as e:
+        logger.error(f"Background synthesis failed for lesson {lesson_id} [{lang}]: {e}")
+    finally:
+        _active_generation_tasks.discard(task_key)
+
+
 # ==============================================================================
-# 2. AUDIO METADATA & SUPPORT INFO ENDPOINT
+# 2. AUDIO PREPARATION & CACHE WARMING ENDPOINT
+# ==============================================================================
+
+@router.post("/{lesson_id}/narrate/prepare")
+@router.get("/{lesson_id}/narrate/prepare")
+async def prepare_lesson_audio(
+    lesson_id: str,
+    background_tasks: BackgroundTasks,
+    lang: str = Query("en", description="Target speech language: 'en', 'ha', 'fr'"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_stream_user),
+):
+    """
+    Asynchronously triggers synthesis and database caching for a lesson audio.
+    - If already cached in DB: returns immediately with status='ready' and CDN URL.
+    - If in progress: returns status='generating'.
+    - If new: schedules background synthesis to Bunny CDN & PostgreSQL and returns status='generating'.
+    """
+    lang = (lang or "en").lower().strip()
+    if lang not in ("en", "ha", "fr"):
+        raise HTTPException(status_code=400, detail="Supported languages are 'en', 'ha', and 'fr'.")
+
+    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found.")
+
+    raw_text = extract_lesson_narratable_text(lesson)
+    content_hash = compute_content_hash(raw_text)
+
+    # 1. Check if already in DB cache
+    cache_record = db.query(models.LessonAudioCache).filter_by(
+        lesson_id=lesson.id,
+        language=lang,
+        content_hash=content_hash,
+    ).first()
+
+    if cache_record and cache_record.audio_url:
+        return {
+            "status": "ready",
+            "cached": True,
+            "lesson_id": str(lesson.id),
+            "language": lang,
+            "audio_url": cache_record.audio_url,
+        }
+
+    # 2. Check if already actively generating
+    task_key = (str(lesson.id), str(lang))
+    if task_key in _active_generation_tasks:
+        return {
+            "status": "generating",
+            "cached": False,
+            "lesson_id": str(lesson.id),
+            "language": lang,
+            "message": "Audio synthesis is currently in progress.",
+        }
+
+    # 3. Schedule robust background generation
+    _active_generation_tasks.add(task_key)
+    background_tasks.add_task(
+        _background_synthesize_and_cache,
+        lesson_id=str(lesson.id),
+        title=lesson.title or "",
+        content_text=raw_text,
+        lang=lang,
+        content_hash=content_hash,
+    )
+
+    return {
+        "status": "generating",
+        "cached": False,
+        "lesson_id": str(lesson.id),
+        "language": lang,
+        "message": "Audio synthesis queued in background.",
+    }
+
+
+# ==============================================================================
+# 3. AUDIO METADATA & SUPPORT INFO ENDPOINT
 # ==============================================================================
 
 @router.get("/{lesson_id}/narrate/info")
@@ -289,7 +435,7 @@ async def get_lesson_audio_info(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_stream_user),
 ):
-    """Returns available audio translations and cached status for a lesson."""
+    """Returns available audio translations, cached status, and active generation state for a lesson."""
     lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found.")
@@ -301,6 +447,7 @@ async def get_lesson_audio_info(
     ).all()
 
     cached_languages = {c.language: c.audio_url for c in caches}
+    generating_languages = [l for (lid, l) in _active_generation_tasks if lid == str(lesson.id)]
     health = await check_voice_service_health()
 
     return {
@@ -309,5 +456,6 @@ async def get_lesson_audio_info(
         "is_audio_supported": is_supported,
         "available_languages": ["en", "ha", "fr"],
         "cached_languages": cached_languages,
+        "generating_languages": generating_languages,
         "voice_service_status": health.get("status", "unknown"),
     }
