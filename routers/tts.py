@@ -7,7 +7,7 @@ handles client disconnect cancellation, and manages Bunny.net CDN caching in Pos
 import asyncio
 import hashlib
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks, status
@@ -25,7 +25,8 @@ router = APIRouter(prefix="/courses/lessons", tags=["Lesson TTS Audio"])
 # Lesson types that cannot be meaningfully narrated
 UNSUPPORTED_LESSON_TYPES = {"video", "document", "code_lab"}
 settings = Settings()
-_active_generation_tasks: set = set()
+_active_generation_tasks: Dict[Tuple[str, str], asyncio.Task] = {}
+_generation_lock = asyncio.Lock()
 
 
 def extract_lesson_narratable_text(lesson: models.Lesson) -> str:
@@ -178,11 +179,10 @@ async def stream_lesson_audio(
     raw_text = extract_lesson_narratable_text(lesson)
     content_hash = compute_content_hash(raw_text)
 
-    # 2. Check Database Cache
-    cache_record = db.query(models.LessonAudioCache).filter_by(
-        lesson_id=lesson.id,
-        language=lang,
-        content_hash=content_hash,
+    # 2. Check Database Cache first
+    cache_record = db.query(models.LessonAudioCache).filter(
+        models.LessonAudioCache.lesson_id == lesson.id,
+        models.LessonAudioCache.language == lang,
     ).first()
 
     if cache_record and cache_record.audio_url:
@@ -199,72 +199,48 @@ async def stream_lesson_audio(
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
         )
 
-    # 3. Stream from Standalone Nu-Voice Microservice with Pre-Flight First Chunk
-    try:
-        stream_gen = stream_lesson_speech(
-            lesson_id=str(lesson.id),
-            title=lesson.title or "",
-            content_text=raw_text,
-            target_lang=lang,
-            source_lang="en",
-            audio_format="mp3",
-        )
-        # Pre-flight the first chunk before returning 200 StreamingResponse.
-        # If Nu-Voice is offline or in error, this cleanly triggers an HTTP 503 instead of a broken stream.
-        first_chunk = await stream_gen.__anext__()
-    except StopAsyncIteration:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Voice service produced no audio.",
-        )
-    except Exception as e:
-        logger.error(f"Error connecting to Nu-Voice for lesson {lesson_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Speech synthesis service is currently starting up or temporarily unavailable. Please try again shortly.",
-        )
+    # 3. Deduping check: Is a generation task already running for this exact (lesson, lang)?
+    task_key = (str(lesson.id), str(lang))
+    in_flight_task = None
+    async with _generation_lock:
+        in_flight_task = _active_generation_tasks.get(task_key)
 
-    async def audio_stream_proxy():
-        chunk_count = 1
-        all_completed = True
-        yield first_chunk
+    if in_flight_task is not None:
+        logger.info(f"Stream request for lesson {lesson_id} [{lang}] awaiting active background synthesis...")
         try:
-            async for chunk in stream_gen:
-                if await request.is_disconnected():
-                    logger.info(f"Student disconnected during stream of lesson {lesson_id}. Aborting proxy.")
-                    all_completed = False
-                    break
-                chunk_count += 1
-                yield chunk
+            cdn_url = await asyncio.wait_for(asyncio.shield(in_flight_task), timeout=50.0)
+            if cdn_url:
+                return RedirectResponse(url=cdn_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+        except Exception as ex:
+            logger.warning(f"In-flight task wait notice for lesson {lesson_id} [{lang}]: {ex}")
 
-        except Exception as e:
-            logger.warning(f"Audio streaming interrupted for lesson {lesson_id}: {e}")
-            all_completed = False
-            return
-
-        # 4. If all chunks streamed cleanly, record the CDN cache in Postgres
-        if all_completed and chunk_count > 0:
-            pull_zone = (getattr(settings, "PULL_ZONE_URL", "") or "").rstrip("/")
-            if pull_zone:
-                cdn_url = f"{pull_zone}/lessons/audio/{lesson.id}_{lang}_{content_hash}.mp3"
-                background_tasks.add_task(
-                    _record_audio_cache,
+    # 4. If neither cached nor actively running, schedule exactly ONE background synthesis and await it
+    async with _generation_lock:
+        if task_key not in _active_generation_tasks:
+            task = asyncio.create_task(
+                _background_synthesize_and_cache(
                     lesson_id=str(lesson.id),
+                    title=lesson.title or "",
+                    content_text=raw_text,
                     lang=lang,
                     content_hash=content_hash,
-                    cdn_url=cdn_url,
                 )
+            )
+            _active_generation_tasks[task_key] = task
+            in_flight_task = task
+        else:
+            in_flight_task = _active_generation_tasks[task_key]
 
-    return StreamingResponse(
-        audio_stream_proxy(),
-        media_type="audio/mpeg",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Transfer-Encoding": "chunked",
-            "X-Lesson-Id": str(lesson.id),
-            "X-Language": lang,
-        },
+    try:
+        cdn_url = await asyncio.wait_for(asyncio.shield(in_flight_task), timeout=50.0)
+        if cdn_url:
+            return RedirectResponse(url=cdn_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    except Exception as ex:
+        logger.warning(f"Audio generation wait notice: {ex}")
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Speech synthesis is currently generating. Please try again in a few moments.",
     )
 
 
@@ -324,7 +300,7 @@ async def _background_synthesize_and_cache(
     content_text: str,
     lang: str,
     content_hash: str,
-):
+) -> Optional[str]:
     """
     Robust background worker that consumes speech synthesis from Nu-Voice to completion,
     independent of any client HTTP connection, ensuring the lesson audio is saved to Bunny CDN
@@ -355,12 +331,16 @@ async def _background_synthesize_and_cache(
                 cdn_url=cdn_url,
             )
             logger.info(f"Background synthesis completed & cached in DB for lesson {lesson_id} [{lang}]")
+            return cdn_url
         else:
             logger.warning(f"Background synthesis produced no audio chunks for lesson {lesson_id} [{lang}]")
+            return None
     except Exception as e:
         logger.error(f"Background synthesis failed for lesson {lesson_id} [{lang}]: {e}")
+        return None
     finally:
-        _active_generation_tasks.discard(task_key)
+        async with _generation_lock:
+            _active_generation_tasks.pop(task_key, None)
 
 
 # ==============================================================================
@@ -391,11 +371,10 @@ async def prepare_lesson_audio(
     raw_text = extract_lesson_narratable_text(lesson)
     content_hash = compute_content_hash(raw_text)
 
-    # 1. Check if already in DB cache
-    cache_record = db.query(models.LessonAudioCache).filter_by(
-        lesson_id=lesson.id,
-        language=lang,
-        content_hash=content_hash,
+    # 1. Check if already in DB cache (fast primary check)
+    cache_record = db.query(models.LessonAudioCache).filter(
+        models.LessonAudioCache.lesson_id == lesson.id,
+        models.LessonAudioCache.language == lang,
     ).first()
 
     if cache_record and cache_record.audio_url:
@@ -407,27 +386,29 @@ async def prepare_lesson_audio(
             "audio_url": cache_record.audio_url,
         }
 
-    # 2. Check if already actively generating
+    # 2. Check if already actively generating for this exact (lesson, lang)
     task_key = (str(lesson.id), str(lang))
-    if task_key in _active_generation_tasks:
-        return {
-            "status": "generating",
-            "cached": False,
-            "lesson_id": str(lesson.id),
-            "language": lang,
-            "message": "Audio synthesis is currently in progress.",
-        }
+    async with _generation_lock:
+        if task_key in _active_generation_tasks:
+            return {
+                "status": "generating",
+                "cached": False,
+                "lesson_id": str(lesson.id),
+                "language": lang,
+                "message": "Audio synthesis is currently in progress.",
+            }
 
-    # 3. Schedule robust background generation
-    _active_generation_tasks.add(task_key)
-    background_tasks.add_task(
-        _background_synthesize_and_cache,
-        lesson_id=str(lesson.id),
-        title=lesson.title or "",
-        content_text=raw_text,
-        lang=lang,
-        content_hash=content_hash,
-    )
+        # 3. Schedule robust background generation under lock
+        task = asyncio.create_task(
+            _background_synthesize_and_cache(
+                lesson_id=str(lesson.id),
+                title=lesson.title or "",
+                content_text=raw_text,
+                lang=lang,
+                content_hash=content_hash,
+            )
+        )
+        _active_generation_tasks[task_key] = task
 
     return {
         "status": "generating",
@@ -458,7 +439,8 @@ async def get_lesson_audio_info(
     ).all()
 
     cached_languages = {c.language: c.audio_url for c in caches}
-    generating_languages = [l for (lid, l) in _active_generation_tasks if lid == str(lesson.id)]
+    async with _generation_lock:
+        generating_languages = [l for (lid, l) in _active_generation_tasks.keys() if lid == str(lesson.id)]
     health = await check_voice_service_health()
 
     return {
