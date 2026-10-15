@@ -5,8 +5,8 @@ import re
 import sys
 import time
 from fastapi import *
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives
 from models import Base
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
 from database import engine
@@ -318,6 +318,7 @@ MIGRATION_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_shared_packs_partnership ON partnership_shared_packs(partnership_id);",
     "CREATE INDEX IF NOT EXISTS ix_shared_packs_recipient ON partnership_shared_packs(recipient_id, status);",
+    "UPDATE study_packs SET status = 'partner_only' WHERE category = 'Duo Study' AND status = 'approved';",
     """
     CREATE TABLE IF NOT EXISTS coin_transactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -372,6 +373,22 @@ MIGRATION_STATEMENTS = [
         ('share_pack', 'Knowledge Partner', 'Share a Study Pack with your study partner', 'sharing', 1, 'packs', 20, 'SHARE')
     ON CONFLICT (code) DO NOTHING;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS lesson_audio_cache (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        lesson_id UUID NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+        language VARCHAR(10) NOT NULL,
+        content_hash VARCHAR(64) NOT NULL,
+        audio_url VARCHAR NOT NULL,
+        duration_seconds FLOAT,
+        file_size_bytes INTEGER,
+        format VARCHAR(10) DEFAULT 'mp3',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ,
+        CONSTRAINT uq_lesson_audio_lang_hash UNIQUE (lesson_id, language, content_hash)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_lesson_audio_lookup ON lesson_audio_cache(lesson_id, language);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
@@ -479,6 +496,7 @@ app.include_router(payments.router, tags=["Payments Foundation"])
 app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
 app.include_router(study_partners.router, tags=["Study Partnerships"])
 app.include_router(objectives.router, tags=["Objectives & Nu-Coins"])
+app.include_router(tts.router, tags=["Lesson TTS Audio"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

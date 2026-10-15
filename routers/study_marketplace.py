@@ -147,7 +147,10 @@ def list_marketplace_packs(
     Returns public approved study packs with creator information,
     download/like counts, and flags indicating if the caller already owns or liked it.
     """
-    query = db.query(models.StudyPack).filter(models.StudyPack.status == "approved")
+    query = db.query(models.StudyPack).filter(
+        models.StudyPack.status == "approved",
+        models.StudyPack.category != "Duo Study"
+    )
 
     if official_only:
         query = query.filter(models.StudyPack.is_official.is_(True))
@@ -264,8 +267,10 @@ def list_marketplace_packs(
     # Available categories summary
     categories_agg = db.query(
         models.StudyPack.category,
-        func.count(models.StudyPack.id)
-    ).filter(models.StudyPack.status == "approved").group_by(models.StudyPack.category).all()
+    ).filter(
+        models.StudyPack.status == "approved",
+        models.StudyPack.category != "Duo Study"
+    ).group_by(models.StudyPack.category).all()
 
     category_counts = {c[0]: c[1] for c in categories_agg}
 

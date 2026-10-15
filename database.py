@@ -44,9 +44,15 @@ class Settings(BaseSettings):
     EMAIL_FALLBACK_PROVIDER:str = ""
     AWS_ACCESS_KEY_ID:str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_REGION:str = ""
-    SES_FROM_EMAIL:str= ""
+    AWS_REGION: str = ""
+    SES_FROM_EMAIL: str = ""
+    NU_VOICE_URL: str = "" # URL of nu-voice microservice when deployed to 8GB server (e.g. http://voice.internal:8080)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_nu_voice_url(self) -> str:
+        import os
+        val = self.NU_VOICE_URL or os.getenv("NU_VOICE_URL") or os.getenv("VOICE_SERVICE_URL") or ""
+        return str(val).strip().strip('"').strip("'").rstrip("/")
 
     def get_paystack_secret_key(self) -> str:
         import os

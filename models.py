@@ -253,9 +253,28 @@ class LessonProgress(Base):
             ['enrollments.student_id', 'enrollments.course_id'], 
             ondelete="CASCADE" # If the enrollment is deleted, this progress is deleted!
         ),
-        Index("ix_lesson_progress_student_course", "student_id", "course_id"),
-        Index("ix_lesson_progress_student_lesson", "student_id", "lesson_id"),
-        Index("ix_lesson_progress_course_id", "course_id"),
+    )
+
+
+class LessonAudioCache(Base):
+    __tablename__ = 'lesson_audio_cache'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    lesson_id = Column(UUID(as_uuid=True), ForeignKey('lessons.id', ondelete="CASCADE"), nullable=False, index=True)
+    language = Column(String(10), nullable=False, index=True)  # 'en', 'ha', 'fr'
+    content_hash = Column(String(64), nullable=False, index=True)
+    audio_url = Column(String, nullable=False)
+    duration_seconds = Column(Float, nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    format = Column(String(10), default="mp3")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    lesson = relationship("Lesson", backref=backref("audio_caches", cascade="all, delete"))
+
+    __table_args__ = (
+        UniqueConstraint('lesson_id', 'language', 'content_hash', name='uq_lesson_audio_lang_hash'),
+        Index('ix_lesson_audio_lookup', 'lesson_id', 'language'),
     )
 
 
