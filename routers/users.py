@@ -468,6 +468,13 @@ async def verify_email(payload: VerifyEmailSchema, background_tasks: BackgroundT
     db.delete(otp_record)
     db.commit()
 
+    # 5. Initialize user starting wallet (100 welcome coins backend-side once)
+    try:
+        from services.coin_service import init_new_user_wallet
+        init_new_user_wallet(db, user.id, starting_balance=100)
+    except Exception as e:
+        print(f"[CoinService] Failed to init new user wallet: {e}")
+
     background_tasks.add_task(send_general_welcome_email, user.email, user.first_name)
     return {
         "message": "Email verified successfully!", 

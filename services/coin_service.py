@@ -41,7 +41,54 @@ def _get_or_sync_wallet(db: Session, user_id: uuid.UUID):
             u.coins_balance = bal
         db.commit()
     elif u and u.coins_balance != cb.balance:
-        u.coins_balance = cb.balance
+        # Reconcile discrepancy by taking the higher balance so neither is downgraded
+        unified_bal = max(int(cb.balance or 0), int(getattr(u, "coins_balance", 0) or 0))
+        cb.balance = unified_bal
+        u.coins_balance = unified_bal
+        db.commit()
+    return cb, u
+
+
+def init_new_user_wallet(db: Session, user_id: uuid.UUID, starting_balance: int = 100):
+    """
+    Initializes a new user's wallet with the starting balance (default 100 Nu-Coins)
+    and records the welcome bonus transaction ledger entry. Run once on registration.
+    """
+    from monetization_models import CreditBalance, CreditLedgerEntry
+    cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
+    u = db.query(models.User).filter(models.User.id == user_id).first()
+
+    if not cb:
+        cb = CreditBalance(user_id=user_id, balance=starting_balance)
+        db.add(cb)
+        if u:
+            u.coins_balance = starting_balance
+
+        # Log welcome bonus in platform CoinTransaction
+        tx = models.CoinTransaction(
+            user_id=user_id,
+            amount=starting_balance,
+            category="welcome_bonus",
+            source_type="signup",
+            reference_id="initial_signup_bonus",
+            description=f"Welcome bonus (+{starting_balance} Nu-Coins)",
+        )
+        db.add(tx)
+
+        # Log in CreditLedgerEntry
+        ledger = CreditLedgerEntry(
+            user_id=user_id,
+            delta=starting_balance,
+            reason="welcome_bonus",
+            reference_id="initial_signup_bonus",
+            balance_after=starting_balance,
+        )
+        db.add(ledger)
+        db.commit()
+    elif u and u.coins_balance != cb.balance:
+        unified_bal = max(int(cb.balance or 0), int(getattr(u, "coins_balance", 0) or 0))
+        cb.balance = unified_bal
+        u.coins_balance = unified_bal
         db.commit()
     return cb, u
 

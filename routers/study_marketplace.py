@@ -82,21 +82,9 @@ DEFAULT_STARTING_COINS = 100
 
 
 def _get_or_create_wallet(db: Session, user_id: uuid.UUID) -> CreditBalance:
-    """Fetches user CreditBalance, initializing with 100 welcome coins if not existing."""
-    cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
-    if not cb:
-        cb = CreditBalance(user_id=user_id, balance=DEFAULT_STARTING_COINS)
-        db.add(cb)
-        db.flush()
-        ledger = CreditLedgerEntry(
-            user_id=user_id,
-            delta=DEFAULT_STARTING_COINS,
-            reason="welcome_bonus",
-            reference_id="initial_signup_bonus",
-            balance_after=DEFAULT_STARTING_COINS
-        )
-        db.add(ledger)
-        db.flush()
+    """Fetches user CreditBalance, synchronizing with User.coins_balance and initializing if needed."""
+    from services.coin_service import _get_or_sync_wallet
+    cb, _ = _get_or_sync_wallet(db, user_id)
     return cb
 
 

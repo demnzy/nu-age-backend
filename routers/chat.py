@@ -116,6 +116,17 @@ async def chat_websocket(
             if msg_type == "read_receipt":
                 membership.last_read_at = datetime.now(timezone.utc)
                 db.commit()
+                receipt_payload = {
+                    "id": "read_receipt",
+                    "channel_id": str(channel_id),
+                    "type": "read_receipt",
+                    "user_id": user_id_str,
+                    "read_at": membership.last_read_at.isoformat()
+                }
+                channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                for member in channel_members:
+                    if str(member[0]) != user_id_str:
+                        await manager.send_personal_message(receipt_payload, str(member[0]))
                 continue
                 
             if msg_type == "typing":
@@ -238,13 +249,17 @@ async def chat_websocket(
                 sender_name = f"{first} {last}".strip()
                 if not sender_name: sender_name = getattr(user, "username", "Unknown")
 
+            client_msg_id = data.get("client_msg_id") or (meta_dict.get("client_msg_id") if isinstance(meta_dict, dict) else None)
+
             broadcast_payload = {
                 "id": str(new_msg.id),
+                "client_msg_id": client_msg_id,
                 "channel_id": str(channel_id),
                 "type": new_msg.type.value if hasattr(new_msg.type, 'value') else new_msg.type,
                 "content": new_msg.content,
                 "metadata_payload": new_msg.metadata_payload,
                 "created_at": new_msg.created_at.isoformat(),
+                "status": "delivered",
                 "sender": {
                     "id": str(user.id),
                     "name": sender_name,
@@ -665,15 +680,39 @@ def get_channel_messages(
         .all()
     )
 
-    # 3. Format the response
+    # 3. Format the response with delivery/read status telemetry
+    other_members = db.query(models.ChannelMember).filter(
+        models.ChannelMember.channel_id == channel_id,
+        models.ChannelMember.user_id != user.id
+    ).all()
+    max_other_read_at = None
+    for om in other_members:
+        if om.last_read_at:
+            if max_other_read_at is None or om.last_read_at > max_other_read_at:
+                max_other_read_at = om.last_read_at
+
     formatted_messages = []
     for msg in messages:
+        msg_created = msg.created_at
+        if msg_created and msg_created.tzinfo is None:
+            msg_created = msg_created.replace(tzinfo=timezone.utc)
+
+        is_me = (msg.sender_id == user.id)
+        if is_me:
+            if max_other_read_at and msg_created and max_other_read_at >= msg_created:
+                msg_status = "read"
+            else:
+                msg_status = "delivered"
+        else:
+            msg_status = "delivered"
+
         formatted_messages.append({
             "id": str(msg.id),
             "type": msg.type,
             "content": msg.content,
             "metadata_payload": msg.metadata_payload, # For the Polls!
             "created_at": msg.created_at,
+            "status": msg_status,
             "sender": {
                 "id": str(msg.sender.id),
                 "name": f"{msg.sender.first_name} {msg.sender.last_name}",
@@ -725,13 +764,17 @@ async def send_channel_message_rest(
     last = user.last_name or ""
     sender_name = f"{first} {last}".strip() or getattr(user, "username", "Unknown")
 
+    client_msg_id = (payload.metadata_payload or {}).get("client_msg_id")
+
     broadcast_payload = {
         "id": str(new_msg.id),
+        "client_msg_id": client_msg_id,
         "channel_id": str(channel_id),
         "type": new_msg.type.value if hasattr(new_msg.type, "value") else new_msg.type,
         "content": new_msg.content,
         "metadata_payload": new_msg.metadata_payload,
         "created_at": new_msg.created_at.isoformat(),
+        "status": "delivered",
         "sender": {
             "id": str(user.id),
             "name": sender_name,
