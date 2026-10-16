@@ -1568,7 +1568,7 @@ async def ask_ai_tutor_response(
         response = await client.chat.completions.create(
             model=settings.get_openai_model(),
             messages=messages,
-            max_tokens=800,
+            max_completion_tokens=800,
             reasoning_effort=settings.get_openai_reasoning_effort("chat"),
         )
         reply = response.choices[0].message.content or "I couldn't generate a response. Please try again."
@@ -1639,11 +1639,11 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
                     "content": user_content
                 }
             ],
-            max_tokens=2500,
+            max_completion_tokens=2500,
             reasoning_effort=settings.get_openai_reasoning_effort("ocr"),
         )
         extracted_text = response.choices[0].message.content or ""
         return extracted_text.strip()
     except Exception as ex:
         print(f"[Vision Extraction Error]: {ex}")
-        raise
+        raise

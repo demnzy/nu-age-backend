@@ -350,7 +350,7 @@ async def import_youtube_material(
                 {"role": "user", "content": prompt}
             ],
             reasoning_effort=settings.get_openai_reasoning_effort("chat"),
-            max_tokens=1500,
+            max_completion_tokens=1500,
         )
         ai_notes = completion.choices[0].message.content.strip()
         study_content += ai_notes
@@ -1088,4 +1088,4 @@ def delete_study_material(
         sub.materials_uploaded = max(0, sub.materials_uploaded - 1)
 
     db.commit()
-    return {"success": True, "message": "Material removed from vault."}
+    return {"success": True, "message": "Material removed from vault."}

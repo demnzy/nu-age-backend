@@ -216,7 +216,7 @@ async def _parse_single_chunk_with_ai(
                 ],
                 response_format=ParsedCBTPack,
                 reasoning_effort=_get_reasoning_effort("cbt"),
-                max_tokens=16384,
+                max_completion_tokens=16384,
             )
             parsed = response.choices[0].message.parsed
             if parsed and parsed.questions:
@@ -404,7 +404,7 @@ async def parse_past_questions_from_image_with_ai(
                 ],
                 response_format=ParsedCBTPack,
                 reasoning_effort=_get_reasoning_effort("cbt"),
-                max_tokens=16384,
+                max_completion_tokens=16384,
             )
             parsed = response.choices[0].message.parsed
             if parsed and parsed.questions:

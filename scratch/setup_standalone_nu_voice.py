@@ -305,7 +305,7 @@ class Translator:
                 {"role": "user", "content": text},
             ],
             "temperature": 0.3,
-            "max_tokens": 2048,
+            "max_completion_tokens": 2048,
         }
         async with httpx.AsyncClient(timeout=20.0) as client:
             res = await client.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
@@ -327,7 +327,7 @@ class Translator:
                 {"role": "user", "content": text},
             ],
             "reasoning_effort": "medium",
-            "max_tokens": 2048,
+            "max_completion_tokens": 2048,
         }
         async with httpx.AsyncClient(timeout=25.0) as client:
             res = await client.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
