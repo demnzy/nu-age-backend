@@ -65,6 +65,10 @@ class AdminUpdatePackPayload(BaseModel):
     cover_image_url: Optional[str] = None
     is_official: Optional[bool] = None
     status: Optional[str] = None
+    theme_gradient: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    questions: Optional[List[Dict[str, Any]]] = None
+    flashcards: Optional[List[Dict[str, Any]]] = None
 
 
 class AIPastQuestionsParsePayload(BaseModel):
@@ -873,7 +877,7 @@ def update_pack_admin(
     db: Session = Depends(get_db),
     admin: models.User = Depends(get_current_super_admin)
 ):
-    """Platform Super Admin: Direct edit of title, description, category, price, cover image, and status."""
+    """Platform Super Admin: Direct edit of title, description, category, price, cover image, status, duration, and CBT questions."""
     pack = db.query(models.StudyPack).filter(models.StudyPack.id == pack_id).first()
     if not pack:
         raise HTTPException(status_code=404, detail="Study pack not found.")
@@ -892,9 +896,123 @@ def update_pack_admin(
         pack.is_official = payload.is_official
     if payload.status:
         pack.status = payload.status
+    if payload.theme_gradient:
+        pack.theme_gradient = payload.theme_gradient
 
+    pd = dict(pack.pack_data or {})
+    if payload.duration_minutes is not None:
+        pd["duration_minutes"] = payload.duration_minutes
+        pd["duration_seconds"] = payload.duration_minutes * 60
+
+    if payload.flashcards is not None:
+        pd["flashcards"] = payload.flashcards
+
+    if payload.questions is not None:
+        pd["questions"] = payload.questions
+        # Sync to any linked relational study materials
+        linked_mats = db.query(models.StudyMaterial).filter(
+            or_(
+                models.StudyMaterial.id == pack.id,
+                func.lower(models.StudyMaterial.title) == func.lower(pack.title)
+            )
+        ).all()
+        dls = db.query(models.StudyPackDownload).filter(models.StudyPackDownload.pack_id == pack.id).all()
+        linked_mat_ids = {m.id for m in linked_mats} | {dl.imported_material_id for dl in dls if dl.imported_material_id}
+
+        for mid in linked_mat_ids:
+            mat_rec = db.query(models.StudyMaterial).filter(models.StudyMaterial.id == mid).first()
+            target_user_id = mat_rec.user_id if mat_rec else pack.creator_id
+            db.query(models.Question).filter(models.Question.material_id == mid).delete()
+            for q_dict in payload.questions:
+                q_text = (q_dict.get("question_text") or q_dict.get("question", "")).strip()
+                opts = q_dict.get("options", [])
+                if q_text and opts:
+                    db.add(models.Question(
+                        user_id=target_user_id,
+                        material_id=mid,
+                        question_text=q_text,
+                        options=opts,
+                        answer_index=int(q_dict.get("answer_index", 0)),
+                        explanation=q_dict.get("explanation", ""),
+                        difficulty=q_dict.get("difficulty", "standard"),
+                        image_url=q_dict.get("image_url"),
+                        topic=q_dict.get("topic"),
+                        exam_type=q_dict.get("exam_type"),
+                        exam_year=q_dict.get("exam_year"),
+                    ))
+
+    pack.pack_data = pd
     db.commit()
+    db.refresh(pack)
     return {"success": True, "pack_id": str(pack.id), "status": pack.status}
+
+
+@router.get("/admin/packs/{pack_id}/full")
+def get_admin_pack_full(
+    pack_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_super_admin)
+):
+    """Platform Super Admin: Retrieve full study pack data including ALL questions and flashcards for editing."""
+    pack = db.query(models.StudyPack).filter(models.StudyPack.id == pack_id).first()
+    if not pack:
+        raise HTTPException(status_code=404, detail="Study pack not found.")
+
+    pd = pack.pack_data or {}
+    questions = pd.get("questions", [])
+    flashcards = pd.get("flashcards", [])
+
+    if not questions:
+        db_qs = db.query(models.Question).filter(models.Question.material_id == pack.id).all()
+        if not db_qs:
+            db_mat = db.query(models.StudyMaterial).filter(func.lower(models.StudyMaterial.title) == func.lower(pack.title)).first()
+            if db_mat:
+                db_qs = db.query(models.Question).filter(models.Question.material_id == db_mat.id).all()
+        if db_qs:
+            questions = [
+                {
+                    "question_text": q.question_text,
+                    "options": q.options,
+                    "answer_index": q.answer_index,
+                    "explanation": q.explanation,
+                    "image_url": q.image_url,
+                    "topic": q.topic,
+                    "exam_type": q.exam_type,
+                    "exam_year": q.exam_year,
+                }
+                for q in db_qs
+            ]
+
+    detected_exam_type = pd.get("exam_type")
+    detected_exam_year = pd.get("exam_year")
+    for q in questions:
+        if not detected_exam_type and q.get("exam_type"):
+            detected_exam_type = q.get("exam_type")
+        if not detected_exam_year and q.get("exam_year"):
+            detected_exam_year = q.get("exam_year")
+        if detected_exam_type and detected_exam_year:
+            break
+
+    dur_mins = pd.get("duration_minutes") or (len(questions) if len(questions) > 0 else 60)
+
+    return {
+        "id": str(pack.id),
+        "title": pack.title,
+        "description": pack.description or "",
+        "category": pack.category,
+        "theme_gradient": pack.theme_gradient or "emerald_teal",
+        "cover_image_url": pack.cover_image_url,
+        "price_coins": pack.price_coins,
+        "is_official": pack.is_official,
+        "status": pack.status,
+        "duration_minutes": dur_mins,
+        "exam_type": detected_exam_type or "JAMB UTME",
+        "exam_year": detected_exam_year,
+        "questions": questions,
+        "flashcards": flashcards,
+        "questions_count": len(questions),
+        "flashcards_count": len(flashcards),
+    }
 
 
 @router.get("/admin/packs")

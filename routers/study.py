@@ -5,6 +5,7 @@ from sqlalchemy.sql.expression import func
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 import uuid
+import random
 from pydantic import BaseModel
 from services.ai_service import process_and_generate_content, get_material_generation_progress
 import models
@@ -554,21 +555,65 @@ def get_exam_categories(
 ):
     """Returns available topics/categories, question counts per topic,
     total available question count, and detected exam type for the target materials."""
-    query = db.query(models.Question).filter(models.Question.user_id == user.id)
-    exam_type = None
-
+    ids_list = []
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
-        if ids_list:
-            query = query.filter(models.Question.material_id.in_(ids_list))
-            dl = db.query(models.StudyPackDownload).filter(
-                models.StudyPackDownload.user_id == user.id,
-                models.StudyPackDownload.imported_material_id.in_(ids_list)
-            ).first()
-            if dl:
-                pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
-                if pack and pack.pack_data:
-                    exam_type = pack.pack_data.get("exam_type")
+
+    # 1. Discover any associated StudyPacks (direct pack ID, download record, or matching material title)
+    candidate_packs = []
+    if ids_list:
+        # Check direct pack IDs
+        packs_by_id = db.query(models.StudyPack).filter(models.StudyPack.id.in_(ids_list)).all()
+        candidate_packs.extend(packs_by_id)
+
+        # Check downloaded pack mappings
+        dls = db.query(models.StudyPackDownload).filter(
+            models.StudyPackDownload.imported_material_id.in_(ids_list)
+        ).all()
+        if dls:
+            packs_by_dl = db.query(models.StudyPack).filter(
+                models.StudyPack.id.in_([d.pack_id for d in dls])
+            ).all()
+            candidate_packs.extend(packs_by_dl)
+
+        # Check materials and find matching packs by title
+        materials = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(ids_list)).all()
+        for mat in materials:
+            m_title = (mat.title or "").strip()
+            if m_title:
+                matching_title_packs = db.query(models.StudyPack).filter(
+                    or_(
+                        func.lower(models.StudyPack.title) == func.lower(m_title),
+                        func.lower(models.StudyPack.title).contains(func.lower(m_title.replace("Questions", "Past Questions"))),
+                        func.lower(models.StudyPack.title).contains(func.lower(m_title.replace("Past Questions", "Questions"))),
+                    )
+                ).all()
+                candidate_packs.extend(matching_title_packs)
+
+    unique_packs = list({p.id: p for p in candidate_packs}.values())
+
+    # Tally questions from candidate packs
+    pack_topics = {}
+    pack_q_count = 0
+    pack_exam_type = None
+    for p in unique_packs:
+        if p.pack_data and p.pack_data.get("questions"):
+            pqs = p.pack_data.get("questions", [])
+            pack_q_count += len(pqs)
+            if not pack_exam_type and p.pack_data.get("exam_type"):
+                pack_exam_type = p.pack_data.get("exam_type")
+            for q in pqs:
+                t = (q.get("topic") or "General").strip()
+                pack_topics[t] = pack_topics.get(t, 0) + 1
+                if not pack_exam_type and q.get("exam_type"):
+                    pack_exam_type = q.get("exam_type")
+
+    # 2. Tally questions from relational database
+    query = db.query(models.Question)
+    if ids_list:
+        query = query.filter(models.Question.material_id.in_(ids_list))
+    else:
+        query = query.filter(models.Question.user_id == user.id)
 
     topic_rows = (
         query.with_entities(
@@ -581,21 +626,29 @@ def get_exam_categories(
         .all()
     )
 
-    categories = []
-    total = 0
-    for r in topic_rows:
-        categories.append({
-            "name": r.topic_name,
-            "count": int(r.q_count)
-        })
-        total += int(r.q_count)
-        if not exam_type and r.ex_type:
-            exam_type = r.ex_type
+    db_total = sum(int(r.q_count) for r in topic_rows)
+    db_exam_type = next((r.ex_type for r in topic_rows if r.ex_type), None)
 
+    # Prefer pack questions when pack contains more items (e.g. 401 in pack vs 10 in cloned material)
+    if pack_q_count > db_total:
+        categories = [
+            {"name": name, "count": cnt}
+            for name, cnt in sorted(pack_topics.items(), key=lambda x: x[1], reverse=True)
+        ]
+        return {
+            "total_questions": pack_q_count,
+            "exam_type": pack_exam_type or "JAMB UTME",
+            "categories": categories,
+        }
+
+    categories = [
+        {"name": r.topic_name, "count": int(r.q_count)}
+        for r in topic_rows
+    ]
     return {
-        "total_questions": total,
-        "exam_type": exam_type,
-        "categories": categories
+        "total_questions": db_total,
+        "exam_type": db_exam_type or pack_exam_type or "JAMB UTME",
+        "categories": categories,
     }
 
 
@@ -610,13 +663,106 @@ def get_exam_questions(
 ):
     """Pulls random questions for a full exam simulation,
     scoped to the given materials and topics, with duration cognizant of official exam standards (JAMB, WAEC, NECO, etc.)."""
-    effective_limit = min(max(5, int(limit or 50)), 200)
+    effective_limit = min(max(5, int(limit or 50)), 500)
 
     # Parse topics filter if supplied
     topic_list = []
     if topics:
         topic_list = [t.strip() for t in topics.split(",") if t.strip()]
 
+    ids_list = []
+    if material_ids:
+        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
+
+    # 1. Discover associated StudyPacks (direct ID, download record, or matching material title)
+    candidate_packs = []
+    if ids_list:
+        packs_by_id = db.query(models.StudyPack).filter(models.StudyPack.id.in_(ids_list)).all()
+        candidate_packs.extend(packs_by_id)
+
+        dls = db.query(models.StudyPackDownload).filter(
+            models.StudyPackDownload.imported_material_id.in_(ids_list)
+        ).all()
+        if dls:
+            packs_by_dl = db.query(models.StudyPack).filter(
+                models.StudyPack.id.in_([d.pack_id for d in dls])
+            ).all()
+            candidate_packs.extend(packs_by_dl)
+
+        materials = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(ids_list)).all()
+        for mat in materials:
+            m_title = (mat.title or "").strip()
+            if m_title:
+                matching_title_packs = db.query(models.StudyPack).filter(
+                    or_(
+                        func.lower(models.StudyPack.title) == func.lower(m_title),
+                        func.lower(models.StudyPack.title).contains(func.lower(m_title.replace("Questions", "Past Questions"))),
+                        func.lower(models.StudyPack.title).contains(func.lower(m_title.replace("Past Questions", "Questions"))),
+                    )
+                ).all()
+                candidate_packs.extend(matching_title_packs)
+
+    unique_packs = list({p.id: p for p in candidate_packs}.values())
+
+    # Count DB questions for comparison
+    query_db_cnt = db.query(models.Question)
+    if ids_list:
+        query_db_cnt = query_db_cnt.filter(models.Question.material_id.in_(ids_list))
+    else:
+        query_db_cnt = query_db_cnt.filter(models.Question.user_id == user.id)
+    db_count = query_db_cnt.count()
+
+    # Check if candidate packs have more questions
+    all_pack_qs = []
+    def _match_pack_topic(q):
+        if not topic_list or any(t.lower() in ("all", "all topics") for t in topic_list):
+            return True
+        q_top = (q.get("topic") or "General").strip()
+        if "General" in topic_list and not q_top:
+            return True
+        return q_top in topic_list
+
+    for p in unique_packs:
+        if p.pack_data and p.pack_data.get("questions"):
+            for q in p.pack_data.get("questions", []):
+                if _match_pack_topic(q):
+                    all_pack_qs.append((p, q))
+
+    if len(all_pack_qs) > db_count and len(all_pack_qs) > 0:
+        sample_size = min(effective_limit, len(all_pack_qs))
+        sampled = random.sample(all_pack_qs, sample_size)
+        primary_pack = unique_packs[0]
+        detected_exam_type = primary_pack.pack_data.get("exam_type") if primary_pack.pack_data else "JAMB UTME"
+
+        question_payload = [
+            {
+                "id": q.get("id") or str(uuid.uuid4()),
+                "material_id": str(p.id),
+                "subject": p.title,
+                "question": q.get("question_text", ""),
+                "options": q.get("options", []),
+                "answer": q.get("answer_index", 0),
+                "explanation": q.get("explanation", ""),
+                "image_url": q.get("image_url"),
+                "topic": q.get("topic"),
+                "exam_type": q.get("exam_type") or detected_exam_type,
+                "exam_year": q.get("exam_year"),
+            }
+            for p, q in sampled
+        ]
+
+        if duration_seconds and int(duration_seconds) > 0:
+            computed_duration = int(duration_seconds)
+        else:
+            sec_per_q = 48 if "JAMB" in str(detected_exam_type).upper() else 60
+            computed_duration = max(300, sample_size * sec_per_q)
+
+        return {
+            "questions": question_payload,
+            "duration_seconds": computed_duration,
+        }
+
+    # Otherwise fallback to database questions
     authoritative_duration = None
     total_pack_questions = None
     questions = []
@@ -630,27 +776,22 @@ def get_exam_questions(
             return q.filter(or_(models.Question.topic.in_(other), models.Question.topic == None, models.Question.topic == ''))
         return q.filter(models.Question.topic.in_(topic_list))
 
-    if material_ids:
-        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
+    if ids_list:
         materials = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(ids_list)).all()
         mat_map = {m.id: m.title for m in materials}
 
         if len(ids_list) > 1:
-            # Multi-subject bundle sitting: partition questions proportionally per subject (up to effective_limit // len(ids_list))
             per_sub = max(5, effective_limit // len(ids_list))
             total_duration_acc = 0
             for mid in ids_list:
                 mat_q_query = db.query(models.Question).filter(
-                    models.Question.user_id == user.id,
                     models.Question.material_id == mid
                 )
                 mat_q_query = _apply_topic_filter(mat_q_query)
                 mat_qs = mat_q_query.order_by(func.random()).limit(per_sub).all()
                 questions.extend(mat_qs)
 
-                # Check pack duration for this subject
                 dl = db.query(models.StudyPackDownload).filter(
-                    models.StudyPackDownload.user_id == user.id,
                     models.StudyPackDownload.imported_material_id == mid
                 ).first()
                 if dl:
@@ -666,14 +807,12 @@ def get_exam_questions(
         else:
             mid = ids_list[0]
             q_query = db.query(models.Question).filter(
-                models.Question.user_id == user.id,
                 models.Question.material_id == mid
             )
             q_query = _apply_topic_filter(q_query)
             questions = q_query.order_by(func.random()).limit(effective_limit).all()
 
             dl = db.query(models.StudyPackDownload).filter(
-                models.StudyPackDownload.user_id == user.id,
                 models.StudyPackDownload.imported_material_id == mid
             ).first()
             if dl:
