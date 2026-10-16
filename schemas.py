@@ -291,6 +291,7 @@ class SubscriptionStatusResponse(BaseModel):
     generations_used: int
     generations_limit: Optional[int]
     generations_remaining: Optional[int]
+    bonus_generations: Optional[int] = 0
 
 class NetworkUserResponse(BaseModel):
     id: UUID

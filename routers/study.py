@@ -281,10 +281,11 @@ async def import_youtube_material(
 
     from monetization_models import CreditBalance, CreditLedgerEntry
     credit_bal = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
+    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
     has_gen_quota = (
         not sub.plan
-        or sub.plan.generations_limit is None
-        or sub.generations_used < sub.plan.generations_limit
+        or effective_gen_limit is None
+        or sub.generations_used < effective_gen_limit
         or (credit_bal and credit_bal.balance > 0)
     )
     if not has_gen_quota:
@@ -371,7 +372,8 @@ async def import_youtube_material(
     db.refresh(new_mat)
 
     # Queue generation engine for the newly imported YouTube material and count toward student quota
-    if sub.plan and sub.plan.generations_limit is not None and sub.generations_used >= sub.plan.generations_limit:
+    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
+    if effective_gen_limit is not None and sub.generations_used >= effective_gen_limit:
         if credit_bal and credit_bal.balance > 0:
             credit_bal.balance -= 1
             db.add(CreditLedgerEntry(
@@ -921,8 +923,9 @@ async def generate_study_content(
     credit_source = "free_quota"
     credit_balance = None  # only set if we end up spending a credit
 
-    if sub.plan.generations_limit is not None and sub.generations_used >= sub.plan.generations_limit:
-        # Free quota exhausted — fall back to purchased credits instead of
+    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
+    if effective_gen_limit is not None and sub.generations_used >= effective_gen_limit:
+        # Free quota + bonus quota exhausted — fall back to purchased credits instead of
         # hard-403ing, same idea as the old check but with a paid path.
         credit_balance = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
 
@@ -932,9 +935,10 @@ async def generate_study_content(
                 detail={
                     "error": "insufficient_generations",
                     "free_used": sub.generations_used,
-                    "free_limit": sub.plan.generations_limit,
+                    "free_limit": effective_gen_limit,
+                    "bonus_generations": sub.bonus_generations or 0,
                     "credits_remaining": credit_balance.balance if credit_balance else 0,
-                    "message": "You're out of free generations and credits. Buy a credit pack to continue.",
+                    "message": "You're out of generation quota and credits. Buy an AI booster pack or Nu-Coins to continue.",
                 }
             )
 

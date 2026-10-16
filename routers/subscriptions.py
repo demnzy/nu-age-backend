@@ -57,28 +57,39 @@ def get_subscription_status(
         db.commit()
         db.refresh(sub)
 
-    # Calculate remaining limits taking bonus_materials into account
+    # 1. Sync and preserve accurate materials upload count
+    actual_mats = db.query(models.StudyMaterial).filter(models.StudyMaterial.user_id == current_user.id).count()
+    if sub.materials_uploaded < actual_mats:
+        sub.materials_uploaded = actual_mats
+        db.commit()
+
+    # 2. Calculate remaining limits taking bonus_materials and bonus_generations into account
     bonus_mats = getattr(sub, "bonus_materials", 0) or 0
+    bonus_gens = getattr(sub, "bonus_generations", 0) or 0
+
+    effective_mat_limit = None
     mat_remaining = None
-    effective_limit = None
     if sub.plan.materials_limit is not None:
-        effective_limit = sub.plan.materials_limit + bonus_mats
-        mat_remaining = max(0, effective_limit - sub.materials_uploaded)
+        effective_mat_limit = sub.plan.materials_limit + bonus_mats
+        mat_remaining = max(0, effective_mat_limit - sub.materials_uploaded)
         
+    effective_gen_limit = None
     gen_remaining = None
     if sub.plan.generations_limit is not None:
-        gen_remaining = max(0, sub.plan.generations_limit - sub.generations_used)
+        effective_gen_limit = sub.plan.generations_limit + bonus_gens
+        gen_remaining = max(0, effective_gen_limit - sub.generations_used)
 
     return {
         "plan_id": sub.plan_id,
         "label": sub.plan.label,
         
         "materials_used": sub.materials_uploaded,
-        "materials_limit": effective_limit if effective_limit is not None else sub.plan.materials_limit,
+        "materials_limit": effective_mat_limit if effective_mat_limit is not None else sub.plan.materials_limit,
         "materials_remaining": mat_remaining,
         "bonus_materials": bonus_mats,
         
         "generations_used": sub.generations_used,
-        "generations_limit": sub.plan.generations_limit,
-        "generations_remaining": gen_remaining
+        "generations_limit": effective_gen_limit if effective_gen_limit is not None else sub.plan.generations_limit,
+        "generations_remaining": gen_remaining,
+        "bonus_generations": bonus_gens,
     }

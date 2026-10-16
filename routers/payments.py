@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Header, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,9 +9,28 @@ import models
 from database import get_db, Settings
 from services import auth
 from services.payment_service import get_payment_gateway, PaystackGateway
+from routers.platform_admin import get_current_super_admin
 
 router = APIRouter(prefix="/payments", tags=["Payments Foundation"])
 settings = Settings()
+
+
+class StoreProductPayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    category: str  # plan, booster, coins, org_seats
+    price: float
+    badge: Optional[str] = None
+    description: Optional[str] = None
+    interval: Optional[str] = None
+    features: Optional[List[str]] = Field(default_factory=list)
+    bonus_materials: Optional[int] = 0
+    bonus_generations: Optional[int] = 0
+    bonus_coins: Optional[int] = 0
+    plan_id: Optional[str] = None
+    org_seats: Optional[int] = 0
+    is_active: Optional[bool] = True
+    display_order: Optional[int] = 0
 
 
 class InitializePaymentRequest(BaseModel):
@@ -116,6 +135,35 @@ async def initialize_payment(
             status_code=502,
             detail=f"Payment gateway initialization failed: {ex}"
         )
+
+
+@router.get("/history")
+def get_user_payment_history(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Returns the authenticated user's past payment transactions and receipts.
+    """
+    txs = db.query(models.PaymentTransaction).filter(
+        models.PaymentTransaction.user_id == current_user.id
+    ).order_by(models.PaymentTransaction.created_at.desc()).limit(50).all()
+
+    return [
+        {
+            "reference": tx.reference,
+            "gateway": tx.gateway,
+            "amount": tx.amount,
+            "currency": tx.currency or "NGN",
+            "status": tx.status,
+            "purpose": tx.purpose,
+            "metadata": tx.metadata_payload or {},
+            "created_at": tx.created_at.isoformat() if tx.created_at else None,
+            "paid_at": tx.paid_at.isoformat() if tx.paid_at else None,
+            "fulfilled_at": tx.fulfilled_at.isoformat() if tx.fulfilled_at else None,
+        }
+        for tx in txs
+    ]
 
 
 @router.get("/verify/{reference}", response_model=VerifyPaymentResponse)
@@ -274,183 +322,406 @@ async def paystack_webhook(
 
 
 @router.get("/store/catalog")
-def get_store_catalog():
+def get_store_catalog(db: Session = Depends(get_db)):
     """
-    Authoritative catalog of study booster packs, subscriptions, and org seat products.
-    Calibrated with market-aligned Nigerian pricing (NGN).
+    Authoritative catalog of study booster packs, subscriptions, nu-coins, and org seats.
+    Stored dynamically in PostgreSQL and managed by Super Administrators.
     """
+    _seed_store_catalog_if_empty(db)
+    products = db.query(models.StoreProduct).filter(
+        models.StoreProduct.is_active == True
+    ).order_by(models.StoreProduct.display_order.asc()).all()
+
+    def _to_dict(p: models.StoreProduct):
+        return {
+            "id": p.id,
+            "name": p.name,
+            "category": p.category,
+            "badge": p.badge,
+            "price": p.price,
+            "interval": p.interval,
+            "description": p.description,
+            "features": p.features or [],
+            "materials": p.bonus_materials,
+            "generations": p.bonus_generations,
+            "coins": p.bonus_coins,
+            "bonus_materials": p.bonus_materials,
+            "bonus_generations": p.bonus_generations,
+            "bonus_coins": p.bonus_coins,
+            "plan_id": p.plan_id,
+            "org_seats": p.org_seats,
+            "is_active": p.is_active,
+            "display_order": p.display_order,
+            "recommended": (p.badge or "").upper() in ("MOST POPULAR", "BEST VALUE"),
+        }
+
     return {
         "currency": "NGN",
         "currency_symbol": "₦",
-        "plans": [
-            {
-                "id": "free",
-                "name": "Free Tier",
-                "badge": "DEFAULT",
-                "price": 0,
-                "interval": "forever",
-                "materials_limit": 25,
-                "generations_limit": 40,
-                "exam_quota": 10,
-                "description": "Essential study toolkit for everyday comprehension.",
-                "features": [
-                    "25 Material Upload slots (PDF, Text, Notes)",
-                    "40 AI Study Deck Generation bundles",
-                    "10 Full Practice Exam simulations",
-                    "Unlimited Spaced Repetition Flashcards",
-                    "Socratic AI Chat Tutor",
-                ],
-                "is_current": True,
-            },
-            {
-                "id": "pro",
-                "name": "Pro Scholar",
-                "badge": "MOST POPULAR",
-                "price": 2500,
-                "interval": "month",
-                "materials_limit": 45,  # Free 25 + 20 extra per month
-                "generations_limit": 100,
-                "exam_quota": 40,
-                "description": "For dedicated undergraduates seeking an academic edge.",
-                "features": [
-                    "45 Total Material Upload slots (+20 extra/month)",
-                    "100 AI Study Deck Generation bundles/month",
-                    "40 Full Practice Exam simulations/month",
-                    "Unlimited Quick Quiz & Spaced Repetition",
-                    "Priority Socratic AI Tutor & LaTeX formatting",
-                    "Multi-photo whiteboard & slide OCR",
-                ],
-                "recommended": True,
-            },
-            {
-                "id": "unlimited",
-                "name": "Unlimited Ultimate",
-                "badge": "BEST VALUE",
-                "price": 8500,
-                "interval": "month",
-                "materials_limit": None,
-                "generations_limit": None,
-                "exam_quota": None,
-                "description": "Unbounded power for medical, law, and intensive exam candidates.",
-                "features": [
-                    "Unlimited Material Upload slots",
-                    "Unlimited AI Study Deck Generation bundles",
-                    "Unlimited Exam Simulations & Timer drills",
-                    "Deep Grounded Document Synthesis",
-                    "Early Access to new learning AI models",
-                ],
-                "recommended": False,
-            },
-        ],
-        "packs": [
-            {
-                "id": "starter_booster",
-                "name": "Starter Booster",
-                "badge": "QUICK TOP-UP",
-                "price": 1000,
-                "materials": 10,
-                "generations": 25,
-                "description": "+10 materials & +25 AI generations. Non-expiring.",
-                "features": [
-                    "+10 Additional Material slots",
-                    "+25 AI Generation bundles",
-                    "Credits never expire across cycles",
-                ],
-            },
-            {
-                "id": "semester_pack",
-                "name": "Semester Pack",
-                "badge": "STUDY SPRINT",
-                "price": 2200,
-                "materials": 25,
-                "generations": 50,
-                "description": "+25 materials & +50 AI generations. Perfect for midterm & finals prep.",
-                "features": [
-                    "+25 Additional Material slots",
-                    "+50 AI Generation bundles",
-                    "Credits never expire across cycles",
-                ],
-            },
-            {
-                "id": "mega_vault",
-                "name": "Mega Vault Booster",
-                "badge": "POWER USER",
-                "price": 4500,
-                "materials": 50,
-                "generations": 100,
-                "description": "+50 materials & +100 AI generations. Non-expiring consumable expansion.",
-                "features": [
-                    "+50 Additional Material slots",
-                    "+100 AI Generation bundles",
-                    "Credits never expire across cycles",
-                ],
-            },
-        ],
-        "org_products": [
-            {
-                "id": "org_seat_single",
-                "name": "Single Member Seat",
-                "price": 1500,
-                "interval": "month",
-                "description": "Add 1 additional student/faculty seat to your organisation workspace.",
-                "features": [
-                    "1 Extra Member Seat",
-                    "Full cohort & training access",
-                    "Analytics & gradebook monitoring",
-                ],
-            },
-            {
-                "id": "org_seat_pack_10",
-                "name": "Classroom 10-Seat Pack",
-                "badge": "POPULAR FOR TEAMS",
-                "price": 12000,
-                "interval": "month",
-                "description": "Add 10 seats to your organisation workspace with a bulk discount.",
-                "features": [
-                    "10 Extra Member Seats (Save 20%)",
-                    "Full cohort & training access",
-                    "Team exam distribution & proctoring",
-                ],
-            },
-        ],
+        "plans": [_to_dict(p) for p in products if p.category == "plan"],
+        "packs": [_to_dict(p) for p in products if p.category == "booster"],
+        "coins": [_to_dict(p) for p in products if p.category == "coins"],
+        "org_products": [_to_dict(p) for p in products if p.category == "org_seats"],
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SUPER ADMIN STORE CATALOG STUDIO ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/admin/products")
+def get_admin_store_products(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Returns ALL store products (active and inactive) for Super Admin Studio.
+    """
+    _seed_store_catalog_if_empty(db)
+    products = db.query(models.StoreProduct).order_by(
+        models.StoreProduct.category.asc(),
+        models.StoreProduct.display_order.asc()
+    ).all()
+    return products
+
+
+@router.post("/admin/products")
+def create_store_product(
+    payload: StoreProductPayload,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Creates a new store product or booster/coin package.
+    """
+    prod_id = payload.id.strip() if payload.id else f"prod_{uuid.uuid4().hex[:8]}"
+    existing = db.query(models.StoreProduct).filter(models.StoreProduct.id == prod_id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Product with ID '{prod_id}' already exists.")
+
+    new_prod = models.StoreProduct(
+        id=prod_id,
+        name=payload.name,
+        category=payload.category,
+        price=payload.price,
+        badge=payload.badge,
+        description=payload.description,
+        interval=payload.interval,
+        features=payload.features or [],
+        bonus_materials=payload.bonus_materials or 0,
+        bonus_generations=payload.bonus_generations or 0,
+        bonus_coins=payload.bonus_coins or 0,
+        plan_id=payload.plan_id,
+        org_seats=payload.org_seats or 0,
+        is_active=payload.is_active if payload.is_active is not None else True,
+        display_order=payload.display_order or 0,
+    )
+    db.add(new_prod)
+    db.commit()
+    db.refresh(new_prod)
+    return new_prod
+
+
+@router.put("/admin/products/{product_id}")
+def update_store_product(
+    product_id: str,
+    payload: StoreProductPayload,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Updates price, features, bonuses, or active status of a store product.
+    """
+    prod = db.query(models.StoreProduct).filter(models.StoreProduct.id == product_id).first()
+    if not prod:
+        raise HTTPException(status_code=404, detail="Store product not found.")
+
+    prod.name = payload.name
+    prod.category = payload.category
+    prod.price = payload.price
+    prod.badge = payload.badge
+    prod.description = payload.description
+    prod.interval = payload.interval
+    prod.features = payload.features or []
+    prod.bonus_materials = payload.bonus_materials or 0
+    prod.bonus_generations = payload.bonus_generations or 0
+    prod.bonus_coins = payload.bonus_coins or 0
+    prod.plan_id = payload.plan_id
+    prod.org_seats = payload.org_seats or 0
+    if payload.is_active is not None:
+        prod.is_active = payload.is_active
+    if payload.display_order is not None:
+        prod.display_order = payload.display_order
+
+    db.commit()
+    db.refresh(prod)
+    return prod
+
+
+@router.delete("/admin/products/{product_id}")
+def delete_store_product(
+    product_id: str,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Deactivates or deletes a store product.
+    """
+    prod = db.query(models.StoreProduct).filter(models.StoreProduct.id == product_id).first()
+    if not prod:
+        raise HTTPException(status_code=404, detail="Store product not found.")
+
+    db.delete(prod)
+    db.commit()
+    return {"status": "success", "message": f"Product '{product_id}' deleted successfully."}
+
+
+def _seed_store_catalog_if_empty(db: Session):
+    existing_count = db.query(models.StoreProduct).count()
+    if existing_count > 0:
+        return
+
+    defaults = [
+        # Plans
+        models.StoreProduct(
+            id="free",
+            name="Free Tier",
+            category="plan",
+            price=0,
+            badge="DEFAULT",
+            interval="forever",
+            description="Essential study toolkit for everyday comprehension.",
+            features=[
+                "25 Material Upload slots (PDF, Text, Notes)",
+                "40 AI Study Deck Generation bundles",
+                "10 Full Practice Exam simulations",
+                "Unlimited Spaced Repetition Flashcards",
+                "Socratic AI Chat Tutor",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=0,
+            plan_id="free",
+            display_order=1,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="pro",
+            name="Pro Scholar",
+            category="plan",
+            price=2500,
+            badge="MOST POPULAR",
+            interval="month",
+            description="For dedicated undergraduates seeking an academic edge.",
+            features=[
+                "45 Total Material Upload slots (+20 extra/month)",
+                "100 AI Study Deck Generation bundles/month",
+                "40 Full Practice Exam simulations/month",
+                "Unlimited Quick Quiz & Spaced Repetition",
+                "Priority Socratic AI Tutor & LaTeX formatting",
+                "Multi-photo whiteboard & slide OCR",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=0,
+            plan_id="pro",
+            display_order=2,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="unlimited",
+            name="Unlimited Ultimate",
+            category="plan",
+            price=8500,
+            badge="BEST VALUE",
+            interval="month",
+            description="Unbounded power for medical, law, and intensive exam candidates.",
+            features=[
+                "Unlimited Material Upload slots",
+                "Unlimited AI Study Deck Generation bundles",
+                "Unlimited Exam Simulations & Timer drills",
+                "Deep Grounded Document Synthesis",
+                "Early Access to new learning AI models",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=0,
+            plan_id="unlimited",
+            display_order=3,
+            is_active=True,
+        ),
+        # Boosters
+        models.StoreProduct(
+            id="starter_booster",
+            name="Starter Booster",
+            category="booster",
+            price=1000,
+            badge="QUICK TOP-UP",
+            description="+10 materials & +25 AI generations. Non-expiring consumable expansion.",
+            features=[
+                "+10 Additional Material slots",
+                "+25 AI Generation bundles",
+                "Credits never expire across billing cycles",
+            ],
+            bonus_materials=10,
+            bonus_generations=25,
+            bonus_coins=0,
+            display_order=10,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="semester_pack",
+            name="Semester Pack",
+            category="booster",
+            price=2200,
+            badge="STUDY SPRINT",
+            description="+25 materials & +50 AI generations. Perfect for midterm & finals prep.",
+            features=[
+                "+25 Additional Material slots",
+                "+50 AI Generation bundles",
+                "Credits never expire across billing cycles",
+            ],
+            bonus_materials=25,
+            bonus_generations=50,
+            bonus_coins=0,
+            display_order=11,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="mega_vault",
+            name="Mega Vault Booster",
+            category="booster",
+            price=4500,
+            badge="POWER USER",
+            description="+50 materials & +100 AI generations. Massive non-expiring consumable expansion.",
+            features=[
+                "+50 Additional Material slots",
+                "+100 AI Generation bundles",
+                "Credits never expire across billing cycles",
+            ],
+            bonus_materials=50,
+            bonus_generations=100,
+            bonus_coins=0,
+            display_order=12,
+            is_active=True,
+        ),
+        # Nu-Coins Packs
+        models.StoreProduct(
+            id="coins_pouch",
+            name="Coin Pouch (150 Nu-Coins)",
+            category="coins",
+            price=500,
+            badge="POPULAR",
+            description="150 Nu-Coins for duels, streak shields & marketplace packs.",
+            features=[
+                "150 Nu-Coins immediately credited",
+                "Unlock community study packs",
+                "Wager in 1v1 Quickfire Duels",
+                "Buy Streak Freeze shields",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=150,
+            display_order=20,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="coins_sack",
+            name="Coin Sack (500 Nu-Coins)",
+            category="coins",
+            price=1500,
+            badge="BEST VALUE",
+            description="500 Nu-Coins with a 15% bonus margin.",
+            features=[
+                "500 Nu-Coins credited",
+                "Unlock verified premium packs",
+                "Wager in multiplayer showdowns",
+                "Buy multiple streak shields",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=500,
+            display_order=21,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="coins_chest",
+            name="Coin Chest (1500 Nu-Coins)",
+            category="coins",
+            price=4000,
+            badge="CHEST",
+            description="1,500 Nu-Coins for prolific learners and pack authors.",
+            features=[
+                "1,500 Nu-Coins credited",
+                "Generous coin reserve",
+                "Sponsor challenges and study packs",
+            ],
+            bonus_materials=0,
+            bonus_generations=0,
+            bonus_coins=1500,
+            display_order=22,
+            is_active=True,
+        ),
+        # Org Products
+        models.StoreProduct(
+            id="org_seat_single",
+            name="Single Member Seat",
+            category="org_seats",
+            price=1500,
+            interval="month",
+            description="Add 1 additional student/faculty seat to your workspace.",
+            features=[
+                "1 Extra Member Seat",
+                "Full cohort & training access",
+                "Analytics & gradebook monitoring",
+            ],
+            org_seats=1,
+            display_order=30,
+            is_active=True,
+        ),
+        models.StoreProduct(
+            id="org_seat_pack_10",
+            name="Classroom 10-Seat Pack",
+            category="org_seats",
+            price=12000,
+            badge="POPULAR FOR TEAMS",
+            interval="month",
+            description="Add 10 seats to your workspace with a 20% discount.",
+            features=[
+                "10 Extra Member Seats (Save 20%)",
+                "Full cohort & training access",
+                "Team exam distribution & proctoring",
+            ],
+            org_seats=10,
+            display_order=31,
+            is_active=True,
+        ),
+    ]
+    for d in defaults:
+        db.add(d)
+    db.commit()
 
 
 def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
     """
     Dispatches business logic fulfillment once payment has been securely verified.
-    Guarantees exactly-once execution, updates persistent credit ledger and bonuses.
+    Guarantees exactly-once execution, updates persistent credit ledger, quotas, and bonuses.
+    Never resets usage metrics (materials_uploaded or generations_used).
     """
     purpose = tx.purpose
     meta = tx.metadata_payload or {}
 
-    if purpose == "study_credits":
-        # Consumable top-up packs
-        extra_mats = int(meta.get("extra_materials") or meta.get("materials") or 10)
-        extra_gens = int(meta.get("extra_generations") or meta.get("generations") or 25)
+    prod_id = meta.get("product_id") or meta.get("pack_id") or meta.get("plan_id")
+    prod = None
+    if prod_id:
+        prod = db.query(models.StoreProduct).filter(models.StoreProduct.id == prod_id).first()
+
+    if purpose in ("study_credits", "store_product", "coins_purchase"):
+        extra_mats = int(meta.get("bonus_materials") or meta.get("extra_materials") or meta.get("materials") or (prod.bonus_materials if prod else 0) or 0)
+        extra_gens = int(meta.get("bonus_generations") or meta.get("extra_generations") or meta.get("generations") or (prod.bonus_generations if prod else 0) or 0)
+        extra_coins = int(meta.get("bonus_coins") or meta.get("extra_coins") or meta.get("coins") or (prod.bonus_coins if prod else 0) or 0)
 
         if tx.user_id:
-            # 1. Credit non-expiring AI generation balance & append audit ledger
-            from monetization_models import CreditBalance, CreditLedgerEntry
-            cb = db.query(CreditBalance).filter(CreditBalance.user_id == tx.user_id).first()
-            if not cb:
-                cb = CreditBalance(user_id=tx.user_id, balance=100)
-                db.add(cb)
-                db.flush()
-
-            cb.balance += extra_gens
-            db.flush()
-
-            ledger_entry = CreditLedgerEntry(
-                user_id=tx.user_id,
-                delta=extra_gens,
-                reason="purchase",
-                reference_id=tx.reference,
-                balance_after=cb.balance,
-            )
-            db.add(ledger_entry)
-
-            # 2. Credit persistent bonus material upload slots on subscription
             sub = db.query(models.UserSubscription).filter(
                 models.UserSubscription.user_id == tx.user_id
             ).first()
@@ -459,11 +730,39 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                 db.add(sub)
                 db.flush()
 
-            sub.bonus_materials = (sub.bonus_materials or 0) + extra_mats
-            print(f"[FULFILLMENT] Credited +{extra_mats} bonus materials and +{extra_gens} AI credits (Balance: {cb.balance}) to User {tx.user_id}")
+            # 1. Expand AI generation bonus quota (for AI flashcard/quiz/exam generation)
+            if extra_gens > 0:
+                sub.bonus_generations = (sub.bonus_generations or 0) + extra_gens
+
+            # 2. Expand persistent bonus material upload slots
+            if extra_mats > 0:
+                sub.bonus_materials = (sub.bonus_materials or 0) + extra_mats
+
+            # 3. Credit Nu-Coins wallet if extra_coins > 0 (for duels, marketplace packs, shields)
+            if extra_coins > 0:
+                from monetization_models import CreditBalance, CreditLedgerEntry
+                cb = db.query(CreditBalance).filter(CreditBalance.user_id == tx.user_id).first()
+                if not cb:
+                    cb = CreditBalance(user_id=tx.user_id, balance=100)
+                    db.add(cb)
+                    db.flush()
+
+                cb.balance += extra_coins
+                db.flush()
+
+                ledger_entry = CreditLedgerEntry(
+                    user_id=tx.user_id,
+                    delta=extra_coins,
+                    reason="purchase",
+                    reference_id=tx.reference,
+                    balance_after=cb.balance,
+                )
+                db.add(ledger_entry)
+
+            print(f"[FULFILLMENT] Credited User {tx.user_id}: +{extra_mats} mats, +{extra_gens} AI gens, +{extra_coins} Nu-Coins")
 
     elif purpose == "plan_upgrade":
-        new_plan_id = meta.get("plan_id") or "pro"
+        new_plan_id = meta.get("plan_id") or (prod.plan_id if prod else None) or "pro"
         if tx.user_id:
             plan_obj = db.query(models.StudyPlan).filter(models.StudyPlan.id == new_plan_id).first()
             if not plan_obj:
@@ -484,17 +783,42 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                 db.add(sub)
             else:
                 sub.plan_id = new_plan_id
-                sub.materials_uploaded = 0
-                sub.generations_used = 0
+                # NOTE: NEVER reset sub.materials_uploaded or sub.generations_used!
+                # Only subscription limits and allowances expand.
                 sub.cycle_start_date = datetime.now(timezone.utc)
 
-            print(f"[FULFILLMENT] Upgraded User {tx.user_id} to '{new_plan_id}' plan.")
+            # If the plan product grants bonus materials, bonus generations, or bonus coins:
+            if prod:
+                if prod.bonus_materials:
+                    sub.bonus_materials = (sub.bonus_materials or 0) + prod.bonus_materials
+                if prod.bonus_generations:
+                    sub.bonus_generations = (sub.bonus_generations or 0) + prod.bonus_generations
+                if prod.bonus_coins:
+                    from monetization_models import CreditBalance, CreditLedgerEntry
+                    cb = db.query(CreditBalance).filter(CreditBalance.user_id == tx.user_id).first()
+                    if not cb:
+                        cb = CreditBalance(user_id=tx.user_id, balance=100)
+                        db.add(cb)
+                        db.flush()
+                    cb.balance += prod.bonus_coins
+                    db.flush()
+                    db.add(CreditLedgerEntry(
+                        user_id=tx.user_id,
+                        delta=prod.bonus_coins,
+                        reason="plan_bonus_coins",
+                        reference_id=tx.reference,
+                        balance_after=cb.balance,
+                    ))
+
+            print(f"[FULFILLMENT] Upgraded User {tx.user_id} to '{new_plan_id}' plan without resetting usage counters.")
 
     elif purpose == "org_seats":
-        extra_seats = int(meta.get("extra_seats") or 1)
+        extra_seats = int(meta.get("extra_seats") or (prod.org_seats if prod else 1) or 1)
         if tx.organisation_id:
             org = db.query(models.Organisation).filter(
                 models.Organisation.id == tx.organisation_id
             ).first()
             if org:
+                if hasattr(org, "seat_limit") and getattr(org, "seat_limit") is not None:
+                    org.seat_limit += extra_seats
                 print(f"[FULFILLMENT] Credited +{extra_seats} seats to Organisation '{org.name}'")

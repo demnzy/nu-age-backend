@@ -442,6 +442,7 @@ class UserSubscription(Base):
     
     materials_uploaded = Column(Integer, default=0, nullable=False)
     bonus_materials = Column(Integer, default=0, nullable=False)
+    bonus_generations = Column(Integer, default=0, nullable=False)
     generations_used = Column(Integer, default=0, nullable=False)
     cycle_start_date = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -863,6 +864,30 @@ class PaymentTransaction(Base):
     organisation = relationship("Organisation", foreign_keys=[organisation_id])
 
 
+class StoreProduct(Base):
+    __tablename__ = "store_products"
+
+    id = Column(String(100), primary_key=True)                 # unique slug e.g. 'starter_booster', 'pro_scholar', 'coins_50'
+    name = Column(String(255), nullable=False)                 # Display title e.g. "Starter Study Booster"
+    category = Column(String(50), nullable=False, index=True)  # 'plans', 'boosters', 'coins', 'org'
+    price = Column(Float, nullable=False)                      # Major unit NGN (e.g. 1000.0)
+    badge = Column(String(50), nullable=True)                  # e.g. "MOST POPULAR", "BEST VALUE", "QUICK TOP-UP"
+    description = Column(Text, nullable=True)
+    interval = Column(String(50), default="one-time")          # 'month', 'one-time'
+    features = Column(JSONB, default=list)                     # List of feature bullet points
+    
+    bonus_materials = Column(Integer, default=0, nullable=False)
+    bonus_generations = Column(Integer, default=0, nullable=False)
+    bonus_coins = Column(Integer, default=0, nullable=False)
+    plan_id = Column(String(50), nullable=True)                # e.g. 'pro', 'unlimited'
+    org_seats = Column(Integer, default=0, nullable=False)
+
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    display_order = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 # ── SELF-STUDY PACK MARKETPLACE & COMMUNITY HUB ─────────────────────────────
 
 class StudyPack(Base):
@@ -1115,4 +1140,6 @@ class UserObjectiveProgress(Base):
     is_claimed = Column(Boolean, default=False, nullable=False)
     claimed_at = Column(DateTime(timezone=True), nullable=True)
 
-    user = relationship("User", backref="objective_progress")
+    user = relationship("User", backref="objective_progress")
+
+

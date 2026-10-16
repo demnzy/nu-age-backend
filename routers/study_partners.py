@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, not_, func, desc
 from datetime import datetime, date, timezone, timedelta
@@ -43,6 +43,67 @@ def _format_user_summary(user: models.User, badge: Optional[str] = None) -> Dict
 # 1. ACTIVE PARTNERSHIP & DASHBOARD COCKPIT
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _record_partner_study_activity(
+    db: Session,
+    partnership: models.StudyPartnership,
+    user_id: uuid.UUID,
+    minutes: int,
+    questions: int
+) -> tuple[bool, list]:
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    is_user_a = (partnership.user_a_id == user_id)
+
+    if is_user_a:
+        if partnership.user_a_last_study_date != today:
+            partnership.user_a_today_minutes = 0
+            partnership.user_a_today_questions = 0
+            partnership.user_a_last_study_date = today
+        partnership.user_a_today_minutes += minutes
+        partnership.user_a_today_questions += questions
+    else:
+        if partnership.user_b_last_study_date != today:
+            partnership.user_b_today_minutes = 0
+            partnership.user_b_today_questions = 0
+            partnership.user_b_last_study_date = today
+        partnership.user_b_today_minutes += minutes
+        partnership.user_b_today_questions += questions
+
+    # Check streak decay (reset if a day was skipped)
+    if partnership.last_duo_streak_date and partnership.last_duo_streak_date < yesterday:
+        partnership.duo_streak = 0
+
+    streak_target = min(10, partnership.daily_target_minutes or 10)
+    both_studied_today = (
+        partnership.user_a_last_study_date == today and
+        partnership.user_b_last_study_date == today and
+        partnership.user_a_today_minutes >= streak_target and
+        partnership.user_b_today_minutes >= streak_target
+    )
+
+    streak_incremented = False
+    milestones_awarded = []
+    if both_studied_today and partnership.last_duo_streak_date != today:
+        if partnership.last_duo_streak_date == yesterday:
+            partnership.duo_streak += 1
+        else:
+            partnership.duo_streak = 1
+        partnership.best_duo_streak = max(partnership.best_duo_streak or 0, partnership.duo_streak)
+        partnership.last_duo_streak_date = today
+        streak_incremented = True
+
+        milestones_awarded = coin_service.check_and_award_duo_streak_milestones(db, partnership, partnership.duo_streak)
+        coin_service.track_objective_progress(db, user_id, "streak_5_day", partnership.duo_streak, set_absolute=True)
+        partner_user = _get_partner_user(partnership, user_id)
+        if partner_user:
+            coin_service.track_objective_progress(db, partner_user.id, "streak_5_day", partnership.duo_streak, set_absolute=True)
+
+    coin_service.track_objective_progress(db, user_id, "study_time_60m", minutes)
+    coin_service.track_objective_progress(db, user_id, "practice_100q", questions)
+
+    return streak_incremented, milestones_awarded
+
+
 def _format_active_partnership_payload(partnership, current_user, db: Session, today: date) -> dict:
     is_user_a = (partnership.user_a_id == current_user.id)
     partner = partnership.user_b if is_user_a else partnership.user_a
@@ -56,6 +117,18 @@ def _format_active_partnership_payload(partnership, current_user, db: Session, t
 
     user_today_qs = (partnership.user_a_today_questions if is_user_a else partnership.user_b_today_questions) if user_studied_today else 0
     partner_today_qs = (partnership.user_b_today_questions if is_user_a else partnership.user_a_today_questions) if partner_studied_today else 0
+
+    # Streak decay check (if missed yesterday and haven't secured today)
+    yesterday = today - timedelta(days=1)
+    if partnership.last_duo_streak_date and partnership.last_duo_streak_date < yesterday:
+        if partnership.duo_streak != 0:
+            partnership.duo_streak = 0
+            db.commit()
+
+    streak_target = min(10, partnership.daily_target_minutes or 10)
+    user_streak_qualified = (user_today_mins >= streak_target)
+    partner_streak_qualified = (partner_today_mins >= streak_target)
+    duo_streak_locked_today = (partnership.last_duo_streak_date == today)
 
     # Streak at risk check (e.g. current user studied but partner hasn't, or vice-versa)
     can_nudge = True
@@ -117,6 +190,10 @@ def _format_active_partnership_payload(partnership, current_user, db: Session, t
         "daily_target_questions": partnership.daily_target_questions,
         "duo_streak": partnership.duo_streak,
         "best_duo_streak": partnership.best_duo_streak,
+        "streak_threshold_minutes": streak_target,
+        "user_streak_qualified": user_streak_qualified,
+        "partner_streak_qualified": partner_streak_qualified,
+        "duo_streak_locked_today": duo_streak_locked_today,
         "user_studied_today": user_studied_today,
         "partner_studied_today": partner_studied_today,
         "user_today_minutes": user_today_mins,
@@ -537,8 +614,9 @@ def nudge_partner(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/{partnership_id}/log-activity")
-def log_partnership_activity(
+async def log_partnership_activity(
     partnership_id: uuid.UUID,
+    request: Request,
     minutes_spent: int = Query(0, ge=0),
     questions_completed: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -547,8 +625,8 @@ def log_partnership_activity(
     """
     Called upon completing a quiz, flashcard deck, or CBT simulator exam.
     Records daily activity and re-evaluates the Duo Streak.
+    Accepts data from URL query params or JSON request body.
     """
-    today = date.today()
     partnership = db.query(models.StudyPartnership).filter(
         models.StudyPartnership.id == partnership_id,
         models.StudyPartnership.status == "active",
@@ -561,53 +639,39 @@ def log_partnership_activity(
     if not partnership:
         raise HTTPException(status_code=404, detail="Active partnership not found.")
 
-    is_user_a = (partnership.user_a_id == current_user.id)
+    # Resilient payload parsing: extract from body if present, fallback to query params
+    body_data = {}
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            body_data = await request.json()
+    except Exception:
+        body_data = {}
 
-    if is_user_a:
-        if partnership.user_a_last_study_date != today:
-            partnership.user_a_today_minutes = 0
-            partnership.user_a_today_questions = 0
-            partnership.user_a_last_study_date = today
-        partnership.user_a_today_minutes += minutes_spent
-        partnership.user_a_today_questions += questions_completed
-    else:
-        if partnership.user_b_last_study_date != today:
-            partnership.user_b_today_minutes = 0
-            partnership.user_b_today_questions = 0
-            partnership.user_b_last_study_date = today
-        partnership.user_b_today_minutes += minutes_spent
-        partnership.user_b_today_questions += questions_completed
+    if not isinstance(body_data, dict):
+        body_data = {}
 
-    # Check Duo Streak Condition (Both users completed study today)
+    final_minutes = int(body_data.get("minutes_spent", body_data.get("minutes_studied", body_data.get("minutes", minutes_spent))) or 0)
+    final_questions = int(body_data.get("questions_completed", body_data.get("questions_solved", body_data.get("questions", questions_completed))) or 0)
+
+    streak_incremented, milestones_awarded = _record_partner_study_activity(
+        db=db,
+        partnership=partnership,
+        user_id=current_user.id,
+        minutes=final_minutes,
+        questions=final_questions
+    )
+
+    db.commit()
+
+    today = date.today()
+    streak_target = min(10, partnership.daily_target_minutes or 10)
     both_studied_today = (
         partnership.user_a_last_study_date == today and
         partnership.user_b_last_study_date == today and
-        partnership.user_a_today_minutes >= min(10, partnership.daily_target_minutes) and
-        partnership.user_b_today_minutes >= min(10, partnership.daily_target_minutes)
+        partnership.user_a_today_minutes >= streak_target and
+        partnership.user_b_today_minutes >= streak_target
     )
-
-    streak_incremented = False
-    milestones_awarded = []
-    if both_studied_today and partnership.last_duo_streak_date != today:
-        partnership.duo_streak += 1
-        partnership.best_duo_streak = max(partnership.best_duo_streak, partnership.duo_streak)
-        partnership.last_duo_streak_date = today
-        streak_incremented = True
-
-        # Award Nu-Coins milestones if reached
-        milestones_awarded = coin_service.check_and_award_duo_streak_milestones(db, partnership, partnership.duo_streak)
-
-        # Track 5-day streak objective
-        coin_service.track_objective_progress(db, current_user.id, "streak_5_day", partnership.duo_streak, set_absolute=True)
-        partner = _get_partner_user(partnership, current_user.id)
-        if partner:
-            coin_service.track_objective_progress(db, partner.id, "streak_5_day", partnership.duo_streak, set_absolute=True)
-
-    # Track daily study focus and question grinding objectives
-    coin_service.track_objective_progress(db, current_user.id, "study_time_60m", minutes_spent)
-    coin_service.track_objective_progress(db, current_user.id, "practice_100q", questions_completed)
-
-    db.commit()
 
     return {
         "status": "success",
@@ -683,6 +747,11 @@ def create_partner_challenge(
     )
 
     db.add(challenge)
+
+    # Record study activity for challenger in this partnership
+    c_mins = max(3, int(c_time or 0) // 60 or 5)
+    _record_partner_study_activity(db, partnership, current_user.id, minutes=c_mins, questions=len(questions))
+
     db.commit()
 
     # Notify partner of duel
@@ -921,6 +990,12 @@ def submit_partner_challenge(
             ch.coins_awarded = 20
             coin_service.grant_coins(db, current_user.id, 20, category="duel_draw", description=f"Tied duel with {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
             coin_service.grant_coins(db, ch.challenger_id, 20, category="duel_draw", description=f"Tied duel with {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+
+    # Record study activity for challenged partner on this partnership
+    p = ch.partnership or db.query(models.StudyPartnership).filter(models.StudyPartnership.id == ch.partnership_id).first()
+    if p:
+        mins = max(3, challenged_time // 60 or 5)
+        _record_partner_study_activity(db, p, current_user.id, minutes=mins, questions=ch.total_questions or 15)
 
     db.commit()
 
@@ -1431,11 +1506,15 @@ def get_study_leaderboard(
         ).limit(limit).all()
 
         rankings = []
+        yesterday = today - timedelta(days=1)
         for idx, d in enumerate(duos, start=1):
+            effective_streak = d.duo_streak or 0
+            if d.last_duo_streak_date and d.last_duo_streak_date < yesterday:
+                effective_streak = 0
             rankings.append({
                 "rank": idx,
                 "partnership_id": str(d.id),
-                "duo_streak": d.duo_streak or 0,
+                "duo_streak": effective_streak,
                 "best_duo_streak": d.best_duo_streak or 0,
                 "target_exam": d.target_exam or "JAMB / Post-UTME",
                 "partner_a": _format_user_summary(d.user_a),
