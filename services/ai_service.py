@@ -651,14 +651,15 @@ Adhere strictly to the generation size configurations provided.
                 user_prompt = f"TARGET OUTPUTS FOR THIS CHUNK:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
 
                 # Native OpenAI parsing with structured outputs
+                settings = Settings()
                 response = await client.beta.chat.completions.parse(
-                    model="gpt-4o-mini",
+                    model=settings.get_openai_model(),
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
                     response_format=AIResponse,
-                    temperature=0.2
+                    reasoning_effort=settings.get_openai_reasoning_effort("chunk_distractor"),
                 )
 
                 result = response.choices[0].message.parsed
@@ -750,7 +751,7 @@ Adhere strictly to the generation size configurations provided.
 # 3. THE GENERATION ENGINE (Two-Stage Hierarchical Generator - OpenAI Locked)
 # =====================================================================
 
-OPENAI_MODEL = getattr(Settings(), "OPENAI_MODEL", None) or "gpt-4o-mini"
+OPENAI_MODEL = Settings().get_openai_model()
 
 LESSON_CONTENT_SCHEMA = {
     "video": ["file_name", "video_url", "accompanying_text"],
@@ -1134,17 +1135,18 @@ Include 2 to 3 "video" lessons across the course for visual walkthoughs and demo
 Conclude the final module with a comprehensive final assessment.
 """.strip()
 
+    settings = Settings()
     response = await asyncio.wait_for(
         client.beta.chat.completions.parse(
-            model=OPENAI_MODEL,
+            model=settings.get_openai_model(),
             messages=[
                 {"role": "system", "content": STAGE_1_ARCHITECT_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             response_format=AICourseBlueprint,
-            temperature=0.4,
+            reasoning_effort=settings.get_openai_reasoning_effort("curriculum"),
         ),
-        timeout=120.0,
+        timeout=180.0,
     )
     return response.choices[0].message.parsed
 
@@ -1216,17 +1218,18 @@ Follow the exact field rules for lesson type '{lesson_bp.type}'.
     for attempt in range(3):
         try:
             async with sem:
+                settings = Settings()
                 response = await asyncio.wait_for(
                     client.beta.chat.completions.parse(
-                        model=OPENAI_MODEL,
+                        model=settings.get_openai_model(),
                         messages=[
                             {"role": "system", "content": STAGE_2_SYNTHESIZER_PROMPT},
                             {"role": "user", "content": user_prompt},
                         ],
                         response_format=AILesson,
-                        temperature=0.35,
+                        reasoning_effort=settings.get_openai_reasoning_effort("curriculum"),
                     ),
-                    timeout=120.0,
+                    timeout=180.0,
                 )
                 parsed: AILesson = response.choices[0].message.parsed
                 return normalize_lesson(parsed)
@@ -1321,15 +1324,16 @@ Synthesize a comprehensive, university-level final examination with 15 to 25 cha
 """.strip()
 
     try:
+        settings = Settings()
         response = await asyncio.wait_for(
             client.beta.chat.completions.parse(
-                model=OPENAI_MODEL,
+                model=settings.get_openai_model(),
                 messages=[
                     {"role": "system", "content": FINAL_EXAM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format=AICapstoneExam,
-                temperature=0.35,
+                reasoning_effort=settings.get_openai_reasoning_effort("exam_final"),
             ),
             timeout=180.0,
         )
@@ -1560,11 +1564,12 @@ async def ask_ai_tutor_response(
     messages.append({"role": "user", "content": query})
 
     try:
+        settings = Settings()
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.get_openai_model(),
             messages=messages,
             max_tokens=800,
-            temperature=0.6,
+            reasoning_effort=settings.get_openai_reasoning_effort("chat"),
         )
         reply = response.choices[0].message.content or "I couldn't generate a response. Please try again."
         # Automatically resolve video search queries into verified watch?v= links for in-app video playback
@@ -1621,8 +1626,9 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
         })
 
     try:
+        settings = Settings()
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.get_openai_model(),
             messages=[
                 {
                     "role": "system",
@@ -1634,7 +1640,7 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
                 }
             ],
             max_tokens=2500,
-            temperature=0.2,
+            reasoning_effort=settings.get_openai_reasoning_effort("ocr"),
         )
         extracted_text = response.choices[0].message.content or ""
         return extracted_text.strip()

@@ -12,6 +12,20 @@ def _get_api_key() -> str:
     except Exception:
         return os.getenv("OPENAI_API_KEY", "") or os.getenv("AGENT_ROUTER_API_KEY", "")
 
+def _get_model() -> str:
+    try:
+        from database import Settings
+        return Settings().get_openai_model()
+    except Exception:
+        return os.getenv("OPENAI_MODEL", "gpt-6-luna")
+
+def _get_reasoning_effort(task: str = "cbt") -> str:
+    try:
+        from database import Settings
+        return Settings().get_openai_reasoning_effort(task)
+    except Exception:
+        return os.getenv("OPENAI_REASONING_EFFORT_CBT", "high")
+
 def _get_gemini_key() -> str:
     try:
         from database import Settings
@@ -195,13 +209,13 @@ async def _parse_single_chunk_with_ai(
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=api_key, timeout=120.0, max_retries=1)
             response = await client.beta.chat.completions.parse(
-                model="gpt-4o-mini",
+                model=_get_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 response_format=ParsedCBTPack,
-                temperature=0.2,
+                reasoning_effort=_get_reasoning_effort("cbt"),
                 max_tokens=16384,
             )
             parsed = response.choices[0].message.parsed
@@ -377,7 +391,7 @@ async def parse_past_questions_from_image_with_ai(
             b64 = base64.b64encode(image_bytes).decode("utf-8")
             client = AsyncOpenAI(api_key=api_key, timeout=120.0, max_retries=1)
             response = await client.beta.chat.completions.parse(
-                model="gpt-4o-mini",
+                model=_get_model(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {
@@ -389,7 +403,7 @@ async def parse_past_questions_from_image_with_ai(
                     }
                 ],
                 response_format=ParsedCBTPack,
-                temperature=0.2,
+                reasoning_effort=_get_reasoning_effort("cbt"),
                 max_tokens=16384,
             )
             parsed = response.choices[0].message.parsed

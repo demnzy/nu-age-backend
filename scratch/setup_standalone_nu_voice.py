@@ -321,12 +321,12 @@ class Translator:
             "Content-Type": "application/json",
         }
         payload = {
-            "model": "gpt-4o-mini",
+            "model": "gpt-6-luna",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
-            "temperature": 0.3,
+            "reasoning_effort": "medium",
             "max_tokens": 2048,
         }
         async with httpx.AsyncClient(timeout=25.0) as client:

@@ -329,6 +329,7 @@ async def import_youtube_material(
 
     try:
         from services.ai_service import client
+        from database import Settings
         prompt = (
             f"You are an expert pedagogical study coach. Analyze this YouTube educational video context and produce "
             f"comprehensive, structured self-study material.\n\n"
@@ -341,13 +342,14 @@ async def import_youtube_material(
             f"3. 3-5 Foundational Takeaways\n"
             f"4. Practice & Self-Check Review Questions with Brief Answers\n"
         )
+        settings = Settings()
         completion = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=settings.get_openai_model(),
             messages=[
                 {"role": "system", "content": "You are a concise, structured educational assistant creating study notes from video context."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
+            reasoning_effort=settings.get_openai_reasoning_effort("chat"),
             max_tokens=1500,
         )
         ai_notes = completion.choices[0].message.content.strip()

@@ -560,3 +560,29 @@ def print_routes():
     if not found_any:
         print(">> NO ROUTES FOUND! check app.include_router() lines.")
     print("="*50 + "\n")
+
+
+async def _reengagement_worker():
+    """
+    Background worker daemon:
+    Wakes up periodically (every 60 minutes) to evaluate active learners and duos,
+    dispatching Duolingo-style streak warnings, duo nudges, and comeback alerts.
+    """
+    await asyncio.sleep(60)
+    while True:
+        try:
+            from database import SessionLocal
+            from services.reengagement_engine import evaluate_and_dispatch_nudges
+            with SessionLocal() as db:
+                stats = evaluate_and_dispatch_nudges(db=db, force=False)
+                dispatched = stats.get("dispatched_records", [])
+                if dispatched:
+                    print(f"[RE-ENGAGEMENT] Dispatched {len(dispatched)} automated nudges at {stats.get('timestamp_wat')}")
+        except Exception as e:
+            print(f"[RE-ENGAGEMENT] Background worker warning: {e}")
+        await asyncio.sleep(3600)
+
+
+@app.on_event("startup")
+async def start_reengagement_worker():
+    asyncio.create_task(_reengagement_worker())

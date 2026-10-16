@@ -47,7 +47,35 @@ class Settings(BaseSettings):
     AWS_REGION: str = ""
     SES_FROM_EMAIL: str = ""
     NU_VOICE_URL: str = "" # URL of nu-voice microservice when deployed to 8GB server (e.g. http://voice.internal:8080)
+    OPENAI_MODEL: str = "gpt-6-luna"
+    OPENAI_REASONING_EFFORT_CURRICULUM: str = "xhigh"
+    OPENAI_REASONING_EFFORT_CBT: str = "high"
+    OPENAI_REASONING_EFFORT_CHAT: str = "medium"
+    OPENAI_REASONING_EFFORT_TRANSLATE: str = "medium"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_openai_model(self) -> str:
+        import os
+        val = self.OPENAI_MODEL or os.getenv("OPENAI_MODEL") or "gpt-6-luna"
+        return str(val).strip().strip('"').strip("'")
+
+    def get_openai_reasoning_effort(self, task: str = "chat") -> str:
+        import os
+        task_norm = (task or "").lower()
+        if any(k in task_norm for k in ("curriculum", "architect", "lesson", "blueprint", "exam_final", "capstone")):
+            raw = self.OPENAI_REASONING_EFFORT_CURRICULUM or os.getenv("OPENAI_REASONING_EFFORT_CURRICULUM") or "xhigh"
+        elif any(k in task_norm for k in ("cbt", "exam", "ocr", "image", "chunk", "distractor")):
+            raw = self.OPENAI_REASONING_EFFORT_CBT or os.getenv("OPENAI_REASONING_EFFORT_CBT") or "high"
+        elif any(k in task_norm for k in ("translate", "voice")):
+            raw = self.OPENAI_REASONING_EFFORT_TRANSLATE or os.getenv("OPENAI_REASONING_EFFORT_TRANSLATE") or "medium"
+        else:
+            raw = self.OPENAI_REASONING_EFFORT_CHAT or os.getenv("OPENAI_REASONING_EFFORT_CHAT") or "medium"
+
+        val = str(raw).strip().strip('"').strip("'").lower()
+        # Invariant: Lowest reasoning level is 'medium'
+        if val in ("none", "minimal", "low"):
+            return "medium"
+        return val or "medium"
 
     def get_nu_voice_url(self) -> str:
         import os
