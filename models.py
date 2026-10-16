@@ -441,6 +441,7 @@ class UserSubscription(Base):
     plan_id = Column(String, ForeignKey("study_plans.id"), default="free", nullable=False) 
     
     materials_uploaded = Column(Integer, default=0, nullable=False)
+    bonus_materials = Column(Integer, default=0, nullable=False)
     generations_used = Column(Integer, default=0, nullable=False)
     cycle_start_date = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -854,6 +855,7 @@ class PaymentTransaction(Base):
     gateway_response = Column(JSONB, default=dict)
 
     paid_at = Column(DateTime(timezone=True), nullable=True)
+    fulfilled_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

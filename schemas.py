@@ -286,6 +286,7 @@ class SubscriptionStatusResponse(BaseModel):
     materials_used: int
     materials_limit: Optional[int]
     materials_remaining: Optional[int]
+    bonus_materials: Optional[int] = 0
     
     generations_used: int
     generations_limit: Optional[int]

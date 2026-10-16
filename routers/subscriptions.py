@@ -57,10 +57,13 @@ def get_subscription_status(
         db.commit()
         db.refresh(sub)
 
-    # Calculate remaining limits
+    # Calculate remaining limits taking bonus_materials into account
+    bonus_mats = getattr(sub, "bonus_materials", 0) or 0
     mat_remaining = None
+    effective_limit = None
     if sub.plan.materials_limit is not None:
-        mat_remaining = max(0, sub.plan.materials_limit - sub.materials_uploaded)
+        effective_limit = sub.plan.materials_limit + bonus_mats
+        mat_remaining = max(0, effective_limit - sub.materials_uploaded)
         
     gen_remaining = None
     if sub.plan.generations_limit is not None:
@@ -71,8 +74,9 @@ def get_subscription_status(
         "label": sub.plan.label,
         
         "materials_used": sub.materials_uploaded,
-        "materials_limit": sub.plan.materials_limit,
+        "materials_limit": effective_limit if effective_limit is not None else sub.plan.materials_limit,
         "materials_remaining": mat_remaining,
+        "bonus_materials": bonus_mats,
         
         "generations_used": sub.generations_used,
         "generations_limit": sub.plan.generations_limit,

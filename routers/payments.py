@@ -126,13 +126,26 @@ async def verify_payment(
 ):
     """
     Verifies a transaction using Paystack REST API and fulfills any credits or subscriptions.
+    Guarded with row-level locking, strict amount matching, and idempotency protection.
     """
+    # 1. Row-level locking to prevent concurrent double-fulfillment race condition
     tx = db.query(models.PaymentTransaction).filter(
         models.PaymentTransaction.reference == reference
-    ).first()
+    ).with_for_update().first()
 
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction reference not found.")
+
+    # 2. Idempotency Check: if already fulfilled by webhook or earlier call, return cleanly
+    if tx.status == "success" and tx.fulfilled_at is not None:
+        return VerifyPaymentResponse(
+            reference=tx.reference,
+            status=tx.status,
+            amount=tx.amount,
+            currency=tx.currency,
+            purpose=tx.purpose,
+            paid_at=tx.paid_at.isoformat() if tx.paid_at else None,
+        )
 
     gw = get_payment_gateway(tx.gateway)
     try:
@@ -141,10 +154,29 @@ async def verify_payment(
         tx.gateway_response = data
 
         if ps_status == "success":
+            # 3. Financial Integrity: Strict Amount & Currency Verification (Anti-Tampering)
+            paid_kobo = data.get("amount")
+            expected_kobo = int(round(tx.amount * 100))
+            paid_currency = (data.get("currency") or "").upper()
+            expected_currency = (tx.currency or "NGN").upper()
+
+            if paid_kobo != expected_kobo or paid_currency != expected_currency:
+                tx.status = "amount_mismatch"
+                tx.gateway_response = {
+                    "error": f"Underpayment or currency mismatch: expected {expected_kobo} kobo {expected_currency}, got {paid_kobo} {paid_currency}",
+                    "paystack_data": data
+                }
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Payment verification failed: Amount or currency does not match order."
+                )
+
             tx.status = "success"
             tx.paid_at = datetime.now(timezone.utc)
-            # Fulfill the transaction benefit
+            # 4. Fulfill the transaction benefit safely and mark fulfilled_at
             _fulfill_transaction(tx, db)
+            tx.fulfilled_at = datetime.now(timezone.utc)
         else:
             tx.status = ps_status or "failed"
 
@@ -159,7 +191,10 @@ async def verify_payment(
             purpose=tx.purpose,
             paid_at=tx.paid_at.isoformat() if tx.paid_at else None,
         )
+    except HTTPException:
+        raise
     except Exception as ex:
+        db.rollback()
         raise HTTPException(status_code=502, detail=f"Verification failed: {ex}")
 
 
@@ -171,7 +206,7 @@ async def paystack_webhook(
 ):
     """
     Asynchronous webhook receiver for Paystack events (e.g. charge.success).
-    Guarded by HMAC-SHA512 verification.
+    Guarded by HMAC-SHA512 verification, row locking, and idempotency protection.
     """
     body_bytes = await request.body()
     gw = PaystackGateway()
@@ -197,19 +232,38 @@ async def paystack_webhook(
 
     tx = db.query(models.PaymentTransaction).filter(
         models.PaymentTransaction.reference == reference
-    ).first()
+    ).with_for_update().first()
 
     if not tx:
         # Received webhook for unknown transaction in DB
         return {"status": "ok", "message": "Reference not recorded locally"}
 
     if event_type == "charge.success":
-        if tx.status != "success":
-            tx.status = "success"
-            tx.paid_at = datetime.now(timezone.utc)
-            tx.gateway_response = data
-            _fulfill_transaction(tx, db)
+        # Idempotency check: if already fulfilled, return immediately
+        if tx.status == "success" and tx.fulfilled_at is not None:
+            return {"status": "already_processed"}
+
+        # Strict Amount & Currency Validation
+        paid_kobo = data.get("amount")
+        expected_kobo = int(round(tx.amount * 100))
+        paid_currency = (data.get("currency") or "").upper()
+        expected_currency = (tx.currency or "NGN").upper()
+
+        if paid_kobo != expected_kobo or paid_currency != expected_currency:
+            tx.status = "amount_mismatch"
+            tx.gateway_response = {
+                "error": f"Webhook underpayment: expected {expected_kobo} kobo {expected_currency}, got {paid_kobo} {paid_currency}",
+                "event": event
+            }
             db.commit()
+            return {"status": "rejected", "reason": "Amount or currency mismatch"}
+
+        tx.status = "success"
+        tx.paid_at = datetime.now(timezone.utc)
+        tx.gateway_response = data
+        _fulfill_transaction(tx, db)
+        tx.fulfilled_at = datetime.now(timezone.utc)
+        db.commit()
 
     elif event_type in ("charge.failed", "transfer.failed"):
         tx.status = "failed"
@@ -365,6 +419,7 @@ def get_store_catalog():
 def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
     """
     Dispatches business logic fulfillment once payment has been securely verified.
+    Guarantees exactly-once execution, updates persistent credit ledger and bonuses.
     """
     purpose = tx.purpose
     meta = tx.metadata_payload or {}
@@ -373,21 +428,43 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
         # Consumable top-up packs
         extra_mats = int(meta.get("extra_materials") or meta.get("materials") or 10)
         extra_gens = int(meta.get("extra_generations") or meta.get("generations") or 25)
-        
+
         if tx.user_id:
+            # 1. Credit non-expiring AI generation balance & append audit ledger
+            from monetization_models import CreditBalance, CreditLedgerEntry
+            cb = db.query(CreditBalance).filter(CreditBalance.user_id == tx.user_id).first()
+            if not cb:
+                cb = CreditBalance(user_id=tx.user_id, balance=100)
+                db.add(cb)
+                db.flush()
+
+            cb.balance += extra_gens
+            db.flush()
+
+            ledger_entry = CreditLedgerEntry(
+                user_id=tx.user_id,
+                delta=extra_gens,
+                reason="purchase",
+                reference_id=tx.reference,
+                balance_after=cb.balance,
+            )
+            db.add(ledger_entry)
+
+            # 2. Credit persistent bonus material upload slots on subscription
             sub = db.query(models.UserSubscription).filter(
                 models.UserSubscription.user_id == tx.user_id
             ).first()
-            if sub:
-                # Grant non-expiring consumable credits by offsetting used counters
-                sub.materials_uploaded = max(0, sub.materials_uploaded - extra_mats)
-                sub.generations_used = max(0, sub.generations_used - extra_gens)
-                print(f"[FULFILLMENT] Credited +{extra_mats} materials and +{extra_gens} generations to User {tx.user_id}")
+            if not sub:
+                sub = models.UserSubscription(user_id=tx.user_id, plan_id="free")
+                db.add(sub)
+                db.flush()
+
+            sub.bonus_materials = (sub.bonus_materials or 0) + extra_mats
+            print(f"[FULFILLMENT] Credited +{extra_mats} bonus materials and +{extra_gens} AI credits (Balance: {cb.balance}) to User {tx.user_id}")
 
     elif purpose == "plan_upgrade":
         new_plan_id = meta.get("plan_id") or "pro"
         if tx.user_id:
-            # Ensure plan exists in DB
             plan_obj = db.query(models.StudyPlan).filter(models.StudyPlan.id == new_plan_id).first()
             if not plan_obj:
                 if new_plan_id == "pro":
@@ -397,17 +474,21 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                 else:
                     plan_obj = models.StudyPlan(id=new_plan_id, label=new_plan_id.title(), materials_limit=50, generations_limit=100)
                 db.add(plan_obj)
-                db.commit()
+                db.flush()
 
             sub = db.query(models.UserSubscription).filter(
                 models.UserSubscription.user_id == tx.user_id
             ).first()
-            if sub:
+            if not sub:
+                sub = models.UserSubscription(user_id=tx.user_id, plan_id=new_plan_id)
+                db.add(sub)
+            else:
                 sub.plan_id = new_plan_id
                 sub.materials_uploaded = 0
                 sub.generations_used = 0
                 sub.cycle_start_date = datetime.now(timezone.utc)
-                print(f"[FULFILLMENT] Upgraded User {tx.user_id} to {new_plan_id} plan.")
+
+            print(f"[FULFILLMENT] Upgraded User {tx.user_id} to '{new_plan_id}' plan.")
 
     elif purpose == "org_seats":
         extra_seats = int(meta.get("extra_seats") or 1)
@@ -416,4 +497,4 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                 models.Organisation.id == tx.organisation_id
             ).first()
             if org:
-                print(f"[FULFILLMENT] Credited +{extra_seats} seats to Organisation {org.name}")
+                print(f"[FULFILLMENT] Credited +{extra_seats} seats to Organisation '{org.name}'")

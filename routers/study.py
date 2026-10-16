@@ -134,10 +134,11 @@ async def upload_material(
         db.refresh(sub)
         
     # Check if they hit the limit (and ignore if limit is None for 'unlimited')
-    if sub.plan.materials_limit is not None and sub.materials_uploaded >= sub.plan.materials_limit:
+    effective_mat_limit = (sub.plan.materials_limit + (sub.bonus_materials or 0)) if sub.plan and sub.plan.materials_limit is not None else None
+    if effective_mat_limit is not None and sub.materials_uploaded >= effective_mat_limit:
         raise HTTPException(
             status_code=403, 
-            detail="You have reached your material upload limit. Please upgrade your plan."
+            detail="You have reached your material upload limit. Please upgrade your plan or top-up with a booster pack."
         )
 
     # They passed the check, increment the counter!
@@ -271,10 +272,11 @@ async def import_youtube_material(
         db.add(sub)
         db.commit()
         db.refresh(sub)
-    if sub.plan and sub.plan.materials_limit is not None and sub.materials_uploaded >= sub.plan.materials_limit:
+    effective_mat_limit = (sub.plan.materials_limit + (sub.bonus_materials or 0)) if sub.plan and sub.plan.materials_limit is not None else None
+    if effective_mat_limit is not None and sub.materials_uploaded >= effective_mat_limit:
         raise HTTPException(
             status_code=403,
-            detail="You have reached your material upload limit. Please upgrade your plan."
+            detail="You have reached your material upload limit. Please upgrade your plan or top-up with a booster pack."
         )
 
     from monetization_models import CreditBalance, CreditLedgerEntry
