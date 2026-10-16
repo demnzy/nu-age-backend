@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form,BackgroundTasks
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from sqlalchemy.sql.expression import func
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
@@ -484,10 +485,8 @@ def get_quiz_questions(material_ids: Optional[str] = None, db: Session = Depends
         for q in questions
     ]
 
-def _compute_smart_exam_duration(qs, mat_titles_str="", auth_dur=None) -> int:
+def _compute_smart_exam_duration(qs, mat_titles_str="", auth_dur=None, total_pack_questions=None) -> int:
     """Computes exam duration cognizant of real-world exam standards (JAMB, WAEC, NECO, Post-UTME, etc.)."""
-    if auth_dur and auth_dur > 0:
-        return auth_dur
     if not qs:
         return 300
 
@@ -537,6 +536,8 @@ def _compute_smart_exam_duration(qs, mat_titles_str="", auth_dur=None) -> int:
             sec_per_q = 84
         else:
             sec_per_q = 60
+    elif auth_dur and auth_dur > 0 and total_pack_questions and total_pack_questions > 0:
+        sec_per_q = max(30, round(auth_dur / total_pack_questions))
     else:
         sec_per_q = 60
 
@@ -545,20 +546,89 @@ def _compute_smart_exam_duration(qs, mat_titles_str="", auth_dur=None) -> int:
     return mins * 60
 
 
+@router.get("/exam/categories")
+def get_exam_categories(
+    material_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user = Depends(auth.get_current_user)
+):
+    """Returns available topics/categories, question counts per topic,
+    total available question count, and detected exam type for the target materials."""
+    query = db.query(models.Question).filter(models.Question.user_id == user.id)
+    exam_type = None
+
+    if material_ids:
+        ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
+        if ids_list:
+            query = query.filter(models.Question.material_id.in_(ids_list))
+            dl = db.query(models.StudyPackDownload).filter(
+                models.StudyPackDownload.user_id == user.id,
+                models.StudyPackDownload.imported_material_id.in_(ids_list)
+            ).first()
+            if dl:
+                pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
+                if pack and pack.pack_data:
+                    exam_type = pack.pack_data.get("exam_type")
+
+    topic_rows = (
+        query.with_entities(
+            func.coalesce(func.nullif(models.Question.topic, ''), 'General').label("topic_name"),
+            func.count(models.Question.id).label("q_count"),
+            func.max(models.Question.exam_type).label("ex_type")
+        )
+        .group_by("topic_name")
+        .order_by(func.count(models.Question.id).desc())
+        .all()
+    )
+
+    categories = []
+    total = 0
+    for r in topic_rows:
+        categories.append({
+            "name": r.topic_name,
+            "count": int(r.q_count)
+        })
+        total += int(r.q_count)
+        if not exam_type and r.ex_type:
+            exam_type = r.ex_type
+
+    return {
+        "total_questions": total,
+        "exam_type": exam_type,
+        "categories": categories
+    }
+
+
 @router.get("/exam/questions", response_model=schemas.ExamResponse)
 def get_exam_questions(
     material_ids: Optional[str] = None,
     limit: Optional[int] = 50,
+    topics: Optional[str] = None,
+    duration_seconds: Optional[int] = None,
     db: Session = Depends(get_db),
     user = Depends(auth.get_current_user)
 ):
     """Pulls random questions for a full exam simulation,
-    scoped to the given materials, with duration cognizant of official exam standards (JAMB, WAEC, NECO, etc.)."""
+    scoped to the given materials and topics, with duration cognizant of official exam standards (JAMB, WAEC, NECO, etc.)."""
     effective_limit = min(max(5, int(limit or 50)), 200)
 
+    # Parse topics filter if supplied
+    topic_list = []
+    if topics:
+        topic_list = [t.strip() for t in topics.split(",") if t.strip()]
+
     authoritative_duration = None
+    total_pack_questions = None
     questions = []
     mat_map = {}
+
+    def _apply_topic_filter(q):
+        if not topic_list or "all" in [t.lower() for t in topic_list] or "all topics" in [t.lower() for t in topic_list]:
+            return q
+        if "General" in topic_list:
+            other = [t for t in topic_list if t != "General"]
+            return q.filter(or_(models.Question.topic.in_(other), models.Question.topic == None, models.Question.topic == ''))
+        return q.filter(models.Question.topic.in_(topic_list))
 
     if material_ids:
         ids_list = [uuid.UUID(i.strip()) for i in material_ids.split(",") if i.strip()]
@@ -566,13 +636,16 @@ def get_exam_questions(
         mat_map = {m.id: m.title for m in materials}
 
         if len(ids_list) > 1:
-            # Multi-subject bundle sitting: partition questions proportionally per subject (up to 40 per subject)
+            # Multi-subject bundle sitting: partition questions proportionally per subject (up to effective_limit // len(ids_list))
+            per_sub = max(5, effective_limit // len(ids_list))
             total_duration_acc = 0
             for mid in ids_list:
-                mat_qs = db.query(models.Question).filter(
+                mat_q_query = db.query(models.Question).filter(
                     models.Question.user_id == user.id,
                     models.Question.material_id == mid
-                ).order_by(func.random()).limit(40).all()
+                )
+                mat_q_query = _apply_topic_filter(mat_q_query)
+                mat_qs = mat_q_query.order_by(func.random()).limit(per_sub).all()
                 questions.extend(mat_qs)
 
                 # Check pack duration for this subject
@@ -592,10 +665,12 @@ def get_exam_questions(
                 authoritative_duration = min(total_duration_acc, 7200)
         else:
             mid = ids_list[0]
-            questions = db.query(models.Question).filter(
+            q_query = db.query(models.Question).filter(
                 models.Question.user_id == user.id,
                 models.Question.material_id == mid
-            ).order_by(func.random()).limit(effective_limit).all()
+            )
+            q_query = _apply_topic_filter(q_query)
+            questions = q_query.order_by(func.random()).limit(effective_limit).all()
 
             dl = db.query(models.StudyPackDownload).filter(
                 models.StudyPackDownload.user_id == user.id,
@@ -603,10 +678,15 @@ def get_exam_questions(
             ).first()
             if dl:
                 pack = db.query(models.StudyPack).filter(models.StudyPack.id == dl.pack_id).first()
-                if pack and pack.pack_data and pack.pack_data.get("duration_seconds"):
-                    authoritative_duration = int(pack.pack_data["duration_seconds"])
+                if pack and pack.pack_data:
+                    if pack.pack_data.get("duration_seconds"):
+                        authoritative_duration = int(pack.pack_data["duration_seconds"])
+                    if pack.pack_data.get("questions"):
+                        total_pack_questions = len(pack.pack_data["questions"])
     else:
-        questions = db.query(models.Question).filter(models.Question.user_id == user.id).order_by(func.random()).limit(effective_limit).all()
+        q_query = db.query(models.Question).filter(models.Question.user_id == user.id)
+        q_query = _apply_topic_filter(q_query)
+        questions = q_query.order_by(func.random()).limit(effective_limit).all()
 
     question_payload = [
         {
@@ -626,11 +706,16 @@ def get_exam_questions(
     ]
 
     mat_titles_combined = " ".join(str(t) for t in mat_map.values())
-    duration_seconds = _compute_smart_exam_duration(questions, mat_titles_combined, authoritative_duration)
+    if duration_seconds and int(duration_seconds) > 0:
+        computed_duration = int(duration_seconds)
+    else:
+        computed_duration = _compute_smart_exam_duration(
+            questions, mat_titles_combined, authoritative_duration, total_pack_questions
+        )
 
     return {
         "questions": question_payload,
-        "duration_seconds": duration_seconds,
+        "duration_seconds": computed_duration,
     }
 
 # ==========================================

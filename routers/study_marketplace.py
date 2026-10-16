@@ -172,18 +172,21 @@ def list_marketplace_packs(
     packs = query.offset((page - 1) * limit).limit(limit).all()
 
     # User download & like mappings
-    user_downloaded_ids = set()
+    user_downloaded_map = {}
     user_liked_ids = set()
     user_balance = 0
 
     if current_user:
         pack_ids = [p.id for p in packs]
         if pack_ids:
-            dl_records = db.query(models.StudyPackDownload.pack_id).filter(
+            dl_records = db.query(
+                models.StudyPackDownload.pack_id,
+                models.StudyPackDownload.imported_material_id
+            ).filter(
                 models.StudyPackDownload.user_id == current_user.id,
                 models.StudyPackDownload.pack_id.in_(pack_ids)
             ).all()
-            user_downloaded_ids = {r[0] for r in dl_records}
+            user_downloaded_map = {r[0]: (str(r[1]) if r[1] else None) for r in dl_records}
 
             like_records = db.query(models.StudyPackLike.pack_id).filter(
                 models.StudyPackLike.user_id == current_user.id,
@@ -247,7 +250,8 @@ def list_marketplace_packs(
                 "username": creator_username,
                 "profile_picture_url": creator_avatar,
             },
-            "is_owned": p.id in user_downloaded_ids,
+            "is_owned": p.id in user_downloaded_map,
+            "imported_material_id": user_downloaded_map.get(p.id),
             "is_creator": bool(current_user and p.creator_id == current_user.id),
             "is_liked": p.id in user_liked_ids,
         })
@@ -387,6 +391,7 @@ def get_marketplace_pack_detail(
         "preview_flashcards": preview_cards,
         "preview_questions": preview_questions,
         "is_owned": is_owned,
+        "imported_material_id": str(dl.imported_material_id) if (dl and dl.imported_material_id) else None,
         "is_creator": is_creator,
         "is_liked": is_liked,
         "user_balance": user_balance,
