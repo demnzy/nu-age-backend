@@ -18,7 +18,7 @@ settings = Settings()
 class StoreProductPayload(BaseModel):
     id: Optional[str] = None
     name: str
-    category: str  # plan, booster, coins, org_seats
+    category: str  # plan, booster, coins, org_plan, org_seats
     price: float
     badge: Optional[str] = None
     description: Optional[str] = None
@@ -31,6 +31,16 @@ class StoreProductPayload(BaseModel):
     org_seats: Optional[int] = 0
     is_active: Optional[bool] = True
     display_order: Optional[int] = 0
+
+
+class OrgPlanPayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    price: float = 0.0
+    max_members: Optional[int] = 20
+    max_courses: Optional[int] = 10
+    features: Optional[List[str]] = Field(default_factory=list)
 
 
 class InitializePaymentRequest(BaseModel):
@@ -361,7 +371,9 @@ def get_store_catalog(db: Session = Depends(get_db)):
         "plans": [_to_dict(p) for p in products if p.category == "plan"],
         "packs": [_to_dict(p) for p in products if p.category == "booster"],
         "coins": [_to_dict(p) for p in products if p.category == "coins"],
-        "org_products": [_to_dict(p) for p in products if p.category == "org_seats"],
+        "org_plans": [_to_dict(p) for p in products if p.category == "org_plan"],
+        "org_seats": [_to_dict(p) for p in products if p.category == "org_seats"],
+        "org_products": [_to_dict(p) for p in products if p.category in ("org_plan", "org_seats")],
     }
 
 
@@ -474,6 +486,80 @@ def delete_store_product(
     db.delete(prod)
     db.commit()
     return {"status": "success", "message": f"Product '{product_id}' deleted successfully."}
+
+
+@router.get("/admin/org-plans")
+def get_admin_org_plans(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Returns all organisation plans declared in PostgreSQL 'plans' table.
+    """
+    plans = db.query(models.Plan).order_by(models.Plan.price.asc()).all()
+    return [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "description": p.description,
+            "price": p.price,
+            "max_members": p.max_members,
+            "max_courses": p.max_courses,
+            "features": list(p.features) if p.features else [],
+        }
+        for p in plans
+    ]
+
+
+@router.post("/admin/org-plans")
+def save_admin_org_plan(
+    payload: OrgPlanPayload,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Creates or updates an Organisation Plan record in the PostgreSQL 'plans' table.
+    """
+    plan_obj = None
+    if payload.id:
+        try:
+            plan_uuid = uuid.UUID(payload.id)
+            plan_obj = db.query(models.Plan).filter(models.Plan.id == plan_uuid).first()
+        except ValueError:
+            pass
+
+    if not plan_obj:
+        plan_obj = db.query(models.Plan).filter(models.Plan.name.ilike(payload.name.strip())).first()
+
+    if plan_obj:
+        plan_obj.name = payload.name.strip()
+        plan_obj.description = payload.description
+        plan_obj.price = payload.price
+        plan_obj.max_members = payload.max_members
+        plan_obj.max_courses = payload.max_courses
+        plan_obj.features = payload.features or []
+    else:
+        plan_obj = models.Plan(
+            name=payload.name.strip(),
+            description=payload.description,
+            price=payload.price,
+            max_members=payload.max_members,
+            max_courses=payload.max_courses,
+            features=payload.features or [],
+        )
+        db.add(plan_obj)
+
+    db.commit()
+    db.refresh(plan_obj)
+    return {
+        "id": str(plan_obj.id),
+        "name": plan_obj.name,
+        "description": plan_obj.description,
+        "price": plan_obj.price,
+        "max_members": plan_obj.max_members,
+        "max_courses": plan_obj.max_courses,
+        "features": list(plan_obj.features) if plan_obj.features else [],
+    }
 
 
 def _seed_store_catalog_if_empty(db: Session):
@@ -811,6 +897,26 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                     ))
 
             print(f"[FULFILLMENT] Upgraded User {tx.user_id} to '{new_plan_id}' plan without resetting usage counters.")
+
+    elif purpose in ("org_plan", "org_subscription"):
+        target_plan_id = meta.get("plan_id") or meta.get("org_plan_id") or (prod.plan_id if prod else None)
+        if tx.organisation_id and target_plan_id:
+            try:
+                target_uuid = uuid.UUID(str(target_plan_id))
+            except ValueError:
+                p_match = db.query(models.Plan).filter(models.Plan.name.ilike(str(target_plan_id).strip())).first()
+                target_uuid = p_match.id if p_match else None
+
+            if target_uuid:
+                org = db.query(models.Organisation).filter(
+                    models.Organisation.id == tx.organisation_id
+                ).first()
+                if org:
+                    org.plan_id = target_uuid
+                    interval_str = (prod.interval if prod else meta.get("interval")) or "month"
+                    days_valid = 365 if "year" in str(interval_str).lower() else 30
+                    org.plan_expires_at = datetime.now(timezone.utc) + timedelta(days=days_valid)
+                    print(f"[FULFILLMENT] Upgraded Organisation '{org.name}' to Plan '{target_uuid}' (Expires in {days_valid} days)")
 
     elif purpose == "org_seats":
         extra_seats = int(meta.get("extra_seats") or (prod.org_seats if prod else 1) or 1)

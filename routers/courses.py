@@ -280,6 +280,7 @@ def delete_course(course_id: UUID, db: Session = Depends(get_db)):
 class AIDraftRequest(BaseModel):
     topic: str
     context: str
+    org_id: Optional[str] = None
 
 @router.post('/generate-draft', status_code=status.HTTP_202_ACCEPTED)
 async def generate_course_draft(
@@ -293,6 +294,52 @@ async def generate_course_draft(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have permission to generate courses."
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ORG PLAN PERK CHECK FOR AI COURSE DRAFTING
+    # Policy: Preexisting orgs (created before cutoff) are grandfathered into AI drafting.
+    # New orgs created after cutoff require "AI Course Drafting" in their plan features.
+    # ─────────────────────────────────────────────────────────────────────────
+    from datetime import datetime, timezone
+    CUTOFF_DATE = datetime(2026, 10, 16, 5, 0, 0, tzinfo=timezone.utc)
+
+    org = None
+    if payload.org_id:
+        try:
+            target_org_uuid = uuid.UUID(str(payload.org_id))
+            org = db.query(models.Organisation).filter(models.Organisation.id == target_org_uuid).first()
+        except ValueError:
+            pass
+
+    if not org and getattr(user, "organisations", None):
+        org = user.organisations[0] if len(user.organisations) > 0 else None
+    if not org:
+        org = db.query(models.Organisation).filter(models.Organisation.owner_id == user.id).first()
+    if not org:
+        org_member = db.query(models.OrganisationMember).filter(models.OrganisationMember.user_id == user.id).first()
+        if org_member:
+            org = db.query(models.Organisation).filter(models.Organisation.id == org_member.organisation_id).first()
+
+    if org:
+        org_created = org.created_at
+        if org_created and org_created.tzinfo is None:
+            org_created = org_created.replace(tzinfo=timezone.utc)
+
+        is_preexisting = bool(org_created and org_created <= CUTOFF_DATE)
+        has_plan_perk = False
+        if org.plan and org.plan.features:
+            for feat in org.plan.features:
+                f_lower = str(feat).lower()
+                if "ai" in f_lower and "draft" in f_lower:
+                    has_plan_perk = True
+                    break
+
+        if not (is_preexisting or has_plan_perk):
+            # Handled cleanly in frontend by course_builder.py
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="plan_required"
+            )
 
     from services.ai_service import run_course_draft_job
 
