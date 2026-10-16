@@ -566,6 +566,11 @@ def user_login(
 
     # Update the last login date to today
     actual_user.last_login_date = today
+    try:
+        from services import coin_service
+        coin_service.track_objective_progress(db, actual_user.id, "streak_5_day", actual_user.streak or 1, set_absolute=True)
+    except Exception as ex:
+        print(f"[OBJECTIVES] Error tracking streak_5_day: {ex}")
     db.commit()
     # -----------------------
 

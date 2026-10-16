@@ -1584,3 +1584,242 @@ def cancel_audio_queue(
         _AUDIO_QUEUE_STATE["cancel_requested"] = True
         return {"message": "Audio queue cancellation requested. Active synthesis will stop safely."}
     return {"message": "No active audio queue is currently running."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLATFORM OBJECTIVES & MILESTONES ADMIN CRUD
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PlatformObjectiveCreate(BaseModel):
+    code: str
+    title: str
+    description: str
+    category: str = "general"
+    target_value: int = 1
+    target_unit: str = "count"
+    coin_reward: int = 50
+    icon: str = "EMOJI_TROPHY"
+    is_active: bool = True
+
+
+class PlatformObjectiveUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    target_value: Optional[int] = None
+    target_unit: Optional[str] = None
+    coin_reward: Optional[int] = None
+    icon: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@router.get("/objectives")
+def get_all_platform_objectives_admin(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Returns all platform objectives with live completion and claim statistics for admin inspection.
+    """
+    objectives = db.query(models.PlatformObjective).order_by(models.PlatformObjective.created_at.desc()).all()
+
+    # Pre-fetch completion and claim counts grouped by objective_code
+    stats_rows = db.query(
+        models.UserObjectiveProgress.objective_code,
+        func.count(models.UserObjectiveProgress.id).filter(models.UserObjectiveProgress.is_completed == True).label("completed_count"),
+        func.count(models.UserObjectiveProgress.id).filter(models.UserObjectiveProgress.is_claimed == True).label("claimed_count"),
+    ).group_by(models.UserObjectiveProgress.objective_code).all()
+
+    stats_map = {r.objective_code: (r.completed_count or 0, r.claimed_count or 0) for r in stats_rows}
+
+    total_coins_distributed = 0
+    items = []
+    for obj in objectives:
+        c_count, cl_count = stats_map.get(obj.code, (0, 0))
+        distributed = cl_count * (obj.coin_reward or 0)
+        total_coins_distributed += distributed
+        items.append({
+            "id": str(obj.id),
+            "code": obj.code,
+            "title": obj.title,
+            "description": obj.description,
+            "category": obj.category,
+            "target_value": obj.target_value,
+            "target_unit": obj.target_unit,
+            "coin_reward": obj.coin_reward,
+            "icon": obj.icon,
+            "is_active": obj.is_active,
+            "completions_count": c_count,
+            "claimed_count": cl_count,
+            "total_coins_awarded": distributed,
+            "created_at": obj.created_at.isoformat() if obj.created_at else None,
+        })
+
+    return {
+        "status": "success",
+        "total_objectives": len(objectives),
+        "total_active": len([o for o in objectives if o.is_active]),
+        "total_coins_distributed": total_coins_distributed,
+        "objectives": items,
+    }
+
+
+@router.post("/objectives")
+def create_platform_objective_admin(
+    payload: PlatformObjectiveCreate,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Creates a new platform objective with defined targets and Nu-Coin rewards.
+    """
+    clean_code = payload.code.strip().lower()
+    existing = db.query(models.PlatformObjective).filter(models.PlatformObjective.code == clean_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Objective code '{clean_code}' already exists.")
+
+    new_obj = models.PlatformObjective(
+        code=clean_code,
+        title=payload.title.strip(),
+        description=payload.description.strip(),
+        category=payload.category.strip().lower() or "general",
+        target_value=max(1, payload.target_value),
+        target_unit=payload.target_unit.strip() or "count",
+        coin_reward=max(0, payload.coin_reward),
+        icon=payload.icon.strip() or "EMOJI_TROPHY",
+        is_active=payload.is_active,
+    )
+    db.add(new_obj)
+    db.commit()
+    db.refresh(new_obj)
+
+    return {
+        "status": "success",
+        "message": f"Objective '{new_obj.title}' created successfully.",
+        "objective_id": str(new_obj.id),
+    }
+
+
+@router.put("/objectives/{objective_id}")
+def update_platform_objective_admin(
+    objective_id: str,
+    payload: PlatformObjectiveUpdate,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Updates an existing platform objective's title, description, targets, reward, or active status.
+    """
+    try:
+        obj_uuid = UUID(objective_id)
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.id == obj_uuid).first()
+    except Exception:
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.code == objective_id).first()
+
+    if not obj:
+        raise HTTPException(status_code=404, detail="Objective not found.")
+
+    if payload.title is not None:
+        obj.title = payload.title.strip()
+    if payload.description is not None:
+        obj.description = payload.description.strip()
+    if payload.category is not None:
+        obj.category = payload.category.strip().lower()
+    if payload.target_value is not None:
+        obj.target_value = max(1, payload.target_value)
+    if payload.target_unit is not None:
+        obj.target_unit = payload.target_unit.strip()
+    if payload.coin_reward is not None:
+        obj.coin_reward = max(0, payload.coin_reward)
+    if payload.icon is not None:
+        obj.icon = payload.icon.strip()
+    if payload.is_active is not None:
+        obj.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(obj)
+
+    return {
+        "status": "success",
+        "message": f"Objective '{obj.title}' updated successfully.",
+        "objective": {
+            "id": str(obj.id),
+            "code": obj.code,
+            "title": obj.title,
+            "description": obj.description,
+            "category": obj.category,
+            "target_value": obj.target_value,
+            "target_unit": obj.target_unit,
+            "coin_reward": obj.coin_reward,
+            "icon": obj.icon,
+            "is_active": obj.is_active,
+        },
+    }
+
+
+@router.delete("/objectives/{objective_id}")
+def delete_platform_objective_admin(
+    objective_id: str,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Deactivates or deletes a platform objective.
+    If learners already have logged progress against it, deactivates it safely.
+    """
+    try:
+        obj_uuid = UUID(objective_id)
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.id == obj_uuid).first()
+    except Exception:
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.code == objective_id).first()
+
+    if not obj:
+        raise HTTPException(status_code=404, detail="Objective not found.")
+
+    # Check if user progress exists
+    has_progress = db.query(models.UserObjectiveProgress).filter(models.UserObjectiveProgress.objective_code == obj.code).first()
+    if has_progress:
+        # Soft delete by deactivating
+        obj.is_active = False
+        db.commit()
+        return {"status": "success", "message": f"Objective '{obj.title}' deactivated (progress records preserved).", "is_active": False}
+    else:
+        db.delete(obj)
+        db.commit()
+        return {"status": "success", "message": f"Objective '{obj.title}' permanently removed."}
+
+
+@router.post("/objectives/{objective_id}/test-trigger")
+def test_trigger_objective_notification(
+    objective_id: str,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Admin test endpoint: triggers completion notification for this objective directly to the caller's account
+    to test notification delivery, deep link, and claim flow e2e.
+    """
+    try:
+        obj_uuid = UUID(objective_id)
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.id == obj_uuid).first()
+    except Exception:
+        obj = db.query(models.PlatformObjective).filter(models.PlatformObjective.code == objective_id).first()
+
+    if not obj:
+        raise HTTPException(status_code=404, detail="Objective not found.")
+
+    from services import coin_service
+    # Set progress to target
+    prog = coin_service.track_objective_progress(db, current_admin.id, obj.code, obj.target_value, set_absolute=True)
+
+    return {
+        "status": "success",
+        "message": f"Test completion triggered for '{obj.title}'. Check in-app notifications and push alerts.",
+        "progress": {
+            "current_value": prog.current_value if prog else obj.target_value,
+            "target_value": obj.target_value,
+            "is_completed": prog.is_completed if prog else True,
+            "is_claimed": prog.is_claimed if prog else False,
+        },
+    }
+

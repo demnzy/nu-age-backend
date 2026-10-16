@@ -255,9 +255,16 @@ def mark_lesson_complete(
     if total_lessons > 0:
         new_percentage = round((completed_lessons / total_lessons) * 100.0, 2)
         if completed_lessons >= total_lessons or new_percentage >= 99.0:
+            was_already_completed = (enrollment.progress or 0) >= 100.0 or enrollment.completed_at is not None
             enrollment.progress = 100.0
             if enrollment.completed_at is None:
                 enrollment.completed_at = func.now()
+            if not was_already_completed:
+                try:
+                    from services import coin_service
+                    coin_service.track_objective_progress(db, user.id, "finish_course", 1)
+                except Exception as ex:
+                    print(f"[OBJECTIVES] Error tracking course completion: {ex}")
         else:
             enrollment.progress = new_percentage
         db.flush()

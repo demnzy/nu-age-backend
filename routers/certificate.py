@@ -107,6 +107,11 @@ async def generate_and_upload_certificate(
         enrollment.progress = 100.0
         if not enrollment.completed_at:
             enrollment.completed_at = func.now()
+        try:
+            from services import coin_service
+            coin_service.track_objective_progress(db, current_user.id, "finish_course", 1)
+        except Exception as ex:
+            print(f"[OBJECTIVES] Error tracking finish_course in certificate.py: {ex}")
         db.commit()
         
         # Force SQLAlchemy to reload the row to verify it actually saved

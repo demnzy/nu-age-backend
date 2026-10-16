@@ -101,6 +101,12 @@ def review_card(payload: schemas.ReviewPayload, db: Session = Depends(get_db), u
     db.commit()
     db.refresh(card)
     
+    try:
+        from services import coin_service
+        coin_service.track_objective_progress(db, user.id, "practice_100q", 1)
+    except Exception as ex:
+        print(f"[OBJECTIVES] Error tracking practice_100q in review_card: {ex}")
+    
     return {"next_review_date": card.next_review_date, "interval_days": card.interval_days}
 
 @router.post("/cards/save", response_model=dict)
@@ -1102,3 +1108,29 @@ def delete_study_material(
 
     db.commit()
     return {"success": True, "message": "Material removed from vault."}
+
+
+class StudySessionLogPayload(BaseModel):
+    minutes: int = 0
+    questions: int = 0
+    activity_type: Optional[str] = "self_study"
+
+
+@router.post("/log-session")
+def log_study_session(
+    payload: StudySessionLogPayload,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user),
+):
+    """Logs active self-study minutes and practice questions directly to the platform objectives tracker."""
+    from services import coin_service
+    if payload.minutes > 0:
+        coin_service.track_objective_progress(db, user.id, "study_time_60m", payload.minutes)
+    if payload.questions > 0:
+        coin_service.track_objective_progress(db, user.id, "practice_100q", payload.questions)
+    return {
+        "status": "success",
+        "logged_minutes": payload.minutes,
+        "logged_questions": payload.questions,
+    }
+

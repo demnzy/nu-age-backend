@@ -299,6 +299,27 @@ def track_objective_progress(
         prog.is_completed = True
         prog.completed_at = datetime.now(timezone.utc)
 
+        # Dispatch immediate notification so learner can claim from the notification
+        try:
+            from services.notifications import dispatch_notification
+            dispatch_notification(
+                db=db,
+                recipient_id=user_id,
+                title=f"🏆 Objective Completed: {obj.title}!",
+                body=f"You completed '{obj.title}'! Tap to claim your +{obj.coin_reward} Nu-Coins reward.",
+                category="objective_completed",
+                collapse_id=f"obj_{obj.code}_{user_id}",
+                data={
+                    "type": "objective",
+                    "code": obj.code,
+                    "title": obj.title,
+                    "reward_coins": obj.coin_reward,
+                    "action": "claim_objective",
+                },
+            )
+        except Exception as ex:
+            print(f"[OBJECTIVES] Failed to dispatch completion notification: {ex}")
+
     db.commit()
     db.refresh(prog)
     return prog
