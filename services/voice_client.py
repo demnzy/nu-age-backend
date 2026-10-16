@@ -34,6 +34,32 @@ async def check_voice_service_health() -> Dict[str, Any]:
     return {"status": "unavailable", "url": base_url}
 
 
+async def get_voice_models_status() -> Dict[str, Any]:
+    """Retrieves neural model readiness and memory residency from Nu-Voice."""
+    base_url = get_voice_service_url()
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            res = await client.get(f"{base_url}/v1/models/status")
+            if res.status_code == 200:
+                return res.json()
+    except Exception as e:
+        logger.debug(f"Nu-Voice models status check notice: {e}")
+    return {"status": "unavailable", "url": base_url}
+
+
+async def preload_remote_voice_models(warmup: bool = True) -> Dict[str, Any]:
+    """Triggers on-demand neural model preloading and RAM warmup on Nu-Voice."""
+    base_url = get_voice_service_url()
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            res = await client.post(f"{base_url}/v1/models/preload", params={"warmup": warmup})
+            if res.status_code == 200:
+                return res.json()
+    except Exception as e:
+        logger.warning(f"Nu-Voice models preload request notice: {e}")
+    return {"status": "failed", "url": base_url}
+
+
 async def stream_lesson_speech(
     lesson_id: str,
     title: str,

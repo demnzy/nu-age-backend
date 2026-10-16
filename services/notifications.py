@@ -210,6 +210,11 @@ def dispatch_notification(
                     if res.status_code in (200, 201) and bool(notif_id):
                         onesignal_sent = True
                         print(f"[OneSignal] Push SUCCESS: id={notif_id}, recipients={recipients}, warnings={warnings}")
+                    elif errors and (
+                        (isinstance(errors, list) and "All included players are not subscribed" in errors)
+                        or (isinstance(errors, str) and "All included players are not subscribed" in errors)
+                    ):
+                        print(f"[OneSignal] Push skipped (user has no active mobile push subscription): recipients={valid_recipients_str}")
                     else:
                         print(f"[OneSignal] Push issue: status={res.status_code}, id={notif_id}, recipients={recipients}, errors={errors}, warnings={warnings}, raw={res_text}")
 

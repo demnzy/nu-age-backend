@@ -3,9 +3,10 @@ import sys
 import io
 import csv
 import time
+import asyncio
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -1267,3 +1268,319 @@ def onesignal_diagnostics(
 
     print(f"[platform_admin] OneSignal diagnostics fetched: app_name={result.get('app_info', {}).get('name') if isinstance(result.get('app_info'), dict) else 'N/A'}")
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. AUDIO NARRATION BATCH QUEUE & COVERAGE MATRIX
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AudioBatchQueueRequest(BaseModel):
+    languages: List[str] = ["en", "ha", "fr"]
+    course_id: Optional[UUID] = None
+    force_regenerate: bool = False
+
+
+class AudioQueueCoverageStats(BaseModel):
+    en: int = 0
+    ha: int = 0
+    fr: int = 0
+    total_narratable_lessons: int = 0
+    en_pct: float = 0.0
+    ha_pct: float = 0.0
+    fr_pct: float = 0.0
+
+
+class AudioQueueStatusResponse(BaseModel):
+    status: str  # "idle", "running", "completed", "cancelled"
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    total_lessons: int = 0
+    total_tasks: int = 0
+    skipped_existing: int = 0
+    queued_tasks: int = 0
+    completed_tasks: int = 0
+    failed_tasks: int = 0
+    active_task: Optional[Dict[str, Any]] = None
+    cancel_requested: bool = False
+    languages: List[str] = []
+    coverage: AudioQueueCoverageStats
+    recent_logs: List[str] = []
+
+
+_AUDIO_QUEUE_STATE: Dict[str, Any] = {
+    "status": "idle",
+    "started_at": None,
+    "completed_at": None,
+    "total_lessons": 0,
+    "total_tasks": 0,
+    "skipped_existing": 0,
+    "queued_tasks": 0,
+    "completed_tasks": 0,
+    "failed_tasks": 0,
+    "active_task": None,
+    "cancel_requested": False,
+    "languages": ["en", "ha", "fr"],
+    "recent_logs": [],
+}
+_AUDIO_QUEUE_LOCK = asyncio.Lock()
+
+
+def _get_audio_coverage_stats(db: Session, course_id: Optional[UUID] = None) -> AudioQueueCoverageStats:
+    from routers.tts import UNSUPPORTED_LESSON_TYPES
+
+    lesson_q = db.query(models.Lesson).filter(
+        models.Lesson.type.notin_(UNSUPPORTED_LESSON_TYPES)
+    )
+    if course_id:
+        lesson_q = lesson_q.join(
+            models.Module, models.Lesson.module_id == models.Module.id
+        ).filter(models.Module.course_id == course_id)
+
+    total_lessons = lesson_q.count()
+
+    cache_q = db.query(
+        models.LessonAudioCache.language,
+        func.count(models.LessonAudioCache.id),
+    )
+    if course_id:
+        cache_q = cache_q.join(
+            models.Lesson, models.LessonAudioCache.lesson_id == models.Lesson.id
+        ).join(
+            models.Module, models.Lesson.module_id == models.Module.id
+        ).filter(models.Module.course_id == course_id)
+
+    counts = dict(cache_q.group_by(models.LessonAudioCache.language).all())
+
+    en_c = counts.get("en", 0)
+    ha_c = counts.get("ha", 0)
+    fr_c = counts.get("fr", 0)
+
+    return AudioQueueCoverageStats(
+        en=en_c,
+        ha=ha_c,
+        fr=fr_c,
+        total_narratable_lessons=total_lessons,
+        en_pct=round((en_c / total_lessons * 100), 1) if total_lessons > 0 else 0.0,
+        ha_pct=round((ha_c / total_lessons * 100), 1) if total_lessons > 0 else 0.0,
+        fr_pct=round((fr_c / total_lessons * 100), 1) if total_lessons > 0 else 0.0,
+    )
+
+
+async def _run_audio_queue_worker(task_list: List[Dict[str, Any]], languages: List[str]):
+    """Background worker that synthesizes pending audio tasks with bounded concurrency."""
+    from routers.tts import _background_synthesize_and_cache
+
+    sem = asyncio.Semaphore(2)
+
+    async def _process_single(task: Dict[str, Any]):
+        if _AUDIO_QUEUE_STATE.get("cancel_requested"):
+            return
+
+        lid = task["lesson_id"]
+        lang = task["lang"]
+        title = task["title"]
+        content_text = task["content_text"]
+        content_hash = task["content_hash"]
+
+        async with sem:
+            if _AUDIO_QUEUE_STATE.get("cancel_requested"):
+                return
+
+            _AUDIO_QUEUE_STATE["active_task"] = {
+                "lesson_id": lid,
+                "title": title,
+                "language": lang,
+            }
+
+            try:
+                cdn_url = await _background_synthesize_and_cache(
+                    lesson_id=lid,
+                    title=title,
+                    content_text=content_text,
+                    lang=lang,
+                    content_hash=content_hash,
+                )
+                if cdn_url:
+                    _AUDIO_QUEUE_STATE["completed_tasks"] += 1
+                    msg = f"Generated {lang.upper()} narration for '{title}'"
+                    _AUDIO_QUEUE_STATE["recent_logs"].insert(0, msg)
+                else:
+                    _AUDIO_QUEUE_STATE["failed_tasks"] += 1
+                    msg = f"Failed {lang.upper()} generation for '{title}' (empty stream)"
+                    _AUDIO_QUEUE_STATE["recent_logs"].insert(0, msg)
+            except Exception as ex:
+                _AUDIO_QUEUE_STATE["failed_tasks"] += 1
+                msg = f"Error {lang.upper()} generation for '{title}': {ex}"
+                _AUDIO_QUEUE_STATE["recent_logs"].insert(0, msg)
+            finally:
+                if len(_AUDIO_QUEUE_STATE["recent_logs"]) > 50:
+                    _AUDIO_QUEUE_STATE["recent_logs"] = _AUDIO_QUEUE_STATE["recent_logs"][:50]
+
+    for t in task_list:
+        if _AUDIO_QUEUE_STATE.get("cancel_requested"):
+            break
+        await _process_single(t)
+
+    _AUDIO_QUEUE_STATE["status"] = "cancelled" if _AUDIO_QUEUE_STATE.get("cancel_requested") else "completed"
+    _AUDIO_QUEUE_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
+    _AUDIO_QUEUE_STATE["active_task"] = None
+
+
+@router.post("/courses/audio/queue-all", status_code=status.HTTP_200_OK)
+async def queue_all_lesson_audio(
+    payload: AudioBatchQueueRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Triggers batch audio generation for all narratable lessons across requested languages.
+    Strict Invariant: If a lesson and language already has a row in models.LessonAudioCache,
+    it is immediately skipped unless force_regenerate=True is explicitly passed.
+    """
+    from routers.tts import (
+        UNSUPPORTED_LESSON_TYPES,
+        extract_lesson_narratable_text,
+        compute_content_hash,
+    )
+
+    async with _AUDIO_QUEUE_LOCK:
+        if _AUDIO_QUEUE_STATE.get("status") == "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A batch audio generation queue is currently running. Please wait or cancel the active job.",
+            )
+
+        # 1. Fetch eligible lessons
+        lesson_query = db.query(models.Lesson).filter(
+            models.Lesson.type.notin_(UNSUPPORTED_LESSON_TYPES)
+        )
+        if payload.course_id:
+            lesson_query = lesson_query.join(
+                models.Module, models.Lesson.module_id == models.Module.id
+            ).filter(models.Module.course_id == payload.course_id)
+
+        all_lessons = lesson_query.all()
+        total_lessons = len(all_lessons)
+
+        target_langs = [l.lower().strip() for l in (payload.languages or ["en", "ha", "fr"]) if l in ("en", "ha", "fr")]
+        if not target_langs:
+            target_langs = ["en", "ha", "fr"]
+
+        # 2. Pre-fetch existing caches in one bulk query for maximum performance
+        existing_caches = db.query(
+            models.LessonAudioCache.lesson_id,
+            models.LessonAudioCache.language,
+            models.LessonAudioCache.audio_url,
+        ).filter(
+            models.LessonAudioCache.language.in_(target_langs)
+        ).all()
+        existing_set = {
+            (str(c.lesson_id), str(c.language).lower()): bool(c.audio_url)
+            for c in existing_caches
+        }
+
+        tasks_to_run = []
+        skipped_count = 0
+
+        for lesson in all_lessons:
+            lid_str = str(lesson.id)
+            # Try extracting text
+            try:
+                narratable_text = extract_lesson_narratable_text(lesson)
+                chash = compute_content_hash(narratable_text)
+            except Exception:
+                continue
+
+            for lang in target_langs:
+                key = (lid_str, lang)
+                # Strict skip invariant: if row exists in DB and has valid audio_url, SKIP!
+                if key in existing_set and existing_set[key] and not payload.force_regenerate:
+                    skipped_count += 1
+                    continue
+
+                tasks_to_run.append({
+                    "lesson_id": lid_str,
+                    "title": lesson.title or "Lesson",
+                    "content_text": narratable_text,
+                    "content_hash": chash,
+                    "lang": lang,
+                })
+
+        total_tasks = skipped_count + len(tasks_to_run)
+
+        # 3. Initialize state
+        _AUDIO_QUEUE_STATE.clear()
+        _AUDIO_QUEUE_STATE.update({
+            "status": "running" if tasks_to_run else "completed",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat() if not tasks_to_run else None,
+            "total_lessons": total_lessons,
+            "total_tasks": total_tasks,
+            "skipped_existing": skipped_count,
+            "queued_tasks": len(tasks_to_run),
+            "completed_tasks": 0,
+            "failed_tasks": 0,
+            "active_task": None,
+            "cancel_requested": False,
+            "languages": target_langs,
+            "recent_logs": [
+                f"Batch audio scan completed: {skipped_count} existing audio tracks skipped, {len(tasks_to_run)} queued for synthesis."
+            ],
+        })
+
+        if tasks_to_run:
+            asyncio.create_task(_run_audio_queue_worker(tasks_to_run, target_langs))
+
+        coverage = _get_audio_coverage_stats(db, payload.course_id)
+
+        return {
+            "status": _AUDIO_QUEUE_STATE["status"],
+            "total_lessons": total_lessons,
+            "total_tasks": total_tasks,
+            "skipped_existing": skipped_count,
+            "queued_tasks": len(tasks_to_run),
+            "languages": target_langs,
+            "coverage": coverage.model_dump(),
+            "message": f"Queue initiated: {skipped_count} skipped (already cached), {len(tasks_to_run)} queued for generation.",
+        }
+
+
+@router.get("/courses/audio/queue-status", response_model=AudioQueueStatusResponse)
+def get_audio_queue_status(
+    course_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Returns real-time audio batch queue progress and platform-wide language coverage metrics.
+    """
+    coverage = _get_audio_coverage_stats(db, course_id)
+    return AudioQueueStatusResponse(
+        status=_AUDIO_QUEUE_STATE.get("status", "idle"),
+        started_at=_AUDIO_QUEUE_STATE.get("started_at"),
+        completed_at=_AUDIO_QUEUE_STATE.get("completed_at"),
+        total_lessons=_AUDIO_QUEUE_STATE.get("total_lessons", 0),
+        total_tasks=_AUDIO_QUEUE_STATE.get("total_tasks", 0),
+        skipped_existing=_AUDIO_QUEUE_STATE.get("skipped_existing", 0),
+        queued_tasks=_AUDIO_QUEUE_STATE.get("queued_tasks", 0),
+        completed_tasks=_AUDIO_QUEUE_STATE.get("completed_tasks", 0),
+        failed_tasks=_AUDIO_QUEUE_STATE.get("failed_tasks", 0),
+        active_task=_AUDIO_QUEUE_STATE.get("active_task"),
+        cancel_requested=_AUDIO_QUEUE_STATE.get("cancel_requested", False),
+        languages=_AUDIO_QUEUE_STATE.get("languages", ["en", "ha", "fr"]),
+        coverage=coverage,
+        recent_logs=_AUDIO_QUEUE_STATE.get("recent_logs", []),
+    )
+
+
+@router.post("/courses/audio/queue-cancel")
+def cancel_audio_queue(
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Signals the active audio queue worker to gracefully stop further synthesis tasks.
+    """
+    if _AUDIO_QUEUE_STATE.get("status") == "running":
+        _AUDIO_QUEUE_STATE["cancel_requested"] = True
+        return {"message": "Audio queue cancellation requested. Active synthesis will stop safely."}
+    return {"message": "No active audio queue is currently running."}

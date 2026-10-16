@@ -553,10 +553,9 @@ Do not include markdown, code fences, or preamble. JSON only.
    (b) Name and discredit at least two wrong options specifically — by their logic, not just their label
    (c) End with one sentence connecting the answer to a broader principle worth remembering
 
-6. TAG EVERY QUESTION WITH A DIFFICULTY LEVEL.
-   - "straightforward" — tests basic understanding; good for first pass
-   - "tricky"          — requires comparison or application; good for revision
-   - "exam-level"      — requires synthesis across concepts; simulates real exam pressure
+6. NEVER INCLUDE DIFFICULTY LABELS OR TAGS IN QUESTION TEXT.
+   Start directly with the scenario or question prompt itself.
+   DO NOT prepend or include tags, labels, or prefixes such as "[Exam Level]", "[Exam-Level]", "[Tricky]", "[Straightforward]", "Exam Level:", "[Easy]", etc., anywhere in the question text or options.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🎯  TONE + PRESENTATION  (applies to everything)
@@ -687,8 +686,14 @@ Adhere strictly to the generation size configurations provided.
                     if result.questions:
                         total_q_saved += len(result.questions)
                         for q in result.questions:
+                            cleaned_q_text = re.sub(
+                                r'^\s*[\(\[]?\s*(?:exam[\s\-_]?level|tricky|straightforward|easy|medium|hard)\s*[\)\]]?[\s:\-–—]*',
+                                '',
+                                q.question_text or '',
+                                flags=re.IGNORECASE
+                            ).strip()
                             db.add(models.Question(
-                                user_id=parsed_user_id, material_id=parsed_mat_id, question_text=q.question_text,
+                                user_id=parsed_user_id, material_id=parsed_mat_id, question_text=cleaned_q_text or q.question_text,
                                 options=q.options, answer_index=q.answer_index, explanation=q.explanation
                             ))
 

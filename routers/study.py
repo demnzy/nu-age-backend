@@ -13,7 +13,20 @@ import schemas
 from database import get_db
 from services import auth, ai_service
 import fitz # PyMuPDF
+import re
 from services.bunny_service import upload_bytes_to_bunny
+
+def _clean_question_text_prompt(text: str) -> str:
+    """Strips difficulty prefixes like [Exam Level], [Exam-Level], [Tricky], etc. from question text."""
+    if not text:
+        return ""
+    clean = re.sub(
+        r'^\s*[\(\[]?\s*(?:exam[\s\-_]?level|tricky|straightforward|easy|medium|hard)\s*[\)\]]?[\s:\-–—]*',
+        '',
+        str(text),
+        flags=re.IGNORECASE
+    ).strip()
+    return clean or str(text)
 
 router = APIRouter(prefix="/study", tags=["Self Study"])
 
@@ -480,7 +493,7 @@ def get_quiz_questions(material_ids: Optional[str] = None, db: Session = Depends
     return [
         {
             "id": q.id,
-            "question": q.question_text,
+            "question": _clean_question_text_prompt(q.question_text),
             "options": q.options,
             "answer": q.answer_index,
             "explanation": q.explanation,
@@ -745,7 +758,7 @@ def get_exam_questions(
                 "id": q.get("id") or str(uuid.uuid4()),
                 "material_id": str(p.id),
                 "subject": p.title,
-                "question": q.get("question_text", ""),
+                "question": _clean_question_text_prompt(q.get("question_text", "")),
                 "options": q.get("options", []),
                 "answer": q.get("answer_index", 0),
                 "explanation": q.get("explanation", ""),
@@ -838,7 +851,7 @@ def get_exam_questions(
             "id": q.id,
             "material_id": q.material_id,
             "subject": mat_map.get(q.material_id),
-            "question": q.question_text,
+            "question": _clean_question_text_prompt(q.question_text),
             "options": q.options,
             "answer": q.answer_index,
             "explanation": q.explanation,
