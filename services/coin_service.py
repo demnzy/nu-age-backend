@@ -464,5 +464,23 @@ def claim_objective_reward(
         reference_id=str(obj.id),
     )
 
+    # Persist claimed state into UserNotification records in PostgreSQL
+    try:
+        user_notifs = db.query(models.UserNotification).filter(
+            models.UserNotification.user_id == user_id,
+            models.UserNotification.category == "objective_completed"
+        ).all()
+        for un in user_notifs:
+            payload = dict(un.data_payload or {})
+            c = payload.get("code") or payload.get("objective_code")
+            if c == objective_code:
+                payload["is_claimed"] = True
+                un.data_payload = payload
+                un.is_read = True
+                if "• Claimed" not in (un.body or ""):
+                    un.body = f"{un.body} • Claimed (+{obj.coin_reward} 🪙)"
+    except Exception as ex:
+        print(f"[coin_service] Error updating user_notifications claimed status: {ex}")
+
     db.commit()
     return True, obj.coin_reward, f"Successfully claimed +{obj.coin_reward} Nu-Coins!"

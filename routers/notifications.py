@@ -39,6 +39,13 @@ def get_user_notifications(
         .count()
     )
 
+    # Fetch all claimed objective codes for this user to guarantee persistent claimed status
+    claimed_codes = set(
+        r[0] for r in db.query(models.UserObjectiveProgress.objective_code)
+        .filter(models.UserObjectiveProgress.user_id == user.id, models.UserObjectiveProgress.is_claimed == True)
+        .all()
+    )
+
     results = []
     for item in items:
         sender_data = None
@@ -50,14 +57,26 @@ def get_user_notifications(
                 "email": item.sender.email
             }
 
+        data_p = dict(item.data_payload or {})
+        is_claimed = False
+        body_text = item.body or ""
+        if item.category == "objective_completed":
+            c = data_p.get("code") or data_p.get("objective_code")
+            if c in claimed_codes or data_p.get("is_claimed"):
+                is_claimed = True
+                data_p["is_claimed"] = True
+                if "• Claimed" not in body_text:
+                    body_text = f"{body_text} • Claimed"
+
         results.append({
             "id": str(item.id),
             "title": item.title,
-            "body": item.body,
+            "body": body_text,
             "category": item.category or "general",
             "action_route": item.action_route,
-            "data_payload": item.data_payload or {},
+            "data_payload": data_p,
             "is_read": bool(item.is_read),
+            "is_claimed": is_claimed,
             "created_at": item.created_at.isoformat() if item.created_at else datetime.now(timezone.utc).isoformat(),
             "sender": sender_data
         })
