@@ -4,6 +4,18 @@ import os
 import re
 import sys
 import time
+
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from fastapi import *
 from models import Base
 from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts
@@ -575,22 +587,39 @@ def print_routes():
 
 async def _reengagement_worker():
     """
-    Background worker daemon:
-    Wakes up periodically (every 60 minutes) to evaluate active learners and duos,
-    dispatching Duolingo-style streak warnings, duo nudges, and comeback alerts.
+    Autonomous background worker daemon:
+    Wakes up periodically (every 60 minutes) to:
+    1. Scan subscriptions for 3-day renewal notices, grace periods, and hard expiration suspensions.
+    2. Evaluate active learners and duos, dispatching Duolingo-style streak warnings, duo nudges,
+       objective quest nudges, and comeback alerts.
     """
-    await asyncio.sleep(60)
+    await asyncio.sleep(15)  # Grace period after server startup
     while True:
         try:
             from database import SessionLocal
+            from services.subscription_service import check_subscription_renewals
             from services.reengagement_engine import evaluate_and_dispatch_nudges
+
             with SessionLocal() as db:
-                stats = evaluate_and_dispatch_nudges(db=db, force=False)
-                dispatched = stats.get("dispatched_records", [])
-                if dispatched:
-                    print(f"[RE-ENGAGEMENT] Dispatched {len(dispatched)} automated nudges at {stats.get('timestamp_wat')}")
+                # 1. Autonomous Subscription Expiration & Renewal Warnings
+                try:
+                    sub_summary = check_subscription_renewals(db=db)
+                    if any(sub_summary.get(k, 0) > 0 for k in ("reminders_3day_sent", "grace_warnings_sent", "suspensions_sent")):
+                        print(f"[AUTONOMOUS-WORKER] Subscriptions updated: {sub_summary}")
+                except Exception as sub_err:
+                    print(f"[AUTONOMOUS-WORKER] Subscription renewal evaluation warning: {sub_err}")
+
+                # 2. Autonomous Duolingo Re-engagement Engine (Streaks, Duos, Quests, Focus)
+                try:
+                    stats = evaluate_and_dispatch_nudges(db=db, force=False)
+                    dispatched = stats.get("dispatched_records", [])
+                    if dispatched:
+                        print(f"[AUTONOMOUS-WORKER] Dispatched {len(dispatched)} automated nudges at {stats.get('timestamp_wat')}")
+                except Exception as nudge_err:
+                    print(f"[AUTONOMOUS-WORKER] Re-engagement engine warning: {nudge_err}")
+
         except Exception as e:
-            print(f"[RE-ENGAGEMENT] Background worker warning: {e}")
+            print(f"[AUTONOMOUS-WORKER] Background loop encountered error: {e}")
         await asyncio.sleep(3600)
 
 

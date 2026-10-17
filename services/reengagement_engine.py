@@ -182,7 +182,26 @@ TIER_5_COURSE_UNSTARTED_COPY = [
     },
 ]
 
-AUTOMATED_CATEGORIES = ("streak_warning", "duo_nudge", "daytime_nudge", "reengagement", "course_progress")
+TIER_6_OBJECTIVE_QUEST_COPY = [
+    {
+        "title": "🎯 Quest almost complete, {name}!",
+        "body": "You're only {remaining} {unit} away from finishing '{quest_title}'! Jump in now to claim your {coins} Nu-Coins 💰",
+    },
+    {
+        "title": "So close to your bonus! ⚡",
+        "body": "You are {progress}% through '{quest_title}'. Just {remaining} {unit} left to lock in your {coins} coins reward!",
+    },
+    {
+        "title": "Don't leave {coins} Nu-Coins on the table! 🪙",
+        "body": "Your '{quest_title}' quest is almost done ({progress}%). Knock out the remaining {remaining} {unit} before it resets!",
+    },
+    {
+        "title": "Finish your quest today! 🏆",
+        "body": "Only {remaining} {unit} left for '{quest_title}'. A quick 3-minute session earns you {coins} Nu-Coins!",
+    },
+]
+
+AUTOMATED_CATEGORIES = ("streak_warning", "duo_nudge", "daytime_nudge", "reengagement", "course_progress", "objective_quest")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +248,7 @@ def evaluate_and_dispatch_nudges(
        - Tier 3: Daytime Nudge (Midday focus questions)
        - Tier 4: Inactivity Comeback (2-3 days absent)
        - Tier 5: Course In-Progress (Unfinished courses, progress milestones, certificate goals)
+       - Tier 6: Objective Near-Completion Quests (70%+ to target, coins reward pending)
     4. Dispatches personalized, quirky in-app and push notifications.
     """
     wat_now = get_current_wat_time()
@@ -244,6 +264,7 @@ def evaluate_and_dispatch_nudges(
         "dispatched_tier_3_daytime": 0,
         "dispatched_tier_4_inactivity": 0,
         "dispatched_tier_5_course_progress": 0,
+        "dispatched_tier_6_quest": 0,
         "skipped_quiet_hours": False,
         "skipped_recently_nudged": 0,
         "skipped_already_studied": 0,
@@ -308,6 +329,27 @@ def evaluate_and_dispatch_nudges(
         if en.course and en.course.name:
             enrollments_by_user.setdefault(en.student_id, []).append(en)
 
+    # Pre-fetch active platform objectives & incomplete user progress
+    active_objectives = (
+        db.query(models.PlatformObjective)
+        .filter(models.PlatformObjective.is_active == True)
+        .all()
+    )
+    objectives_by_code: Dict[str, models.PlatformObjective] = {o.code: o for o in active_objectives}
+
+    user_obj_progress = (
+        db.query(models.UserObjectiveProgress)
+        .filter(
+            models.UserObjectiveProgress.user_id.in_(user_ids),
+            models.UserObjectiveProgress.is_completed == False,
+        )
+        .all()
+    )
+    objectives_by_user: Dict[UUID, List[models.UserObjectiveProgress]] = {}
+    for uop in user_obj_progress:
+        if uop.objective_code in objectives_by_code:
+            objectives_by_user.setdefault(uop.user_id, []).append(uop)
+
     for user in users:
         u_id = user.id
         u_streak = getattr(user, "streak", 0) or 0
@@ -320,6 +362,7 @@ def evaluate_and_dispatch_nudges(
 
         user_partnerships = partnerships_by_user.get(u_id, [])
         user_enrollments = enrollments_by_user.get(u_id, [])
+        user_objectives = objectives_by_user.get(u_id, [])
 
         # Check if user has already completed study activity today
         user_studied_today = False
@@ -340,6 +383,75 @@ def evaluate_and_dispatch_nudges(
         # ─────────────────────────────────────────────────────────────────────
         # EXPLICIT TIER OVERRIDE (e.g. for testing / previewing specific tiers)
         # ─────────────────────────────────────────────────────────────────────
+        if (preferred_tier == 6 or category == "objective_quest") and user_objectives:
+            candidate_quests = []
+            for uop in user_objectives:
+                obj = objectives_by_code.get(uop.objective_code)
+                if not obj or uop.target_value <= 0:
+                    continue
+                pct = int(round((uop.current_value / uop.target_value) * 100))
+                remaining = max(1, uop.target_value - uop.current_value)
+                candidate_quests.append((pct, remaining, uop, obj))
+
+            if candidate_quests:
+                candidate_quests.sort(key=lambda x: x[0], reverse=True)
+                best_pct, remaining, best_uop, best_obj = candidate_quests[0]
+
+                user_first = getattr(user, "first_name", "Scholar") or "Scholar"
+                q_title = best_obj.title.strip()
+                display_q_title = (q_title[:30] + "...") if len(q_title) > 32 else q_title
+                unit_label = best_obj.target_unit or "items"
+                if remaining == 1 and unit_label.endswith("s"):
+                    unit_label = unit_label[:-1]
+
+                template = random.choice(TIER_6_OBJECTIVE_QUEST_COPY)
+                title = template["title"].format(
+                    name=user_first,
+                    quest_title=display_q_title,
+                    remaining=remaining,
+                    unit=unit_label,
+                    progress=best_pct,
+                    coins=best_obj.coin_reward,
+                )
+                body = template["body"].format(
+                    name=user_first,
+                    quest_title=display_q_title,
+                    remaining=remaining,
+                    unit=unit_label,
+                    progress=best_pct,
+                    coins=best_obj.coin_reward,
+                )
+
+                if not dry_run:
+                    dispatch_notification(
+                        db=db,
+                        recipient_user_ids=[u_id],
+                        title=title,
+                        body=body,
+                        category="objective_quest",
+                        action_route="/study?tab=objectives",
+                        data_payload={
+                            "type": "objective_quest",
+                            "objective_code": best_obj.code,
+                            "objective_title": best_obj.title,
+                            "progress": best_pct,
+                            "remaining": remaining,
+                            "reward_coins": best_obj.coin_reward,
+                        },
+                        send_push=True,
+                        collapse_id=f"quest_{best_obj.code}",
+                    )
+                stats["dispatched_tier_6_quest"] += 1
+                stats["dispatched_records"].append({
+                    "user_id": str(u_id),
+                    "tier": 6,
+                    "title": title,
+                    "body": body,
+                    "objective_code": best_obj.code,
+                    "progress": best_pct,
+                })
+                continue
+
         if (preferred_tier == 5 or category == "course_progress") and user_enrollments:
             user_enrollments.sort(key=lambda e: (e.progress or 0.0), reverse=True)
             target_en = user_enrollments[0]
@@ -465,6 +577,88 @@ def evaluate_and_dispatch_nudges(
                 stats["dispatched_tier_1_streak"] += 1
                 stats["dispatched_records"].append({"user_id": str(u_id), "tier": 1, "title": title, "body": body})
                 continue
+
+        # ─────────────────────────────────────────────────────────────────────
+        # EVALUATE TIER 6: OBJECTIVE NEAR-COMPLETION QUEST NUDGE
+        # Condition: User has active incomplete objective >= 70% complete
+        # Time window: Daytime/afternoon/evening (12:00 to 21:30 WAT)
+        # ─────────────────────────────────────────────────────────────────────
+        if user_objectives and not user_studied_today:
+            eval_quest_now = False
+            if force:
+                eval_quest_now = True
+            elif 12.0 <= current_hour_wat <= 21.5:
+                eval_quest_now = True
+
+            if eval_quest_now:
+                candidate_quests = []
+                for uop in user_objectives:
+                    obj = objectives_by_code.get(uop.objective_code)
+                    if not obj or uop.target_value <= 0:
+                        continue
+                    pct = int(round((uop.current_value / uop.target_value) * 100))
+                    if 70 <= pct < 100:
+                        remaining = max(1, uop.target_value - uop.current_value)
+                        candidate_quests.append((pct, remaining, uop, obj))
+
+                if candidate_quests:
+                    candidate_quests.sort(key=lambda x: x[0], reverse=True)
+                    best_pct, remaining, best_uop, best_obj = candidate_quests[0]
+
+                    user_first = getattr(user, "first_name", "Scholar") or "Scholar"
+                    q_title = best_obj.title.strip()
+                    display_q_title = (q_title[:30] + "...") if len(q_title) > 32 else q_title
+                    unit_label = best_obj.target_unit or "items"
+                    if remaining == 1 and unit_label.endswith("s"):
+                        unit_label = unit_label[:-1]
+
+                    template = random.choice(TIER_6_OBJECTIVE_QUEST_COPY)
+                    title = template["title"].format(
+                        name=user_first,
+                        quest_title=display_q_title,
+                        remaining=remaining,
+                        unit=unit_label,
+                        progress=best_pct,
+                        coins=best_obj.coin_reward,
+                    )
+                    body = template["body"].format(
+                        name=user_first,
+                        quest_title=display_q_title,
+                        remaining=remaining,
+                        unit=unit_label,
+                        progress=best_pct,
+                        coins=best_obj.coin_reward,
+                    )
+
+                    if not dry_run:
+                        dispatch_notification(
+                            db=db,
+                            recipient_user_ids=[u_id],
+                            title=title,
+                            body=body,
+                            category="objective_quest",
+                            action_route="/study?tab=objectives",
+                            data_payload={
+                                "type": "objective_quest",
+                                "objective_code": best_obj.code,
+                                "objective_title": best_obj.title,
+                                "progress": best_pct,
+                                "remaining": remaining,
+                                "reward_coins": best_obj.coin_reward,
+                            },
+                            send_push=True,
+                            collapse_id=f"quest_{best_obj.code}",
+                        )
+                    stats["dispatched_tier_6_quest"] += 1
+                    stats["dispatched_records"].append({
+                        "user_id": str(u_id),
+                        "tier": 6,
+                        "title": title,
+                        "body": body,
+                        "objective_code": best_obj.code,
+                        "progress": best_pct,
+                    })
+                    continue
 
         # ─────────────────────────────────────────────────────────────────────
         # EVALUATE TIER 5: COURSE IN-PROGRESS NUDGE

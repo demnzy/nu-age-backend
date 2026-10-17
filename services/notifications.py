@@ -157,7 +157,8 @@ def dispatch_notification(
             clean_data["id"] = str(created_notifs[0].id)
             clean_data["notif_id"] = str(created_notifs[0].id)
     except Exception as db_err:
-        print(f"[notifications] Error saving user_notifications to DB: {db_err}")
+        err_msg = str(db_err).encode('ascii', 'replace').decode('ascii')
+        print(f"[notifications] Error saving user_notifications to DB: {err_msg}")
         try:
             db.rollback()
         except Exception:

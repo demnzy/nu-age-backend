@@ -446,6 +446,14 @@ class UserSubscription(Base):
     generations_used = Column(Integer, default=0, nullable=False)
     cycle_start_date = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Subscription Lifecycle, Expiration & Billing Cycle Fields
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    grace_period_until = Column(DateTime(timezone=True), nullable=True)
+    billing_cycle = Column(String(20), default="one-time", nullable=False)  # month, quarter, year, one-time
+    status = Column(String(30), default="active", nullable=False, index=True)  # active, grace_period, expired, cancelled
+    auto_renew = Column(Boolean, default=False, nullable=False)
+    last_reminder_sent = Column(String(50), nullable=True)
+
     # Relationships
     user = relationship("User", backref="subscription")
     plan = relationship("StudyPlan") # Allows us to access sub.plan.materials_limit
@@ -780,7 +788,7 @@ class UserNotification(Base):
     is_read = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
-    user = relationship("User", foreign_keys=[user_id], backref="notifications")
+    user = relationship("User", foreign_keys=[user_id], backref=backref("notifications", cascade="all, delete-orphan"))
     sender = relationship("User", foreign_keys=[sender_id])
 
 

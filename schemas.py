@@ -293,6 +293,15 @@ class SubscriptionStatusResponse(BaseModel):
     generations_remaining: Optional[int]
     bonus_generations: Optional[int] = 0
 
+    # Lifecycle, Expiration & Status
+    status: Optional[str] = "active"
+    expires_at: Optional[datetime] = None
+    grace_period_until: Optional[datetime] = None
+    billing_cycle: Optional[str] = "one-time"
+    days_remaining: Optional[int] = None
+    subscribed_plan_id: Optional[str] = None
+    can_renew: Optional[bool] = False
+
 class NetworkUserResponse(BaseModel):
     id: UUID
     first_name: str

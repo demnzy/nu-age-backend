@@ -1836,12 +1836,14 @@ def update_platform_objective_admin(
 @router.delete("/objectives/{objective_id}")
 def delete_platform_objective_admin(
     objective_id: str,
+    permanent: bool = Query(False, description="If True, permanently deletes the objective and cascades progress records."),
     db: Session = Depends(get_db),
     current_admin: models.User = Depends(get_current_super_admin),
 ):
     """
-    Deactivates or deletes a platform objective.
-    If learners already have logged progress against it, deactivates it safely.
+    Deactivates or permanently deletes a platform objective.
+    When permanent=True, removes matching learner progress and deletes the objective row.
+    When permanent=False, deactivates the objective so learners can no longer earn progress.
     """
     try:
         obj_uuid = UUID(objective_id)
@@ -1852,15 +1854,15 @@ def delete_platform_objective_admin(
     if not obj:
         raise HTTPException(status_code=404, detail="Objective not found.")
 
-    has_progress = db.query(models.UserObjectiveProgress).filter(models.UserObjectiveProgress.objective_code == obj.code).first()
-    if has_progress:
-        obj.is_active = False
-        db.commit()
-        return {"status": "success", "message": f"Objective '{obj.title}' deactivated (progress records preserved).", "is_active": False}
-    else:
+    if permanent:
+        db.query(models.UserObjectiveProgress).filter(models.UserObjectiveProgress.objective_code == obj.code).delete(synchronize_session=False)
         db.delete(obj)
         db.commit()
-        return {"status": "success", "message": f"Objective '{obj.title}' permanently removed."}
+        return {"status": "success", "message": f"Objective '{obj.title}' permanently deleted.", "permanent": True}
+    else:
+        obj.is_active = False
+        db.commit()
+        return {"status": "success", "message": f"Objective '{obj.title}' deactivated (progress records preserved).", "permanent": False, "is_active": False}
 
 
 @router.post("/objectives/{objective_id}/test-trigger")

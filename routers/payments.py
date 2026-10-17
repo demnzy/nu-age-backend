@@ -1,18 +1,22 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, Request, Header, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 
 import models
 from database import get_db, Settings
 from services import auth
+from services.notifications import dispatch_notification
 from services.payment_service import get_payment_gateway, PaystackGateway
 from routers.platform_admin import get_current_super_admin
 
 router = APIRouter(prefix="/payments", tags=["Payments Foundation"])
 settings = Settings()
+
+
+VALID_INTERVALS = ("one-time", "month", "quarter", "year")
 
 
 class StoreProductPayload(BaseModel):
@@ -22,7 +26,7 @@ class StoreProductPayload(BaseModel):
     price: float
     badge: Optional[str] = None
     description: Optional[str] = None
-    interval: Optional[str] = None
+    interval: Optional[str] = "one-time"
     features: Optional[List[str]] = Field(default_factory=list)
     bonus_materials: Optional[int] = 0
     bonus_generations: Optional[int] = 0
@@ -31,6 +35,32 @@ class StoreProductPayload(BaseModel):
     org_seats: Optional[int] = 0
     is_active: Optional[bool] = True
     display_order: Optional[int] = 0
+
+    @field_validator("interval", mode="before")
+    @classmethod
+    def validate_interval(cls, v):
+        if not v:
+            return "one-time"
+        v_clean = str(v).strip().lower()
+        if v_clean in ("monthly", "mo"):
+            v_clean = "month"
+        elif v_clean in ("yearly", "annual", "annually", "yr"):
+            v_clean = "year"
+        elif v_clean in ("quarterly", "qtr"):
+            v_clean = "quarter"
+        elif v_clean in ("once", "lifetime", "none"):
+            v_clean = "one-time"
+
+        if v_clean not in VALID_INTERVALS:
+            raise ValueError(f"Invalid billing interval '{v}'. Allowed intervals: {list(VALID_INTERVALS)}")
+        return v_clean
+
+    @model_validator(mode="after")
+    def validate_category_interval(self):
+        cat = (self.category or "").lower()
+        if cat in ("coins", "coin", "booster", "boosters", "materials", "material") and self.interval != "one-time":
+            self.interval = "one-time"
+        return self
 
 
 class OrgPlanPayload(BaseModel):
@@ -794,6 +824,11 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
     Guarantees exactly-once execution, updates persistent credit ledger, quotas, and bonuses.
     Never resets usage metrics (materials_uploaded or generations_used).
     """
+    if getattr(tx, "fulfilled_at", None) is not None:
+        print(f"[FULFILLMENT] Transaction {tx.reference} was already fulfilled at {tx.fulfilled_at}. Skipping duplicate fulfillment.")
+        return {"status": "already_fulfilled"}
+
+    tx.fulfilled_at = datetime.now(timezone.utc)
     purpose = tx.purpose
     meta = tx.metadata_payload or {}
 
@@ -867,11 +902,40 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
             if not sub:
                 sub = models.UserSubscription(user_id=tx.user_id, plan_id=new_plan_id)
                 db.add(sub)
+                db.flush()
+
+            # 1. Determine billing cycle interval and duration
+            interval = (prod.interval if prod and prod.interval else meta.get("interval")) or "month"
+            interval_clean = str(interval).strip().lower()
+            if "year" in interval_clean:
+                days_valid = 365
+                b_cycle = "year"
+            elif "quarter" in interval_clean:
+                days_valid = 90
+                b_cycle = "quarter"
             else:
-                sub.plan_id = new_plan_id
-                # NOTE: NEVER reset sub.materials_uploaded or sub.generations_used!
-                # Only subscription limits and allowances expand.
-                sub.cycle_start_date = datetime.now(timezone.utc)
+                days_valid = 30
+                b_cycle = "month"
+
+            now = datetime.now(timezone.utc)
+            # If the user already has an active subscription for this plan that hasn't expired yet, extend it!
+            if sub.expires_at and sub.expires_at > now and sub.plan_id == new_plan_id:
+                new_expires_at = sub.expires_at + timedelta(days=days_valid)
+            else:
+                new_expires_at = now + timedelta(days=days_valid)
+
+            grace_until = new_expires_at + timedelta(days=3)
+
+            sub.plan_id = new_plan_id
+            sub.billing_cycle = b_cycle
+            sub.status = "active"
+            sub.cycle_start_date = now
+            sub.expires_at = new_expires_at
+            sub.grace_period_until = grace_until
+            sub.last_reminder_sent = None
+            # Reset active monthly generation usage so user receives full monthly allowance!
+            sub.generations_used = 0
+            db.flush()
 
             # If the plan product grants bonus materials, bonus generations, or bonus coins:
             if prod:
@@ -896,7 +960,27 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                         balance_after=cb.balance,
                     ))
 
-            print(f"[FULFILLMENT] Upgraded User {tx.user_id} to '{new_plan_id}' plan without resetting usage counters.")
+            # Dispatch in-app + push notification for confirmed subscription renewal/activation
+            try:
+                date_str = new_expires_at.strftime('%b %d, %Y')
+                dispatch_notification(
+                    db=db,
+                    user_id=tx.user_id,
+                    title="🎉 Subscription Activated!",
+                    body=f"Your '{plan_obj.label}' plan is confirmed and active through {date_str}.",
+                    category="subscription",
+                    data_payload={
+                        "plan_id": new_plan_id,
+                        "status": "active",
+                        "expires_at": new_expires_at.isoformat(),
+                        "billing_cycle": b_cycle,
+                    },
+                    send_push=True,
+                )
+            except Exception as notif_ex:
+                print(f"[FULFILLMENT] Notification dispatch skipped: {notif_ex}")
+
+            print(f"[FULFILLMENT] Upgraded/Renewed User {tx.user_id} to '{new_plan_id}' ({b_cycle}) plan through {new_expires_at.isoformat()}. Monthly generations reset to 0.")
 
     elif purpose in ("org_plan", "org_subscription"):
         target_plan_id = meta.get("plan_id") or meta.get("org_plan_id") or (prod.plan_id if prod else None)

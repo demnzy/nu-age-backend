@@ -141,26 +141,10 @@ async def upload_material(
     user = Depends(auth.get_current_user)
 ):
     # --- 1. THE USAGE CHECK & INCREMENT ---
-    sub = db.query(models.UserSubscription).filter(
-        models.UserSubscription.user_id == user.id
-    ).first()
-    
-    # If they don't have a sub, make a free one
-    if not sub:
-        sub = models.UserSubscription(user_id=user.id, plan_id="free")
-        db.add(sub)
-        db.commit()
-        db.refresh(sub)
-        
-    # Check if they hit the limit (and ignore if limit is None for 'unlimited')
-    effective_mat_limit = (sub.plan.materials_limit + (sub.bonus_materials or 0)) if sub.plan and sub.plan.materials_limit is not None else None
-    if effective_mat_limit is not None and sub.materials_uploaded >= effective_mat_limit:
-        raise HTTPException(
-            status_code=403, 
-            detail="You have reached your material upload limit. Please upgrade your plan or top-up with a booster pack."
-        )
+    from services.subscription_service import check_material_upload_allowed
+    sub = check_material_upload_allowed(user.id, db)
 
-    # They passed the check, increment the counter!
+    # Passed check, increment uploaded count
     sub.materials_uploaded += 1
     db.commit()
     # --------------------------------------
@@ -283,31 +267,25 @@ async def import_youtube_material(
     video_id = match.group(1)
 
     # Usage check
-    sub = db.query(models.UserSubscription).filter(
-        models.UserSubscription.user_id == user.id
-    ).first()
-    if not sub:
-        sub = models.UserSubscription(user_id=user.id, plan_id="free")
-        db.add(sub)
-        db.commit()
-        db.refresh(sub)
-    effective_mat_limit = (sub.plan.materials_limit + (sub.bonus_materials or 0)) if sub.plan and sub.plan.materials_limit is not None else None
-    if effective_mat_limit is not None and sub.materials_uploaded >= effective_mat_limit:
-        raise HTTPException(
-            status_code=403,
-            detail="You have reached your material upload limit. Please upgrade your plan or top-up with a booster pack."
-        )
+    from services.subscription_service import check_material_upload_allowed, get_effective_subscription
+    sub = check_material_upload_allowed(user.id, db)
+    _, effective_plan, _, is_expired = get_effective_subscription(user.id, db)
 
     from monetization_models import CreditBalance, CreditLedgerEntry
     credit_bal = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
-    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
+    effective_gen_limit = (effective_plan.generations_limit + (sub.bonus_generations or 0)) if effective_plan and effective_plan.generations_limit is not None else None
     has_gen_quota = (
-        not sub.plan
+        not effective_plan
         or effective_gen_limit is None
         or sub.generations_used < effective_gen_limit
         or (credit_bal and credit_bal.balance > 0)
     )
     if not has_gen_quota:
+        if is_expired:
+            raise HTTPException(
+                status_code=403,
+                detail="Your subscription has expired. Please renew your plan or purchase credits to continue generating study content."
+            )
         raise HTTPException(
             status_code=403,
             detail="You have reached your AI generation limit for this cycle. Please upgrade your plan or purchase credits."
@@ -931,26 +909,31 @@ async def generate_study_content(
     user = Depends(auth.get_current_user)
 ):
     # --- 1. THE GENERATION LIMIT CHECK (free quota, then credits fallback) ---
-    sub = db.query(models.UserSubscription).filter(
-        models.UserSubscription.user_id == user.id
-    ).first()
-
-    if not sub:
-        sub = models.UserSubscription(user_id=user.id, plan_id="free")
-        db.add(sub)
-        db.commit()
-        db.refresh(sub)
+    from services.subscription_service import get_effective_subscription
+    sub, effective_plan, status, is_expired = get_effective_subscription(user.id, db)
 
     credit_source = "free_quota"
     credit_balance = None  # only set if we end up spending a credit
 
-    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
+    effective_gen_limit = (effective_plan.generations_limit + (sub.bonus_generations or 0)) if effective_plan and effective_plan.generations_limit is not None else None
     if effective_gen_limit is not None and sub.generations_used >= effective_gen_limit:
         # Free quota + bonus quota exhausted — fall back to purchased credits instead of
         # hard-403ing, same idea as the old check but with a paid path.
         credit_balance = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
 
         if not credit_balance or credit_balance.balance <= 0:
+            if is_expired:
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "subscription_expired",
+                        "free_used": sub.generations_used,
+                        "free_limit": effective_gen_limit,
+                        "bonus_generations": sub.bonus_generations or 0,
+                        "credits_remaining": 0,
+                        "message": "Your subscription has expired. Renew your plan or buy credits to continue generating study content.",
+                    }
+                )
             raise HTTPException(
                 status_code=402,
                 detail={
