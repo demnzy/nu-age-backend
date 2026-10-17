@@ -363,14 +363,20 @@ MIGRATION_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_user_obj_user ON user_objective_progress(user_id);",
     """
-    INSERT INTO platform_objectives (code, title, description, category, target_value, target_unit, coin_reward, icon)
+    ALTER TABLE platform_objectives ALTER COLUMN id SET DEFAULT gen_random_uuid();
+    """,
+    """
+    ALTER TABLE platform_objectives ALTER COLUMN is_active SET DEFAULT TRUE;
+    """,
+    """
+    INSERT INTO platform_objectives (id, code, title, description, category, target_value, target_unit, coin_reward, icon, is_active)
     VALUES
-        ('finish_course', 'Course Finisher', 'Complete all lessons and exams in any course', 'courses', 1, 'courses', 150, 'SCHOOL'),
-        ('streak_5_day', '5-Day Streak Master', 'Maintain a study streak for 5 consecutive days', 'streaks', 5, 'days', 100, 'LOCAL_FIRE_DEPARTMENT'),
-        ('study_time_60m', 'Deep Focus Hour', 'Log 60 minutes of active study in Self-Study Hub in one day', 'self_study', 60, 'minutes', 40, 'TIMER'),
-        ('practice_100q', 'Question Grinder', 'Answer 100 practice questions across CBT or Flashcards', 'self_study', 100, 'questions', 50, 'QUIZ'),
-        ('win_duel', 'Duel Champion', 'Win a 15-question Quickfire Duel against your study partner', 'duels', 1, 'duels', 35, 'MILITARY_TECH'),
-        ('share_pack', 'Knowledge Partner', 'Share a Study Pack with your study partner', 'sharing', 1, 'packs', 20, 'SHARE')
+        (gen_random_uuid(), 'finish_course', 'Course Finisher', 'Complete all lessons and exams in any course', 'courses', 1, 'courses', 150, 'SCHOOL', true),
+        (gen_random_uuid(), 'streak_5_day', '5-Day Streak Master', 'Maintain a study streak for 5 consecutive days', 'streaks', 5, 'days', 100, 'LOCAL_FIRE_DEPARTMENT', true),
+        (gen_random_uuid(), 'study_time_60m', 'Deep Focus Hour', 'Log 60 minutes of active study in Self-Study Hub in one day', 'self_study', 60, 'minutes', 40, 'TIMER', true),
+        (gen_random_uuid(), 'practice_100q', 'Question Grinder', 'Answer 100 practice questions across CBT or Flashcards', 'self_study', 100, 'questions', 50, 'QUIZ', true),
+        (gen_random_uuid(), 'win_duel', 'Duel Champion', 'Win a 15-question Quickfire Duel against your study partner', 'duels', 1, 'duels', 35, 'MILITARY_TECH', true),
+        (gen_random_uuid(), 'share_pack', 'Knowledge Partner', 'Share a Study Pack with your study partner', 'sharing', 1, 'packs', 20, 'SHARE', true)
     ON CONFLICT (code) DO NOTHING;
     """,
     """
