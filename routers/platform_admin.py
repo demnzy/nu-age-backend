@@ -1590,11 +1590,36 @@ def cancel_audio_queue(
 # PLATFORM OBJECTIVES & MILESTONES ADMIN CRUD
 # ─────────────────────────────────────────────────────────────────────────────
 
+VALID_METRIC_TAXONOMY = {
+    "streaks": {
+        "metrics": {"login_streak"},
+        "units": {"days"},
+    },
+    "courses": {
+        "metrics": {"finish_course", "finish_module"},
+        "units": {"courses", "modules"},
+    },
+    "self_study": {
+        "metrics": {"practice_questions", "study_time"},
+        "units": {"questions", "minutes"},
+    },
+    "duels": {
+        "metrics": {"win_duel"},
+        "units": {"duels"},
+    },
+    "sharing": {
+        "metrics": {"share_pack"},
+        "units": {"packs"},
+    },
+}
+
+
 class PlatformObjectiveCreate(BaseModel):
     code: str
     title: str
     description: str
     category: str = "general"
+    metric_event: Optional[str] = None
     target_value: int = 1
     target_unit: str = "count"
     coin_reward: int = 50
@@ -1606,6 +1631,7 @@ class PlatformObjectiveUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    metric_event: Optional[str] = None
     target_value: Optional[int] = None
     target_unit: Optional[str] = None
     coin_reward: Optional[int] = None
@@ -1644,6 +1670,7 @@ def get_all_platform_objectives_admin(
             "title": obj.title,
             "description": obj.description,
             "category": obj.category,
+            "metric_event": getattr(obj, "metric_event", "general"),
             "target_value": obj.target_value,
             "target_unit": obj.target_unit,
             "coin_reward": obj.coin_reward,
@@ -1671,9 +1698,38 @@ def create_platform_objective_admin(
     current_admin: models.User = Depends(get_current_super_admin),
 ):
     """
-    Creates a new platform objective with defined targets and Nu-Coin rewards.
+    Creates a new platform objective with validated category/metric taxonomy and Nu-Coin rewards.
     """
     clean_code = payload.code.strip().lower()
+    clean_cat = payload.category.strip().lower() or "general"
+    clean_unit = payload.target_unit.strip().lower() or "count"
+    clean_metric = (payload.metric_event or "").strip().lower()
+
+    # If metric_event not explicitly provided, infer from clean_code or taxonomy
+    if not clean_metric:
+        if clean_cat in VALID_METRIC_TAXONOMY:
+            allowed_metrics = VALID_METRIC_TAXONOMY[clean_cat]["metrics"]
+            if len(allowed_metrics) == 1:
+                clean_metric = list(allowed_metrics)[0]
+            else:
+                clean_metric = clean_code
+        else:
+            clean_metric = clean_code
+
+    # Validate against taxonomy if category is a recognized engine category
+    if clean_cat in VALID_METRIC_TAXONOMY:
+        allowed = VALID_METRIC_TAXONOMY[clean_cat]
+        if clean_metric not in allowed["metrics"] and clean_code not in allowed["metrics"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metric '{clean_metric}' for category '{clean_cat}'. Allowed metrics: {sorted(list(allowed['metrics']))}"
+            )
+        if clean_unit not in allowed["units"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid target unit '{clean_unit}' for category '{clean_cat}'. Allowed units: {sorted(list(allowed['units']))}"
+            )
+
     existing = db.query(models.PlatformObjective).filter(models.PlatformObjective.code == clean_code).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Objective code '{clean_code}' already exists.")
@@ -1682,9 +1738,10 @@ def create_platform_objective_admin(
         code=clean_code,
         title=payload.title.strip(),
         description=payload.description.strip(),
-        category=payload.category.strip().lower() or "general",
+        category=clean_cat,
+        metric_event=clean_metric,
         target_value=max(1, payload.target_value),
-        target_unit=payload.target_unit.strip() or "count",
+        target_unit=clean_unit,
         coin_reward=max(0, payload.coin_reward),
         icon=payload.icon.strip() or "EMOJI_TROPHY",
         is_active=payload.is_active,
@@ -1697,6 +1754,8 @@ def create_platform_objective_admin(
         "status": "success",
         "message": f"Objective '{new_obj.title}' created successfully.",
         "objective_id": str(new_obj.id),
+        "code": new_obj.code,
+        "metric_event": new_obj.metric_event,
     }
 
 
@@ -1725,16 +1784,32 @@ def update_platform_objective_admin(
         obj.description = payload.description.strip()
     if payload.category is not None:
         obj.category = payload.category.strip().lower()
+    if payload.metric_event is not None:
+        obj.metric_event = payload.metric_event.strip().lower()
     if payload.target_value is not None:
         obj.target_value = max(1, payload.target_value)
     if payload.target_unit is not None:
-        obj.target_unit = payload.target_unit.strip()
+        obj.target_unit = payload.target_unit.strip().lower()
     if payload.coin_reward is not None:
         obj.coin_reward = max(0, payload.coin_reward)
     if payload.icon is not None:
         obj.icon = payload.icon.strip()
     if payload.is_active is not None:
         obj.is_active = payload.is_active
+
+    # Validate taxonomy on update if category is in taxonomy
+    if obj.category in VALID_METRIC_TAXONOMY:
+        allowed = VALID_METRIC_TAXONOMY[obj.category]
+        if obj.metric_event not in allowed["metrics"] and obj.code not in allowed["metrics"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metric '{obj.metric_event}' for category '{obj.category}'. Allowed metrics: {sorted(list(allowed['metrics']))}"
+            )
+        if obj.target_unit not in allowed["units"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid target unit '{obj.target_unit}' for category '{obj.category}'. Allowed units: {sorted(list(allowed['units']))}"
+            )
 
     db.commit()
     db.refresh(obj)
@@ -1748,6 +1823,7 @@ def update_platform_objective_admin(
             "title": obj.title,
             "description": obj.description,
             "category": obj.category,
+            "metric_event": obj.metric_event,
             "target_value": obj.target_value,
             "target_unit": obj.target_unit,
             "coin_reward": obj.coin_reward,
@@ -1776,10 +1852,8 @@ def delete_platform_objective_admin(
     if not obj:
         raise HTTPException(status_code=404, detail="Objective not found.")
 
-    # Check if user progress exists
     has_progress = db.query(models.UserObjectiveProgress).filter(models.UserObjectiveProgress.objective_code == obj.code).first()
     if has_progress:
-        # Soft delete by deactivating
         obj.is_active = False
         db.commit()
         return {"status": "success", "message": f"Objective '{obj.title}' deactivated (progress records preserved).", "is_active": False}
@@ -1796,7 +1870,7 @@ def test_trigger_objective_notification(
     current_admin: models.User = Depends(get_current_super_admin),
 ):
     """
-    Admin test endpoint: triggers completion notification for this objective directly to the caller's account
+    Admin test endpoint: unconditionally triggers completion notification for this objective directly to the caller's account
     to test notification delivery, deep link, and claim flow e2e.
     """
     try:
@@ -1808,18 +1882,69 @@ def test_trigger_objective_notification(
     if not obj:
         raise HTTPException(status_code=404, detail="Objective not found.")
 
-    from services import coin_service
-    # Set progress to target
-    prog = coin_service.track_objective_progress(db, current_admin.id, obj.code, obj.target_value, set_absolute=True)
+    from datetime import datetime, timezone
+    import time
+    from services.notifications import dispatch_notification
+
+    # 1. Reset progress on admin's account so it's completed and ready to claim
+    prog = db.query(models.UserObjectiveProgress).filter(
+        models.UserObjectiveProgress.user_id == current_admin.id,
+        models.UserObjectiveProgress.objective_code == obj.code,
+    ).first()
+
+    if not prog:
+        prog = models.UserObjectiveProgress(
+            user_id=current_admin.id,
+            objective_code=obj.code,
+            current_value=obj.target_value,
+            target_value=obj.target_value,
+            is_completed=True,
+            completed_at=datetime.now(timezone.utc),
+            is_claimed=False,
+        )
+        db.add(prog)
+    else:
+        prog.current_value = obj.target_value
+        prog.is_completed = True
+        prog.completed_at = datetime.now(timezone.utc)
+        prog.is_claimed = False
+
+    db.commit()
+    db.refresh(prog)
+
+    # 2. Unconditionally dispatch notification directly to current_admin with unique collapse_id
+    now_ts = int(time.time())
+    test_collapse = f"test_obj_{obj.code}_{now_ts}"
+    dispatched = dispatch_notification(
+        db=db,
+        recipient_user_ids=[current_admin.id],
+        title=f"🏆 Objective Completed: {obj.title}!",
+        body=f"You completed '{obj.title}'! Tap to claim your +{obj.coin_reward} Nu-Coins reward.",
+        category="objective_completed",
+        collapse_id=test_collapse,
+        data_payload={
+            "type": "objective",
+            "code": obj.code,
+            "objective_code": obj.code,
+            "objective_id": str(obj.id),
+            "title": obj.title,
+            "reward": obj.coin_reward,
+            "reward_coins": obj.coin_reward,
+            "action": "claim_objective",
+        },
+        allow_self_notify=True,
+        bypass_dedup=True,
+    )
 
     return {
         "status": "success",
-        "message": f"Test completion triggered for '{obj.title}'. Check in-app notifications and push alerts.",
+        "message": f"Test completion alert dispatched for '{obj.title}'. Check in-app notifications and push alerts.",
+        "dispatched_count": len(dispatched),
         "progress": {
-            "current_value": prog.current_value if prog else obj.target_value,
+            "current_value": prog.current_value,
             "target_value": obj.target_value,
-            "is_completed": prog.is_completed if prog else True,
-            "is_claimed": prog.is_claimed if prog else False,
+            "is_completed": prog.is_completed,
+            "is_claimed": prog.is_claimed,
         },
     }
 

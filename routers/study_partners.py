@@ -964,13 +964,13 @@ def submit_partner_challenge(
         ch.coins_awarded = 35
         coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
         coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.track_objective_progress(db, current_user.id, "win_duel", 1)
+        coin_service.record_metric_event(db, current_user.id, "win_duel", 1)
     elif c_score > challenged_score:
         ch.winner_id = ch.challenger_id
         ch.coins_awarded = 35
         coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
         coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.track_objective_progress(db, ch.challenger_id, "win_duel", 1)
+        coin_service.record_metric_event(db, ch.challenger_id, "win_duel", 1)
     else:
         # Tie breaker on time
         if challenged_time < c_time:
@@ -978,13 +978,13 @@ def submit_partner_challenge(
             ch.coins_awarded = 35
             coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel on speed against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
             coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.track_objective_progress(db, current_user.id, "win_duel", 1)
+            coin_service.record_metric_event(db, current_user.id, "win_duel", 1)
         elif c_time < challenged_time:
             ch.winner_id = ch.challenger_id
             ch.coins_awarded = 35
             coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel on speed against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
             coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.track_objective_progress(db, ch.challenger_id, "win_duel", 1)
+            coin_service.record_metric_event(db, ch.challenger_id, "win_duel", 1)
         else:
             ch.winner_id = None
             ch.coins_awarded = 20
@@ -1152,7 +1152,7 @@ def share_study_pack(
         db.add(shared_record)
 
     # Track share objective for sender
-    coin_service.track_objective_progress(db, current_user.id, "share_pack", 1)
+    coin_service.record_metric_event(db, current_user.id, "share_pack", 1)
     db.commit()
 
     # Dispatch rich push notification

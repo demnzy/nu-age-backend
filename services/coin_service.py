@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Tuple, List, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import models
 
 
@@ -255,6 +256,93 @@ def check_and_award_duo_streak_milestones(
     return awarded
 
 
+def record_metric_event(
+    db: Session,
+    user_id: uuid.UUID,
+    metric_event: str,
+    value: int = 1,
+    set_absolute: bool = False,
+) -> List[models.UserObjectiveProgress]:
+    """
+    Dynamically advances all active platform objectives configured for a specific metric_event
+    (e.g., 'login_streak', 'practice_questions', 'study_time', 'finish_course', 'win_duel', 'share_pack').
+    Automatically marks objectives as completed and dispatches immediate 1-tap claim push notifications.
+    """
+    clean_event = metric_event.strip().lower()
+    matching_objs = db.query(models.PlatformObjective).filter(
+        models.PlatformObjective.is_active == True,
+        or_(
+            models.PlatformObjective.metric_event == clean_event,
+            models.PlatformObjective.code == clean_event,
+        )
+    ).all()
+
+    if not matching_objs:
+        return []
+
+    updated_progs = []
+    for obj in matching_objs:
+        prog = db.query(models.UserObjectiveProgress).filter(
+            models.UserObjectiveProgress.user_id == user_id,
+            models.UserObjectiveProgress.objective_code == obj.code,
+        ).first()
+
+        if not prog:
+            prog = models.UserObjectiveProgress(
+                user_id=user_id,
+                objective_code=obj.code,
+                current_value=0,
+                target_value=obj.target_value,
+                is_completed=False,
+                is_claimed=False,
+            )
+            db.add(prog)
+
+        if set_absolute:
+            prog.current_value = value
+        else:
+            prog.current_value = (prog.current_value or 0) + value
+
+        if prog.current_value >= prog.target_value and not prog.is_completed:
+            prog.is_completed = True
+            prog.completed_at = datetime.now(timezone.utc)
+
+            # Dispatch immediate notification with objective payload for 1-tap in-notification claim
+            try:
+                from services.notifications import dispatch_notification
+                dispatch_notification(
+                    db=db,
+                    recipient_user_ids=[user_id],
+                    title=f"🏆 Objective Completed: {obj.title}!",
+                    body=f"You completed '{obj.title}'! Tap to claim your +{obj.coin_reward} Nu-Coins reward.",
+                    category="objective_completed",
+                    collapse_id=f"obj_{obj.code}_{user_id}",
+                    data_payload={
+                        "type": "objective",
+                        "code": obj.code,
+                        "objective_code": obj.code,
+                        "objective_id": str(obj.id),
+                        "title": obj.title,
+                        "reward": obj.coin_reward,
+                        "reward_coins": obj.coin_reward,
+                        "action": "claim_objective",
+                    },
+                    allow_self_notify=True,
+                )
+            except Exception as ex:
+                print(f"[OBJECTIVES] Failed to dispatch completion notification: {ex}")
+
+        updated_progs.append(prog)
+
+    db.commit()
+    for p in updated_progs:
+        try:
+            db.refresh(p)
+        except Exception:
+            pass
+    return updated_progs
+
+
 def track_objective_progress(
     db: Session,
     user_id: uuid.UUID,
@@ -264,8 +352,19 @@ def track_objective_progress(
 ) -> Optional[models.UserObjectiveProgress]:
     """
     Updates a user's progress toward a platform objective.
-    Automatically marks as completed if target_value is reached.
+    Delegates to record_metric_event or directly matches objective by code.
     """
+    progs = record_metric_event(
+        db=db,
+        user_id=user_id,
+        metric_event=objective_code,
+        value=progress_delta,
+        set_absolute=set_absolute,
+    )
+    if progs:
+        return progs[0]
+
+    # Fallback to direct code lookup if not found via metric_event
     obj = db.query(models.PlatformObjective).filter(
         models.PlatformObjective.code == objective_code,
         models.PlatformObjective.is_active == True
@@ -299,23 +398,24 @@ def track_objective_progress(
         prog.is_completed = True
         prog.completed_at = datetime.now(timezone.utc)
 
-        # Dispatch immediate notification so learner can claim from the notification
         try:
             from services.notifications import dispatch_notification
             dispatch_notification(
                 db=db,
-                recipient_id=user_id,
+                recipient_user_ids=[user_id],
                 title=f"🏆 Objective Completed: {obj.title}!",
                 body=f"You completed '{obj.title}'! Tap to claim your +{obj.coin_reward} Nu-Coins reward.",
                 category="objective_completed",
                 collapse_id=f"obj_{obj.code}_{user_id}",
-                data={
+                data_payload={
                     "type": "objective",
                     "code": obj.code,
+                    "objective_id": str(obj.id),
                     "title": obj.title,
                     "reward_coins": obj.coin_reward,
                     "action": "claim_objective",
                 },
+                allow_self_notify=True,
             )
         except Exception as ex:
             print(f"[OBJECTIVES] Failed to dispatch completion notification: {ex}")

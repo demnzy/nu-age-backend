@@ -568,9 +568,9 @@ def user_login(
     actual_user.last_login_date = today
     try:
         from services import coin_service
-        coin_service.track_objective_progress(db, actual_user.id, "streak_5_day", actual_user.streak or 1, set_absolute=True)
+        coin_service.record_metric_event(db, actual_user.id, "login_streak", actual_user.streak or 1, set_absolute=True)
     except Exception as ex:
-        print(f"[OBJECTIVES] Error tracking streak_5_day: {ex}")
+        print(f"[OBJECTIVES] Error tracking login_streak: {ex}")
     db.commit()
     # -----------------------
 

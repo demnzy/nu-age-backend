@@ -109,7 +109,7 @@ async def generate_and_upload_certificate(
             enrollment.completed_at = func.now()
         try:
             from services import coin_service
-            coin_service.track_objective_progress(db, current_user.id, "finish_course", 1)
+            coin_service.record_metric_event(db, current_user.id, "finish_course", 1)
         except Exception as ex:
             print(f"[OBJECTIVES] Error tracking finish_course in certificate.py: {ex}")
         db.commit()

@@ -52,8 +52,15 @@ def dispatch_notification(
     import httpx
 
     # Normalize aliases & compatibility arguments
-    if recipient_user_ids is None and user_id is not None:
-        recipient_user_ids = [user_id]
+    if recipient_user_ids is None:
+        if user_id is not None:
+            recipient_user_ids = [user_id]
+        elif kwargs.get("recipient_id") is not None:
+            recipient_user_ids = [kwargs["recipient_id"]]
+        elif kwargs.get("recipient_user_id") is not None:
+            recipient_user_ids = [kwargs["recipient_user_id"]]
+    if data_payload is None and "data" in kwargs:
+        data_payload = kwargs["data"]
     if notification_type and category == "general":
         category = notification_type
 
@@ -93,7 +100,8 @@ def dispatch_notification(
 
     targets_key = ",".join(sorted(valid_recipients_str))
     dedup_key = f"{sender_str}:{targets_key}:{category}:{collapse_id or title.strip()[:40]}"
-    if dedup_key in _RECENT_DISPATCHES and (now_ts - _RECENT_DISPATCHES[dedup_key] < _DEDUP_WINDOW_SECONDS):
+    bypass_dedup = kwargs.get("bypass_dedup", False)
+    if not bypass_dedup and dedup_key in _RECENT_DISPATCHES and (now_ts - _RECENT_DISPATCHES[dedup_key] < _DEDUP_WINDOW_SECONDS):
         print(f"[notifications] Safeguard triggered: Dropped duplicate dispatch within {_DEDUP_WINDOW_SECONDS}s window ({dedup_key})")
         return []
     _RECENT_DISPATCHES[dedup_key] = now_ts

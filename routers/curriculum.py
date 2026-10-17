@@ -262,7 +262,7 @@ def mark_lesson_complete(
             if not was_already_completed:
                 try:
                     from services import coin_service
-                    coin_service.track_objective_progress(db, user.id, "finish_course", 1)
+                    coin_service.record_metric_event(db, user.id, "finish_course", 1)
                 except Exception as ex:
                     print(f"[OBJECTIVES] Error tracking course completion: {ex}")
         else:

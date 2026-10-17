@@ -1119,6 +1119,7 @@ class PlatformObjective(Base):
     title = Column(String(100), nullable=False)
     description = Column(String(255), nullable=False)
     category = Column(String(50), default="general", nullable=False)  # courses, streaks, self_study, duels, sharing
+    metric_event = Column(String(50), default="general", nullable=False, index=True)
     target_value = Column(Integer, default=1, nullable=False)
     target_unit = Column(String(30), default="count", nullable=False)  # days, minutes, questions, courses
     coin_reward = Column(Integer, default=50, nullable=False)

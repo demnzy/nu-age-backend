@@ -103,9 +103,9 @@ def review_card(payload: schemas.ReviewPayload, db: Session = Depends(get_db), u
     
     try:
         from services import coin_service
-        coin_service.track_objective_progress(db, user.id, "practice_100q", 1)
+        coin_service.record_metric_event(db, user.id, "practice_questions", 1)
     except Exception as ex:
-        print(f"[OBJECTIVES] Error tracking practice_100q in review_card: {ex}")
+        print(f"[OBJECTIVES] Error tracking practice_questions in review_card: {ex}")
     
     return {"next_review_date": card.next_review_date, "interval_days": card.interval_days}
 
@@ -1113,6 +1113,8 @@ def delete_study_material(
 class StudySessionLogPayload(BaseModel):
     minutes: int = 0
     questions: int = 0
+    minutes_spent: Optional[int] = None
+    questions_completed: Optional[int] = None
     activity_type: Optional[str] = "self_study"
 
 
@@ -1124,13 +1126,17 @@ def log_study_session(
 ):
     """Logs active self-study minutes and practice questions directly to the platform objectives tracker."""
     from services import coin_service
-    if payload.minutes > 0:
-        coin_service.track_objective_progress(db, user.id, "study_time_60m", payload.minutes)
-    if payload.questions > 0:
-        coin_service.track_objective_progress(db, user.id, "practice_100q", payload.questions)
+    mins = payload.minutes_spent if payload.minutes_spent is not None else payload.minutes
+    qs = payload.questions_completed if payload.questions_completed is not None else payload.questions
+
+    if mins > 0:
+        coin_service.record_metric_event(db, user.id, "study_time", mins)
+    if qs > 0:
+        coin_service.record_metric_event(db, user.id, "practice_questions", qs)
+
     return {
         "status": "success",
-        "logged_minutes": payload.minutes,
-        "logged_questions": payload.questions,
+        "logged_minutes": mins,
+        "logged_questions": qs,
     }
 
