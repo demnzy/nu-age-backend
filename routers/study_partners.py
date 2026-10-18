@@ -1497,6 +1497,7 @@ def get_study_leaderboard(
     - 'today': Ranked by active study minutes logged today in Self-Study Hub.
     - 'weekly': Ranked by active study streak and total questions.
     - 'duo_streaks': Top study partnerships ranked by active Duo Streak count.
+    """
     today = date.today()
 
     try:
