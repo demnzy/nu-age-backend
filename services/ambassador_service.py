@@ -158,6 +158,12 @@ def accept_ambassador_invitation(db: Session, token: str, user_id: uuid.UUID) ->
     ambassador.user_id = user_id
     ambassador.accepted_at = datetime.now(timezone.utc)
 
+    # Link assigned promo code if exists
+    if ambassador.assigned_promo_code_id:
+        promo = db.query(models.PromoCode).filter(models.PromoCode.id == ambassador.assigned_promo_code_id).first()
+        if promo and not promo.ambassador_id:
+            promo.ambassador_id = user_id
+
     # Award campus_ambassador badge
     badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == "campus_ambassador").first()
     if badge:
@@ -184,6 +190,7 @@ def accept_ambassador_invitation(db: Session, token: str, user_id: uuid.UUID) ->
 
 def list_campus_ambassadors(db: Session) -> List[Dict[str, Any]]:
     """Returns all campus ambassador records with user summaries and redemptions statistics."""
+    from sqlalchemy import func
     ambassadors = db.query(models.CampusAmbassador).order_by(models.CampusAmbassador.invited_at.desc()).all()
     results = []
 
@@ -199,16 +206,29 @@ def list_campus_ambassadors(db: Session) -> List[Dict[str, Any]]:
         code_str = a.promo_code.code if a.promo_code else None
         uses_count = a.promo_code.uses_count if a.promo_code else 0
 
+        # Sum earned coins from referral commissions
+        total_coins = 0
+        if a.user_id:
+            coin_sum = db.query(func.coalesce(func.sum(models.CoinTransaction.amount), 0)).filter(
+                models.CoinTransaction.user_id == a.user_id,
+                models.CoinTransaction.source_type == "ambassador_referral",
+            ).scalar()
+            total_coins = int(coin_sum or 0)
+
         results.append({
             "id": str(a.id),
             "email": a.email,
             "university": a.university,
             "status": a.status,
             "user_id": str(a.user_id) if a.user_id else None,
+            "name": user_name,
             "user_name": user_name,
             "user_username": user_username,
             "promo_code": code_str,
+            "assigned_promo_code_id": str(a.assigned_promo_code_id) if a.assigned_promo_code_id else None,
             "total_referrals": uses_count,
+            "students_referred_count": uses_count,
+            "total_coins_earned": total_coins,
             "invited_at": a.invited_at.isoformat() if a.invited_at else None,
             "accepted_at": a.accepted_at.isoformat() if a.accepted_at else None,
             "notes": a.notes,
@@ -223,17 +243,21 @@ def toggle_ambassador_status(db: Session, ambassador_id: uuid.UUID, new_status: 
     if not ambassador:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ambassador record not found.")
 
+    clean_status = (new_status or "").strip().lower()
+    if clean_status == "inactive":
+        clean_status = "suspended"
+
     valid_statuses = {"invited", "active", "suspended", "declined"}
-    if new_status not in valid_statuses:
+    if clean_status not in valid_statuses:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Status must be one of {valid_statuses}")
 
-    ambassador.status = new_status
+    ambassador.status = clean_status
     db.commit()
     db.refresh(ambassador)
 
     return {
         "status": "success",
-        "message": f"Ambassador status updated to {new_status}.",
+        "message": f"Ambassador status updated to {clean_status}.",
         "ambassador_id": str(ambassador.id),
         "new_status": ambassador.status,
     }

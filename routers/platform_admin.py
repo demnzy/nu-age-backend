@@ -1964,15 +1964,18 @@ def test_trigger_objective_notification(
 
 class AdminCreatePromoCodeRequest(BaseModel):
     code: str
-    title: str
+    title: Optional[str] = None
     description: Optional[str] = None
     reward_coins: int = 0
     reward_ai_credits: int = 0
     reward_trial_days: int = 0
     reward_badge_slug: Optional[str] = None
     reward_pack_ids: Optional[List[str]] = None
+    rewards: Optional[Dict[str, Any]] = None  # Flexible support for nested rewards payload
     ambassador_id: Optional[UUID] = None
+    ambassador_user_id: Optional[UUID] = None  # Alias
     ambassador_coin_reward: int = 0
+    referral_bonus_coins: int = 0  # Alias
     max_uses: Optional[int] = None
     expires_at: Optional[datetime] = None
     is_active: bool = True
@@ -1997,6 +2000,8 @@ class AdminAwardBadgeRequest(BaseModel):
 class AdminInviteAmbassadorRequest(BaseModel):
     email: str
     university: str
+    name: Optional[str] = None
+    faculty: Optional[str] = None
     notes: Optional[str] = None
     assigned_promo_code_id: Optional[UUID] = None
 
@@ -2020,11 +2025,20 @@ def list_promo_codes_admin(
         if c.ambassador:
             amb_name = f"{c.ambassador.first_name or ''} {c.ambassador.last_name or ''}".strip() or c.ambassador.username or "—"
 
+        reward_dict = {
+            "coins": c.reward_coins,
+            "ai_credits": c.reward_ai_credits,
+            "trial_days": c.reward_trial_days,
+            "badge_slug": c.reward_badge_slug,
+            "study_pack_ids": c.reward_pack_ids or [],
+        }
+
         results.append({
             "id": str(c.id),
             "code": c.code,
             "title": c.title,
             "description": c.description,
+            "rewards": reward_dict,
             "reward_coins": c.reward_coins,
             "reward_ai_credits": c.reward_ai_credits,
             "reward_trial_days": c.reward_trial_days,
@@ -2033,8 +2047,10 @@ def list_promo_codes_admin(
             "ambassador_id": str(c.ambassador_id) if c.ambassador_id else None,
             "ambassador_name": amb_name,
             "ambassador_coin_reward": c.ambassador_coin_reward,
+            "referral_bonus_coins": c.ambassador_coin_reward,
             "max_uses": c.max_uses,
             "uses_count": c.uses_count or 0,
+            "times_used": c.uses_count or 0,
             "expires_at": c.expires_at.isoformat() if c.expires_at else None,
             "is_active": c.is_active,
             "created_at": c.created_at.isoformat() if c.created_at else None,
@@ -2062,17 +2078,62 @@ def create_promo_code_admin(
     if existing:
         raise HTTPException(status_code=400, detail=f"Promo code '{clean_code}' already exists.")
 
+    # Extract rewards from nested dict if provided, else use flat fields
+    reward_coins = max(0, payload.reward_coins)
+    reward_ai_credits = max(0, payload.reward_ai_credits)
+    reward_trial_days = max(0, payload.reward_trial_days)
+    reward_badge_slug = payload.reward_badge_slug.strip() if payload.reward_badge_slug else None
+    reward_pack_ids = payload.reward_pack_ids or []
+
+    if payload.rewards and isinstance(payload.rewards, dict):
+        if "coins" in payload.rewards:
+            reward_coins = max(0, int(payload.rewards["coins"] or 0))
+        if "ai_credits" in payload.rewards:
+            reward_ai_credits = max(0, int(payload.rewards["ai_credits"] or 0))
+        if "trial_days" in payload.rewards:
+            reward_trial_days = max(0, int(payload.rewards["trial_days"] or 0))
+        if "badge_slug" in payload.rewards and payload.rewards["badge_slug"]:
+            reward_badge_slug = str(payload.rewards["badge_slug"]).strip()
+        if "study_pack_ids" in payload.rewards and isinstance(payload.rewards["study_pack_ids"], list):
+            reward_pack_ids = payload.rewards["study_pack_ids"]
+
+    # Validate badge if specified
+    if reward_badge_slug:
+        b_exists = db.query(models.MemberBadge).filter(models.MemberBadge.slug == reward_badge_slug).first()
+        if not b_exists:
+            raise HTTPException(status_code=400, detail=f"Badge with slug '{reward_badge_slug}' does not exist.")
+
+    # Validate pack IDs if specified
+    if reward_pack_ids:
+        for p_id in reward_pack_ids:
+            try:
+                p_uuid = UUID(str(p_id))
+                if not db.query(models.StudyPack).filter(models.StudyPack.id == p_uuid).first():
+                    raise HTTPException(status_code=400, detail=f"Study pack '{p_id}' not found.")
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid study pack UUID: '{p_id}'.")
+
+    # Resolve ambassador attribution & kickback
+    amb_id = payload.ambassador_id or payload.ambassador_user_id
+    if amb_id:
+        u_exists = db.query(models.User).filter(models.User.id == amb_id).first()
+        if not u_exists:
+            raise HTTPException(status_code=400, detail=f"Attributed ambassador user ID '{amb_id}' not found.")
+
+    amb_reward = max(0, max(payload.ambassador_coin_reward, payload.referral_bonus_coins))
+    code_title = payload.title.strip() if payload.title and payload.title.strip() else clean_code
+
     new_promo = models.PromoCode(
         code=clean_code,
-        title=payload.title.strip(),
+        title=code_title,
         description=payload.description.strip() if payload.description else None,
-        reward_coins=max(0, payload.reward_coins),
-        reward_ai_credits=max(0, payload.reward_ai_credits),
-        reward_trial_days=max(0, payload.reward_trial_days),
-        reward_badge_slug=payload.reward_badge_slug.strip() if payload.reward_badge_slug else None,
-        reward_pack_ids=payload.reward_pack_ids or [],
-        ambassador_id=payload.ambassador_id,
-        ambassador_coin_reward=max(0, payload.ambassador_coin_reward),
+        reward_coins=reward_coins,
+        reward_ai_credits=reward_ai_credits,
+        reward_trial_days=reward_trial_days,
+        reward_badge_slug=reward_badge_slug,
+        reward_pack_ids=reward_pack_ids,
+        ambassador_id=amb_id,
+        ambassador_coin_reward=amb_reward,
         max_uses=payload.max_uses if (payload.max_uses and payload.max_uses > 0) else None,
         expires_at=payload.expires_at,
         is_active=payload.is_active,
@@ -2284,12 +2345,20 @@ def invite_campus_ambassador_admin(
     current_admin: models.User = Depends(get_current_super_admin),
 ):
     """Dispatches a campus ambassador invitation email via Resend and records to DB."""
-    from services.ambassador_service import invite_campus_ambassador
+    extra_notes = []
+    if payload.name:
+        extra_notes.append(f"Candidate: {payload.name.strip()}")
+    if payload.faculty:
+        extra_notes.append(f"Faculty: {payload.faculty.strip()}")
+    if payload.notes:
+        extra_notes.append(payload.notes.strip())
+    combined_notes = " | ".join(extra_notes) if extra_notes else None
+
     ambassador = invite_campus_ambassador(
         db=db,
         email=payload.email,
         university=payload.university,
-        notes=payload.notes,
+        notes=combined_notes,
         assigned_promo_code_id=payload.assigned_promo_code_id,
     )
     return {

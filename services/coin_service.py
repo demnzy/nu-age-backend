@@ -108,6 +108,7 @@ def grant_coins(
     description: str = "",
     source_type: Optional[str] = None,
     reference_id: Optional[str] = None,
+    commit: bool = True,
 ) -> Tuple[bool, int]:
     """
     Grants Nu-Coins to a user, appends transaction ledger records to both tables,
@@ -151,7 +152,10 @@ def grant_coins(
     except Exception:
         pass
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return True, new_balance
 
 

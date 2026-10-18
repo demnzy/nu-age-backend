@@ -11,10 +11,11 @@ Handles:
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
 import models
@@ -115,21 +116,69 @@ def seed_default_badges_if_empty(db: Session):
     db.commit()
 
 
+def _apply_pro_trial(db: Session, user_id: uuid.UUID, days: int) -> Dict[str, Any]:
+    """
+    Applies or extends a Pro Scholar trial without downgrading any existing plan.
+    """
+    now = datetime.now(timezone.utc)
+    sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id).first()
+    if not sub:
+        sub = models.UserSubscription(user_id=user_id, plan_id="free")
+        db.add(sub)
+        db.flush()
+
+    # Ensure plan_obj for pro exists
+    plan_obj = db.query(models.StudyPlan).filter(models.StudyPlan.id == "pro").first()
+    if not plan_obj:
+        plan_obj = models.StudyPlan(id="pro", label="Pro Scholar", materials_limit=45, generations_limit=100)
+        db.add(plan_obj)
+        db.flush()
+
+    if sub.expires_at:
+        exp = sub.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp > now and sub.plan_id in ("pro", "unlimited"):
+            new_exp = exp + timedelta(days=days)
+        else:
+            new_exp = now + timedelta(days=days)
+    else:
+        new_exp = now + timedelta(days=days)
+
+    if sub.plan_id not in ("pro", "unlimited"):
+        sub.plan_id = "pro"
+        sub.billing_cycle = "trial"
+
+    sub.status = "active"
+    sub.expires_at = new_exp
+    sub.grace_period_until = new_exp + timedelta(days=3)
+    db.flush()
+    return {
+        "plan_id": sub.plan_id,
+        "trial_days": days,
+        "expires_at": new_exp.isoformat(),
+    }
+
+
 def redeem_promo_code(db: Session, user_id: uuid.UUID, code_str: str) -> Dict[str, Any]:
     """
     Executes a multi-reward promo code redemption within a single atomic transaction.
     Guarantees:
     - Code existence, case-insensitivity, and active state.
     - Expiration and usage limits enforcement.
-    - Idempotency (single redemption per user per code).
-    - Multi-reward dispatch (coins, AI credits, trial days, badge, pack unlocks).
-    - Ambassador referral kickback.
+    - Idempotency (single redemption per user per code with IntegrityError handling).
+    - Multi-reward dispatch (coins, AI generation credits, trial days, badge, pack unlocks).
+    - Ambassador referral kickback (only if ambassador is active).
     """
     clean_code = (code_str or "").strip().upper()
     if not clean_code:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Promo code cannot be empty.")
 
-    promo = db.query(models.PromoCode).filter(models.PromoCode.code == clean_code).first()
+    try:
+        promo = db.query(models.PromoCode).filter(models.PromoCode.code == clean_code).with_for_update().first()
+    except Exception:
+        promo = db.query(models.PromoCode).filter(models.PromoCode.code == clean_code).first()
+
     if not promo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid promo code. Please check and try again.")
 
@@ -161,96 +210,114 @@ def redeem_promo_code(db: Session, user_id: uuid.UUID, code_str: str) -> Dict[st
 
     granted_summary: Dict[str, Any] = {}
 
-    # 1. Nu-Coins Reward
-    if promo.reward_coins and promo.reward_coins > 0:
-        new_coin_bal = coin_service.grant_coins(
-            db,
-            user_id=user_id,
-            amount=promo.reward_coins,
-            category="promo_code",
-            description=f"Redeemed promo code {promo.code}",
-            source_type="promo_code",
-            reference_id=str(promo.id),
-        )
-        granted_summary["coins"] = promo.reward_coins
-        granted_summary["new_coins_balance"] = new_coin_bal
-
-    # 2. AI Generation Credits Reward
-    if promo.reward_ai_credits and promo.reward_ai_credits > 0:
-        try:
-            from monetization_models import CreditBalance, CreditLedgerEntry
-            cb = db.query(CreditBalance).filter(CreditBalance.user_id == user_id).first()
-            if not cb:
-                cb = CreditBalance(user_id=user_id, balance=100 + promo.reward_ai_credits)
-                db.add(cb)
-            else:
-                cb.balance = (cb.balance or 0) + promo.reward_ai_credits
-
-            ledger = CreditLedgerEntry(
-                user_id=user_id,
-                delta=promo.reward_ai_credits,
-                reason="promo_code",
-                reference_id=str(promo.id),
-                balance_after=cb.balance,
-            )
-            db.add(ledger)
-            granted_summary["ai_credits"] = promo.reward_ai_credits
-            granted_summary["new_ai_credits_balance"] = cb.balance
-        except Exception as ex:
-            print(f"[Promo] AI credit grant note: {ex}")
-
-    # 3. Pro Trial Days
-    if promo.reward_trial_days and promo.reward_trial_days > 0:
-        granted_summary["trial_days"] = promo.reward_trial_days
-
-    # 4. Exclusive Badge Award
-    if promo.reward_badge_slug:
-        badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == promo.reward_badge_slug).first()
-        if badge:
-            user_badge = db.query(models.UserBadge).filter(
-                models.UserBadge.user_id == user_id,
-                models.UserBadge.badge_id == badge.id
-            ).first()
-            if not user_badge:
-                user_badge = models.UserBadge(
-                    user_id=user_id,
-                    badge_id=badge.id,
-                    is_primary=False
-                )
-                db.add(user_badge)
-            granted_summary["badge"] = {
-                "slug": badge.slug,
-                "name": badge.name,
-                "icon": badge.icon,
-                "color_hex": badge.color_hex
-            }
-
-    # 5. Ambassador Referral Kickback
-    if promo.ambassador_id and promo.ambassador_id != user_id and promo.ambassador_coin_reward > 0:
-        try:
-            coin_service.grant_coins(
+    try:
+        # 1. Nu-Coins Reward (Atomic flush, no early commit)
+        if promo.reward_coins and promo.reward_coins > 0:
+            _, new_coin_bal = coin_service.grant_coins(
                 db,
-                user_id=promo.ambassador_id,
-                amount=promo.ambassador_coin_reward,
-                category="referral_commission",
-                description=f"Referral commission from code {promo.code}",
-                source_type="ambassador_referral",
+                user_id=user_id,
+                amount=promo.reward_coins,
+                category="promo_code",
+                description=f"Redeemed promo code {promo.code}",
+                source_type="promo_code",
                 reference_id=str(promo.id),
+                commit=False,
             )
-            granted_summary["ambassador_notified"] = True
-        except Exception as amb_ex:
-            print(f"[Promo] Ambassador kickback error: {amb_ex}")
+            granted_summary["coins"] = promo.reward_coins
+            granted_summary["new_coins_balance"] = new_coin_bal
 
-    # Record redemption log & increment usage
-    redemption = models.PromoCodeRedemption(
-        promo_code_id=promo.id,
-        user_id=user_id,
-        rewards_granted=granted_summary
-    )
-    db.add(redemption)
-    promo.uses_count = (promo.uses_count or 0) + 1
+        # 2. AI Generation Credits Reward -> Mapped strictly to UserSubscription.bonus_generations
+        if promo.reward_ai_credits and promo.reward_ai_credits > 0:
+            sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id).first()
+            if not sub:
+                sub = models.UserSubscription(user_id=user_id, plan_id="free")
+                db.add(sub)
+                db.flush()
+            sub.bonus_generations = (sub.bonus_generations or 0) + promo.reward_ai_credits
+            db.flush()
+            granted_summary["ai_credits"] = promo.reward_ai_credits
+            granted_summary["bonus_generations"] = sub.bonus_generations
 
-    db.commit()
+        # 3. Pro Trial Days
+        if promo.reward_trial_days and promo.reward_trial_days > 0:
+            trial_res = _apply_pro_trial(db, user_id=user_id, days=promo.reward_trial_days)
+            granted_summary["trial"] = trial_res
+
+        # 4. Exclusive Badge Award
+        if promo.reward_badge_slug:
+            badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == promo.reward_badge_slug).first()
+            if badge:
+                user_badge = db.query(models.UserBadge).filter(
+                    models.UserBadge.user_id == user_id,
+                    models.UserBadge.badge_id == badge.id
+                ).first()
+                if not user_badge:
+                    user_badge = models.UserBadge(
+                        user_id=user_id,
+                        badge_id=badge.id,
+                        is_primary=False
+                    )
+                    db.add(user_badge)
+                granted_summary["badge"] = {
+                    "slug": badge.slug,
+                    "name": badge.name,
+                    "icon": badge.icon,
+                    "color_hex": badge.color_hex
+                }
+
+        # 5. Study Pack Unlocks into Buyer's Vault
+        if promo.reward_pack_ids and isinstance(promo.reward_pack_ids, list):
+            from services.pack_import_service import import_pack_into_vault
+            unlocked_packs = []
+            for pid in promo.reward_pack_ids:
+                try:
+                    p_uuid = uuid.UUID(str(pid))
+                    pack = db.query(models.StudyPack).filter(models.StudyPack.id == p_uuid).first()
+                    if pack:
+                        import_pack_into_vault(db=db, pack=pack, user_id=user_id, coins_spent=0, commit=False)
+                        unlocked_packs.append({"id": str(pack.id), "title": pack.title})
+                except Exception as p_ex:
+                    print(f"[Promo] Pack unlock error: {p_ex}")
+            if unlocked_packs:
+                granted_summary["packs"] = unlocked_packs
+
+        # 6. Ambassador Referral Kickback (active ambassadors only)
+        if promo.ambassador_id and promo.ambassador_id != user_id and promo.ambassador_coin_reward > 0:
+            amb = db.query(models.CampusAmbassador).filter(models.CampusAmbassador.user_id == promo.ambassador_id).first()
+            # If an ambassador profile exists, ensure it is active
+            if not amb or amb.status == "active":
+                coin_service.grant_coins(
+                    db,
+                    user_id=promo.ambassador_id,
+                    amount=promo.ambassador_coin_reward,
+                    category="referral_commission",
+                    description=f"Referral commission from code {promo.code}",
+                    source_type="ambassador_referral",
+                    reference_id=str(promo.id),
+                    commit=False,
+                )
+                granted_summary["ambassador_notified"] = True
+
+        # Record redemption log & increment usage atomically
+        redemption = models.PromoCodeRedemption(
+            promo_code_id=promo.id,
+            user_id=user_id,
+            rewards_granted=granted_summary
+        )
+        db.add(redemption)
+        promo.uses_count = (promo.uses_count or 0) + 1
+
+        db.commit()
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You have already redeemed this promo code.")
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as ex:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to redeem promo code: {str(ex)}")
 
     return {
         "status": "success",
@@ -370,3 +437,70 @@ def resolve_user_primary_badge(db: Session, user_id: uuid.UUID) -> Optional[Dict
         }
 
     return None
+
+
+_last_rank_eval = 0.0
+
+
+def evaluate_rank_badges(db: Session, force: bool = False):
+    """
+    Evaluates platform leaderboards and dynamically awards/migrates the automated rank badges:
+    - streak_king: Rank #1 on individual daily streak.
+    - duo_kings: Rank #1 partnership on duo streak.
+    Throttled to once every 10 minutes unless force=True.
+    """
+    global _last_rank_eval
+    import time
+    now_ts = time.time()
+    if not force and (now_ts - _last_rank_eval) < 600:
+        return
+    _last_rank_eval = now_ts
+
+    seed_default_badges_if_empty(db)
+
+    try:
+        # 1. Streak King
+        sk_badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == "streak_king").first()
+        if sk_badge:
+            top_user = db.query(models.User).filter(models.User.streak > 0).order_by(models.User.streak.desc()).first()
+            if top_user:
+                db.query(models.UserBadge).filter(
+                    models.UserBadge.badge_id == sk_badge.id,
+                    models.UserBadge.user_id != top_user.id
+                ).delete(synchronize_session=False)
+
+                has_badge = db.query(models.UserBadge).filter(
+                    models.UserBadge.badge_id == sk_badge.id,
+                    models.UserBadge.user_id == top_user.id
+                ).first()
+                if not has_badge:
+                    db.add(models.UserBadge(user_id=top_user.id, badge_id=sk_badge.id, is_primary=False))
+
+        # 2. Duo Kings
+        dk_badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == "duo_kings").first()
+        if dk_badge:
+            top_duo = db.query(models.StudyPartnership).filter(
+                models.StudyPartnership.status == "active",
+                models.StudyPartnership.duo_streak > 0
+            ).order_by(models.StudyPartnership.duo_streak.desc()).first()
+            if top_duo:
+                target_ids = {top_duo.user1_id, top_duo.user2_id}
+                db.query(models.UserBadge).filter(
+                    models.UserBadge.badge_id == dk_badge.id,
+                    ~models.UserBadge.user_id.in_(target_ids)
+                ).delete(synchronize_session=False)
+
+                for uid in target_ids:
+                    if uid:
+                        has_b = db.query(models.UserBadge).filter(
+                            models.UserBadge.badge_id == dk_badge.id,
+                            models.UserBadge.user_id == uid
+                        ).first()
+                        if not has_b:
+                            db.add(models.UserBadge(user_id=uid, badge_id=dk_badge.id, is_primary=False))
+
+        db.commit()
+    except Exception as ex:
+        db.rollback()
+        print(f"[promo_service] evaluate_rank_badges note: {ex}")
+

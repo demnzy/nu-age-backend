@@ -1497,8 +1497,13 @@ def get_study_leaderboard(
     - 'today': Ranked by active study minutes logged today in Self-Study Hub.
     - 'weekly': Ranked by active study streak and total questions.
     - 'duo_streaks': Top study partnerships ranked by active Duo Streak count.
-    """
     today = date.today()
+
+    try:
+        from services.promo_service import evaluate_rank_badges
+        evaluate_rank_badges(db)
+    except Exception:
+        pass
 
     if filter_type == "duo_streaks":
         duos = db.query(models.StudyPartnership).filter(
