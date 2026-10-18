@@ -238,7 +238,7 @@ MIGRATION_STATEMENTS = [
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         title VARCHAR(255) NOT NULL,
         description TEXT,
-        category VARCHAR(100) DEFAULT 'JAMB UTME' NOT NULL,
+        category VARCHAR(100) DEFAULT 'General' NOT NULL,
         theme_gradient VARCHAR(100) DEFAULT 'purple_indigo' NOT NULL,
         banner_url VARCHAR,
         price_coins INTEGER DEFAULT 0 NOT NULL,
@@ -265,7 +265,7 @@ MIGRATION_STATEMENTS = [
         user_b_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
         status VARCHAR(30) DEFAULT 'pending' NOT NULL,
         goal_type VARCHAR(50) DEFAULT 'cbt_exam' NOT NULL,
-        target_exam VARCHAR(100) DEFAULT 'JAMB UTME',
+        target_exam VARCHAR(100) DEFAULT 'General CBT',
         target_subjects JSONB DEFAULT '[]'::jsonb NOT NULL,
         daily_target_minutes INTEGER DEFAULT 30 NOT NULL,
         daily_target_questions INTEGER DEFAULT 15 NOT NULL,
@@ -331,6 +331,8 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_shared_packs_partnership ON partnership_shared_packs(partnership_id);",
     "CREATE INDEX IF NOT EXISTS ix_shared_packs_recipient ON partnership_shared_packs(recipient_id, status);",
     "UPDATE study_packs SET status = 'partner_only' WHERE category = 'Duo Study' AND status = 'approved';",
+    "UPDATE study_partnerships SET target_exam = NULL WHERE target_exam IN ('JAMB UTME', 'JAMB', 'UTME', 'General CBT', 'General');",
+    "UPDATE study_bundles SET category = 'General' WHERE category = 'JAMB UTME';",
     """
     CREATE TABLE IF NOT EXISTS coin_transactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

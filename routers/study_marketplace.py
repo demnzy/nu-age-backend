@@ -74,7 +74,7 @@ class AdminUpdatePackPayload(BaseModel):
 class AIPastQuestionsParsePayload(BaseModel):
     raw_text: str = Field(..., min_length=10)
     subject: str = Field(default="General", max_length=100)
-    exam_type: str = Field(default="JAMB UTME", max_length=50)
+    exam_type: str = Field(default="General CBT", max_length=50)
     exam_year: Optional[int] = None
 
 
@@ -1006,7 +1006,7 @@ def get_admin_pack_full(
         "is_official": pack.is_official,
         "status": pack.status,
         "duration_minutes": dur_mins,
-        "exam_type": detected_exam_type or "JAMB UTME",
+        "exam_type": detected_exam_type or "General CBT",
         "exam_year": detected_exam_year,
         "questions": questions,
         "flashcards": flashcards,
@@ -1199,7 +1199,7 @@ async def parse_past_questions_admin(
 async def parse_past_questions_file_admin(
     file: UploadFile = File(...),
     subject: str = Form("General"),
-    exam_type: str = Form("JAMB UTME"),
+    exam_type: str = Form("General CBT"),
     exam_year: Optional[str] = Form(None),
     admin: models.User = Depends(get_current_super_admin)
 ):
@@ -1372,7 +1372,7 @@ async def upload_cbt_question_image(
 class CreateBundlePayload(BaseModel):
     title: str = Field(..., min_length=3, max_length=255)
     description: Optional[str] = None
-    category: str = Field(default="JAMB UTME", max_length=100)
+    category: str = Field(default="General", max_length=100)
     theme_gradient: str = Field(default="purple_indigo", max_length=100)
     banner_url: Optional[str] = None
     price_coins: int = Field(default=0, ge=0)
@@ -1771,7 +1771,7 @@ def create_study_bundle_admin(
     new_bundle = models.StudyBundle(
         title=payload.title.strip(),
         description=payload.description or "",
-        category=payload.category.strip() or "JAMB UTME",
+        category=payload.category.strip() or "General",
         theme_gradient=payload.theme_gradient or "purple_indigo",
         banner_url=payload.banner_url,
         price_coins=final_price,

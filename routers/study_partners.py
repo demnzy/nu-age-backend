@@ -414,7 +414,7 @@ def get_sent_partnership_requests(
 @router.post("/invite/{target_user_id}")
 def invite_study_partner(
     target_user_id: uuid.UUID,
-    target_exam: str = Query("JAMB UTME"),
+    target_exam: str = Query("General CBT"),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
@@ -1511,12 +1511,16 @@ def get_study_leaderboard(
             effective_streak = d.duo_streak or 0
             if d.last_duo_streak_date and d.last_duo_streak_date < yesterday:
                 effective_streak = 0
+            clean_target = d.target_exam
+            if clean_target and any(term in str(clean_target).upper() for term in ["JAMB", "UTME", "GENERAL"]):
+                clean_target = None
+
             rankings.append({
                 "rank": idx,
                 "partnership_id": str(d.id),
                 "duo_streak": effective_streak,
                 "best_duo_streak": d.best_duo_streak or 0,
-                "target_exam": d.target_exam or "JAMB / Post-UTME",
+                "target_exam": clean_target,
                 "partner_a": _format_user_summary(d.user_a),
                 "partner_b": _format_user_summary(d.user_b),
                 "is_my_duo": (d.user_a_id == current_user.id or d.user_b_id == current_user.id),
@@ -1561,9 +1565,11 @@ def get_study_leaderboard(
                     "is_me": (u.id == current_user.id),
                 })
             return {"status": "success", "filter": "today", "leaderboard": rankings}
+        else:
+            return {"status": "success", "filter": "today", "leaderboard": []}
 
-    # User rankings by study streak / coins / activity
-    users_q = db.query(models.User).order_by(models.User.streak.desc()).limit(limit).all()
+    # Solo study streak rankings (filter_type == "weekly" or default)
+    users_q = db.query(models.User).order_by(models.User.streak.desc(), models.User.coins_balance.desc()).limit(limit).all()
     rankings = []
     for idx, u in enumerate(users_q, start=1):
         rankings.append({

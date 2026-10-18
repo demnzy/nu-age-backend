@@ -27,3 +27,10 @@
 
 ## 5. Channel-Scoped Access & Mention Invariants
 - **Strict Channel Membership Verification for Mentions**: When processing `@` mentions or `mention_ids`, the backend MUST strictly verify that each mentioned user ID is an active member of the channel (`models.ChannelMember.channel_id == channel_id`). Never dispatch push notifications or mention alerts to users who do not belong to the channel.
+
+## 6. Testing & Database Integrity Invariants
+- **Zero Mock Accounts or Test Data in Live Database**:
+  - NEVER run integration tests, test scripts, or verification tools that insert mock accounts, synthetic users, dummy courses, or test records into the active development or production database (`nuage.db` or PostgreSQL).
+  - All automated testing must strictly use in-memory SQLite (`sqlite:///:memory:`), mock repositories (`unittest.mock`), or read-only probes of existing data.
+  - Senders, credentials, and tokens used in verification scripts must rely on mocked sessions or isolated in-memory stores.
+

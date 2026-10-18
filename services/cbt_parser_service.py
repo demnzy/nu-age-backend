@@ -52,7 +52,7 @@ class ParsedCBTPack(BaseModel):
     questions: List[ParsedCBTQuestion] = Field(default_factory=list)
 
 
-def parse_cbt_text_regex(raw_text: str, default_subject: str = "General", default_exam: str = "JAMB UTME", default_year: Optional[int] = None) -> ParsedCBTPack:
+def parse_cbt_text_regex(raw_text: str, default_subject: str = "General", default_exam: str = "Standard CBT", default_year: Optional[int] = None) -> ParsedCBTPack:
     """
     Deterministic regex fallback parser for structured past question text blocks.
     Supports 4 options (JAMB/UTME) or 5 options (WAEC/NECO/WASSCE):
@@ -248,7 +248,7 @@ async def _parse_single_chunk_with_ai(
 async def parse_past_questions_with_ai(
     raw_text: str,
     subject: str = "General",
-    exam_type: str = "JAMB UTME",
+    exam_type: str = "Standard CBT",
     exam_year: Optional[int] = None
 ) -> ParsedCBTPack:
     """
@@ -338,7 +338,7 @@ async def parse_past_questions_from_image_with_ai(
     image_bytes: bytes,
     mime_type: str = "image/png",
     subject: str = "General",
-    exam_type: str = "JAMB UTME",
+    exam_type: str = "Standard CBT",
     exam_year: Optional[int] = None
 ) -> ParsedCBTPack:
     """

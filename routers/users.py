@@ -647,7 +647,414 @@ def logout_all_devices(
         "message": f"All sessions revoked. {revoked_count} active session(s) were logged out.",
         "revoked_count": revoked_count,
     }
-    
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GOOGLE OAUTH 2.0 (UNIVERSAL BACKEND-BROKERED FLOW)
+# ─────────────────────────────────────────────────────────────────────────────
+import secrets
+import json
+import urllib.parse
+import httpx
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+@router.get('/auth/google/config')
+def get_google_auth_config():
+    """Returns whether Google OAuth is enabled on this backend instance."""
+    settings = Settings()
+    client_id = settings.get_google_client_id()
+    return {
+        "enabled": bool(client_id),
+        "client_id": client_id if client_id else None,
+    }
+
+@router.get('/auth/google/start')
+def start_google_auth(
+    platform: Optional[str] = "web",
+    persona: Optional[str] = "student",
+):
+    """Generates the secure Google OAuth authorization URL for the client."""
+    settings = Settings()
+    client_id = settings.get_google_client_id()
+    if not client_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google OAuth is not configured on the server. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
+        )
+
+    clean_platform = (platform if isinstance(platform, str) else "web").lower().strip()
+    clean_persona = (persona if isinstance(persona, str) else "student").lower().strip()
+
+    # Package state payload with random nonce to prevent CSRF
+    state_payload = {
+        "nonce": secrets.token_urlsafe(16),
+        "platform": clean_platform,
+        "persona": clean_persona,
+        "ts": int(datetime.now(timezone.utc).timestamp()),
+    }
+    state_token = base64.urlsafe_b64encode(json.dumps(state_payload).encode("utf-8")).decode("utf-8")
+
+    redirect_uri = settings.get_google_redirect_uri()
+    auth_params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state_token,
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(auth_params)}"
+    return {"auth_url": auth_url}
+
+@router.get('/auth/google/callback')
+async def google_auth_callback(
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Handles the OAuth redirect from Google, reconciles the user, and redirects to the client."""
+    settings = Settings()
+    platform = "web"
+    persona = "student"
+
+    if state and isinstance(state, str):
+        try:
+            raw_state = base64.urlsafe_b64decode(state.encode("utf-8")).decode("utf-8")
+            parsed_state = json.loads(raw_state)
+            platform = str(parsed_state.get("platform", "web")).lower()
+            persona = str(parsed_state.get("persona", "student")).lower()
+        except Exception as ex:
+            print(f"[GoogleAuth] Warning: Could not parse OAuth state: {ex}")
+
+    # Handle user cancellation or denial
+    is_err = bool(error and isinstance(error, str))
+    if is_err or not code:
+        err_msg = str(error) if is_err else "Authorization code was missing."
+        if platform in ("android", "apk"):
+            return HTMLResponse(
+                f"""<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#111;color:#fff;">
+                <h3>Sign in cancelled</h3><p>{err_msg}</p>
+                <a href="nuage://auth-callback?error={urllib.parse.quote(err_msg)}" style="display:inline-block;padding:10px 20px;background:#4CAF50;color:#000;text-decoration:none;border-radius:8px;">Return to Nu Age</a>
+                </body></html>""",
+                status_code=400,
+            )
+        elif platform == "desktop":
+            return HTMLResponse(
+                f"""<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#111;color:#fff;">
+                <h3>Sign in cancelled</h3><p>{err_msg}</p>
+                <p>You can close this tab and return to the Nu Age desktop app.</p>
+                </body></html>""",
+                status_code=400,
+            )
+        else:
+            frontend_url = settings.get_frontend_app_url().rstrip("/")
+            return RedirectResponse(f"{frontend_url}/#/auth-callback?error={urllib.parse.quote(err_msg)}")
+
+    # Exchange authorization code for tokens with Google
+    client_id = settings.get_google_client_id()
+    client_secret = settings.get_google_client_secret()
+    redirect_uri = settings.get_google_redirect_uri()
+
+    token_url = "https://oauth2.googleapis.com/token"
+    token_payload = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as http_client:
+        token_resp = await http_client.post(token_url, data=token_payload)
+        if token_resp.status_code != 200:
+            err_detail = token_resp.text
+            print(f"[GoogleAuth] Token exchange failed ({token_resp.status_code}): {err_detail}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Google token exchange failed: {err_detail}",
+            )
+
+        token_data = token_resp.json()
+        google_access_token = token_data.get("access_token")
+
+        # Fetch verified user profile
+        userinfo_resp = await http_client.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {google_access_token}"},
+        )
+        if userinfo_resp.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to retrieve profile information from Google.",
+            )
+
+        user_info = userinfo_resp.json()
+
+    user_email = (user_info.get("email") or "").strip().lower()
+    if not user_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google account did not provide a valid email address.",
+        )
+
+    given_name = user_info.get("given_name") or ""
+    family_name = user_info.get("family_name") or ""
+    full_name = user_info.get("name") or ""
+    picture = user_info.get("picture")
+
+    # 1. Look up existing user
+    existing_user = db.query(models.User).filter(func.lower(models.User.email) == user_email).first()
+
+    wat_tz = pytz.timezone('Africa/Lagos')
+    today = datetime.now(wat_tz).date()
+
+    if existing_user:
+        actual_user = existing_user
+        # Verified by Google identity
+        actual_user.is_verified = True
+        if picture and not actual_user.profile_picture_url:
+            actual_user.profile_picture_url = picture
+
+        # Streak logic
+        if actual_user.last_login_date == today - timedelta(days=1):
+            actual_user.streak = (actual_user.streak or 0) + 1
+        elif actual_user.last_login_date != today:
+            actual_user.streak = 1
+        actual_user.last_login_date = today
+
+        try:
+            from services import coin_service
+            coin_service.record_metric_event(db, actual_user.id, "login_streak", actual_user.streak or 1, set_absolute=True)
+        except Exception:
+            pass
+
+        db.commit()
+    else:
+        # 2. Provision new learner
+        first_n = given_name or (full_name.split()[0] if full_name else "Learner")
+        last_n = family_name or (full_name.split()[-1] if full_name and len(full_name.split()) > 1 else "Nu")
+
+        # Generate unique username
+        base_username = (given_name or user_email.split("@")[0]).lower()
+        clean_prefix = "".join(c for c in base_username if c.isalnum() or c == "_")[:10] or "learner"
+        candidate_username = f"{clean_prefix}_{secrets.token_hex(3)}"
+        while db.query(models.User).filter(models.User.username == candidate_username).first():
+            candidate_username = f"{clean_prefix}_{secrets.token_hex(3)}"
+
+        # Generate random password hash (account is protected by Google OAuth)
+        random_pwd = secrets.token_urlsafe(24)
+        hashed_pwd = utils.hash_password(random_pwd)
+
+        actual_user = models.User(
+            first_name=first_n,
+            last_name=last_n,
+            gender=models.Gender.CUSTOM,
+            email=user_email,
+            password=hashed_pwd,
+            username=candidate_username,
+            role=models.Roles.STUDENT,
+            profile_picture_url=picture,
+            is_verified=True,
+            streak=1,
+            last_login_date=today,
+        )
+        db.add(actual_user)
+        db.commit()
+        db.refresh(actual_user)
+
+        # Initialize welcome wallet with 100 Nu-Coins
+        try:
+            from services.coin_service import init_new_user_wallet
+            init_new_user_wallet(db, actual_user.id, starting_balance=100)
+        except Exception as e:
+            print(f"[CoinService] Failed to init Google user wallet: {e}")
+
+    # Generate access and refresh tokens
+    access_token_data = auth.create_access_token({"email": actual_user.email})
+    access_token = access_token_data["access_token"]
+    refresh_token = auth.create_refresh_token(
+        db, actual_user.id, device_label=f"Google Auth ({platform})"
+    )
+
+    # Dispatch response to appropriate client platform
+    if platform in ("android", "apk"):
+        deep_link = f"nuage://auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Redirecting to Nu Age...</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url={deep_link}">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 48px 24px; background: #0F1711; color: #E8F5E9; }}
+    .card {{ max-width: 420px; margin: 0 auto; background: #1B241C; padding: 32px 24px; border-radius: 16px; border: 1px solid #2B3A2C; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
+    .btn {{ display: inline-block; margin-top: 24px; padding: 14px 28px; background: #37BF14; color: #000; text-decoration: none; font-weight: 700; border-radius: 12px; font-size: 15px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Welcome to Nu Age! 🚀</h2>
+    <p>Signing you in automatically...</p>
+    <a class="btn" href="{deep_link}">Open Nu Age App</a>
+  </div>
+  <script>
+    window.location.href = "{deep_link}";
+  </script>
+</body>
+</html>"""
+        return HTMLResponse(content=html_content)
+
+    elif platform == "desktop":
+        deep_link = f"nuage://auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Nu Age - Logged In</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0F1711; color: #E8F5E9; }}
+    .card {{ max-width: 440px; margin: 0 auto; background: #1B241C; padding: 36px 28px; border-radius: 16px; border: 1px solid #2B3A2C; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
+    .btn {{ display: inline-block; margin-top: 20px; padding: 12px 28px; background: #37BF14; color: #000; text-decoration: none; font-weight: 700; border-radius: 10px; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Welcome to Nu Age! 🎉</h2>
+    <p>You have signed in with Google successfully. You can return to your Nu Age app now.</p>
+    <a class="btn" href="{deep_link}">Return to App</a>
+  </div>
+  <script>
+    try {{ window.location.href = "{deep_link}"; }} catch(e) {{}}
+  </script>
+</body>
+</html>"""
+        return HTMLResponse(content=html_content)
+
+    else:
+        # Web deployment redirect
+        frontend_url = settings.get_frontend_app_url().rstrip("/")
+        redirect_target = f"{frontend_url}/#/auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+        return RedirectResponse(url=redirect_target)
+
+
+@router.post('/auth/google', response_model=TokenResponse)
+async def exchange_google_token(
+    payload: GoogleAuthPayload,
+    db: Session = Depends(get_db),
+):
+    """Direct token exchange endpoint if the client possesses an ID token or access token."""
+    token = payload.id_token or payload.access_token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either id_token or access_token is required.",
+        )
+
+    user_info = None
+
+    # Try verifying as an id_token first via Google Auth SDK
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+
+        settings = Settings()
+        client_id = settings.get_google_client_id()
+        user_info = google_id_token.verify_oauth2_token(
+            token,
+            google_requests.Request(),
+            audience=client_id or None,
+        )
+    except Exception:
+        # Fall back to userinfo endpoint with bearer token
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.get(
+                    "https://www.googleapis.com/oauth2/v3/userinfo",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if resp.status_code == 200:
+                    user_info = resp.json()
+        except Exception as ex:
+            print(f"[GoogleAuth] Direct token verification failed: {ex}")
+
+    if not user_info or not user_info.get("email"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired Google token.",
+        )
+
+    user_email = user_info["email"].strip().lower()
+    given_name = user_info.get("given_name") or ""
+    family_name = user_info.get("family_name") or ""
+    full_name = user_info.get("name") or ""
+    picture = user_info.get("picture")
+
+    wat_tz = pytz.timezone('Africa/Lagos')
+    today = datetime.now(wat_tz).date()
+
+    existing_user = db.query(models.User).filter(func.lower(models.User.email) == user_email).first()
+    if existing_user:
+        actual_user = existing_user
+        actual_user.is_verified = True
+        if picture and not actual_user.profile_picture_url:
+            actual_user.profile_picture_url = picture
+        if actual_user.last_login_date == today - timedelta(days=1):
+            actual_user.streak = (actual_user.streak or 0) + 1
+        elif actual_user.last_login_date != today:
+            actual_user.streak = 1
+        actual_user.last_login_date = today
+        db.commit()
+    else:
+        first_n = given_name or (full_name.split()[0] if full_name else "Learner")
+        last_n = family_name or (full_name.split()[-1] if full_name and len(full_name.split()) > 1 else "Nu")
+        base_username = (given_name or user_email.split("@")[0]).lower()
+        clean_prefix = "".join(c for c in base_username if c.isalnum() or c == "_")[:10] or "learner"
+        candidate_username = f"{clean_prefix}_{secrets.token_hex(3)}"
+        while db.query(models.User).filter(models.User.username == candidate_username).first():
+            candidate_username = f"{clean_prefix}_{secrets.token_hex(3)}"
+
+        random_pwd = secrets.token_urlsafe(24)
+        hashed_pwd = utils.hash_password(random_pwd)
+
+        actual_user = models.User(
+            first_name=first_n,
+            last_name=last_n,
+            gender=models.Gender.CUSTOM,
+            email=user_email,
+            password=hashed_pwd,
+            username=candidate_username,
+            role=models.Roles.STUDENT,
+            profile_picture_url=picture,
+            is_verified=True,
+            streak=1,
+            last_login_date=today,
+        )
+        db.add(actual_user)
+        db.commit()
+        db.refresh(actual_user)
+
+        try:
+            from services.coin_service import init_new_user_wallet
+            init_new_user_wallet(db, actual_user.id, starting_balance=100)
+        except Exception:
+            pass
+
+    access_token_data = auth.create_access_token({"email": actual_user.email})
+    refresh_token = auth.create_refresh_token(
+        db, actual_user.id, device_label=payload.device_label or "Google Auth Direct"
+    )
+
+    return {
+        "access_token": access_token_data["access_token"],
+        "refresh_token": refresh_token,
+        "type": access_token_data["type"],
+    }
+
+
 # Admin get all users
 @router.get('', response_model= List[UserBase])
 def get_all_users(name: str | None = Query(None, description="search a user by name filter"), db: Session = Depends(get_db),user = Depends(auth.get_current_user)):

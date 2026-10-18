@@ -974,7 +974,7 @@ class StudyBundle(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     title = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
-    category = Column(String(100), default="JAMB UTME", nullable=False, index=True)
+    category = Column(String(100), default="General", nullable=False, index=True)
     theme_gradient = Column(String(100), default="purple_indigo", nullable=False)
     banner_url = Column(String, nullable=True)
 
@@ -1014,7 +1014,7 @@ class StudyPartnership(Base):
 
     # Target Focus
     goal_type = Column(String(50), default="cbt_exam", nullable=False)          # cbt_exam, course, daily_habit
-    target_exam = Column(String(100), default="JAMB UTME", nullable=True)
+    target_exam = Column(String(100), default="General CBT", nullable=True)
     target_subjects = Column(JSONB, default=list, nullable=False)
     daily_target_minutes = Column(Integer, default=30, nullable=False)
     daily_target_questions = Column(Integer, default=15, nullable=False)

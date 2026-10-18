@@ -70,6 +70,17 @@ class TokenResponse(BaseModel):
     token_type: str = 'Bearer'
     model_config = {'from_attributes' : True}
 
+class GoogleAuthStartResponse(BaseModel):
+    auth_url: str
+
+class GoogleAuthPayload(BaseModel):
+    id_token: Optional[str] = None
+    access_token: Optional[str] = None
+    device_label: Optional[str] = None
+    persona: Optional[str] = "Student"
+    university: Optional[str] = None
+
+
 class LoginUser(BaseModel):
     email: Optional[EmailStr] 
     username: str

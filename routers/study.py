@@ -640,7 +640,7 @@ def get_exam_categories(
         ]
         return {
             "total_questions": pack_q_count,
-            "exam_type": pack_exam_type or "JAMB UTME",
+            "exam_type": pack_exam_type or "General CBT",
             "categories": categories,
         }
 
@@ -650,7 +650,7 @@ def get_exam_categories(
     ]
     return {
         "total_questions": db_total,
-        "exam_type": db_exam_type or pack_exam_type or "JAMB UTME",
+        "exam_type": db_exam_type or pack_exam_type or "General CBT",
         "categories": categories,
     }
 
@@ -735,7 +735,7 @@ def get_exam_questions(
         sample_size = min(effective_limit, len(all_pack_qs))
         sampled = random.sample(all_pack_qs, sample_size)
         primary_pack = unique_packs[0]
-        detected_exam_type = primary_pack.pack_data.get("exam_type") if primary_pack.pack_data else "JAMB UTME"
+        detected_exam_type = primary_pack.pack_data.get("exam_type") if primary_pack.pack_data else "General CBT"
 
         question_payload = [
             {
@@ -1107,7 +1107,7 @@ def log_study_session(
     db: Session = Depends(get_db),
     user: models.User = Depends(auth.get_current_user),
 ):
-    """Logs active self-study minutes and practice questions directly to the platform objectives tracker."""
+    """Logs active self-study minutes and practice questions directly to the platform objectives tracker and active duo partnership."""
     from services import coin_service
     mins = payload.minutes_spent if payload.minutes_spent is not None else payload.minutes
     qs = payload.questions_completed if payload.questions_completed is not None else payload.questions
@@ -1116,6 +1116,24 @@ def log_study_session(
         coin_service.record_metric_event(db, user.id, "study_time", mins)
     if qs > 0:
         coin_service.record_metric_event(db, user.id, "practice_questions", qs)
+
+    # Automatically advance active duo partnership daily minutes and streak if user has an accountability partner
+    if mins > 0 or qs > 0:
+        try:
+            from routers.study_partners import _record_partner_study_activity
+            active_p = db.query(models.StudyPartnership).filter(
+                models.StudyPartnership.status == "active",
+                or_(
+                    models.StudyPartnership.user_a_id == user.id,
+                    models.StudyPartnership.user_b_id == user.id,
+                )
+            ).first()
+            if active_p:
+                _record_partner_study_activity(db, active_p, user.id, minutes=mins, questions=qs)
+                db.commit()
+        except Exception as ex:
+            db.rollback()
+            print(f"[log_study_session] error advancing duo partnership: {ex}")
 
     return {
         "status": "success",

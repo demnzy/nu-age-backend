@@ -52,7 +52,27 @@ class Settings(BaseSettings):
     OPENAI_REASONING_EFFORT_CBT: str = "high"
     OPENAI_REASONING_EFFORT_CHAT: str = "medium"
     OPENAI_REASONING_EFFORT_TRANSLATE: str = "medium"
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = "https://api.nu-age.name.ng/users/auth/google/callback"
+    FRONTEND_APP_URL: str = "https://nu-age.name.ng"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_google_client_id(self) -> str:
+        import os
+        return str(self.GOOGLE_CLIENT_ID or os.getenv("GOOGLE_CLIENT_ID", "")).strip().strip('"').strip("'")
+
+    def get_google_client_secret(self) -> str:
+        import os
+        return str(self.GOOGLE_CLIENT_SECRET or os.getenv("GOOGLE_CLIENT_SECRET", "")).strip().strip('"').strip("'")
+
+    def get_google_redirect_uri(self) -> str:
+        import os
+        return str(self.GOOGLE_REDIRECT_URI or os.getenv("GOOGLE_REDIRECT_URI", "https://api.nu-age.name.ng/users/auth/google/callback")).strip().strip('"').strip("'")
+
+    def get_frontend_app_url(self) -> str:
+        import os
+        return str(self.FRONTEND_APP_URL or os.getenv("FRONTEND_APP_URL", "https://nu-age.name.ng")).strip().strip('"').strip("'")
 
     def get_openai_model(self) -> str:
         import os
