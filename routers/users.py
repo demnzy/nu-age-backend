@@ -181,8 +181,15 @@ async def register_user(
     background_tasks: BackgroundTasks, # Inject background tasks here
     db: Session = Depends(get_db)
 ):
-    if user.role == "Teacher":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="You can't Signup as an instructor!")
+    # Normalize role cleanly
+    clean_role = str(user.role).strip().capitalize()
+    if clean_role in ("Teacher", "Instructor"):
+        user.role = "Teacher"
+    elif clean_role in ("Admin", "Administrator"):
+        user.role = "Admin"
+    else:
+        user.role = "Student"
+
     # Check for existing email safely
     # 1. Check if the username is taken by ANYONE ELSE
     existing_username = db.query(models.User).filter(models.User.username == user.username).first()
@@ -672,6 +679,8 @@ def get_google_auth_config():
 def start_google_auth(
     platform: Optional[str] = "web",
     persona: Optional[str] = "student",
+    port: Optional[int] = None,
+    origin: Optional[str] = None,
 ):
     """Generates the secure Google OAuth authorization URL for the client."""
     settings = Settings()
@@ -690,6 +699,8 @@ def start_google_auth(
         "nonce": secrets.token_urlsafe(16),
         "platform": clean_platform,
         "persona": clean_persona,
+        "port": port,
+        "origin": str(origin).strip() if origin else None,
         "ts": int(datetime.now(timezone.utc).timestamp()),
     }
     state_token = base64.urlsafe_b64encode(json.dumps(state_payload).encode("utf-8")).decode("utf-8")
@@ -718,6 +729,8 @@ async def google_auth_callback(
     settings = Settings()
     platform = "web"
     persona = "student"
+    port = None
+    origin = None
 
     if state and isinstance(state, str):
         try:
@@ -725,6 +738,8 @@ async def google_auth_callback(
             parsed_state = json.loads(raw_state)
             platform = str(parsed_state.get("platform", "web")).lower()
             persona = str(parsed_state.get("persona", "student")).lower()
+            port = parsed_state.get("port")
+            origin = parsed_state.get("origin")
         except Exception as ex:
             print(f"[GoogleAuth] Warning: Could not parse OAuth state: {ex}")
 
@@ -847,6 +862,7 @@ async def google_auth_callback(
         random_pwd = secrets.token_urlsafe(24)
         hashed_pwd = utils.hash_password(random_pwd)
 
+        chosen_role = models.Roles.TEACHER if str(persona).lower() in ("teacher", "instructor") else (models.Roles.ADMIN if str(persona).lower() == "admin" else models.Roles.STUDENT)
         actual_user = models.User(
             first_name=first_n,
             last_name=last_n,
@@ -854,7 +870,7 @@ async def google_auth_callback(
             email=user_email,
             password=hashed_pwd,
             username=candidate_username,
-            role=models.Roles.STUDENT,
+            role=chosen_role,
             profile_picture_url=picture,
             is_verified=True,
             streak=1,
@@ -879,7 +895,38 @@ async def google_auth_callback(
     )
 
     # Dispatch response to appropriate client platform
-    if platform in ("android", "apk"):
+    if platform == "desktop":
+        if port and isinstance(port, int) and 1024 <= port <= 65535:
+            local_target = f"http://127.0.0.1:{port}/auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+            return RedirectResponse(url=local_target)
+
+        deep_link = f"nuage://auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Nu Age - Logged In</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0F1711; color: #E8F5E9; }}
+    .card {{ max-width: 440px; margin: 0 auto; background: #1B241C; padding: 36px 28px; border-radius: 16px; border: 1px solid #2B3A2C; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
+    .btn {{ display: inline-block; margin-top: 20px; padding: 12px 28px; background: #37BF14; color: #000; text-decoration: none; font-weight: 700; border-radius: 10px; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Welcome to Nu Age! 🎉</h2>
+    <p>You have signed in with Google successfully. You can return to your Nu Age app now.</p>
+    <a class="btn" href="{deep_link}">Return to App</a>
+  </div>
+  <script>
+    try {{ window.location.href = "{deep_link}"; }} catch(e) {{}}
+  </script>
+</body>
+</html>"""
+        return HTMLResponse(content=html_content)
+
+    elif platform in ("android", "apk"):
         deep_link = f"nuage://auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
         html_content = f"""<!DOCTYPE html>
 <html>
@@ -907,38 +954,12 @@ async def google_auth_callback(
 </html>"""
         return HTMLResponse(content=html_content)
 
-    elif platform == "desktop":
-        deep_link = f"nuage://auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Nu Age - Logged In</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 60px 20px; background: #0F1711; color: #E8F5E9; }}
-    .card {{ max-width: 440px; margin: 0 auto; background: #1B241C; padding: 36px 28px; border-radius: 16px; border: 1px solid #2B3A2C; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }}
-    .btn {{ display: inline-block; margin-top: 20px; padding: 12px 28px; background: #37BF14; color: #000; text-decoration: none; font-weight: 700; border-radius: 10px; font-size: 14px; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Welcome to Nu Age! 🎉</h2>
-    <p>You have signed in with Google successfully. You can return to your Nu Age app now.</p>
-    <a class="btn" href="{deep_link}">Return to App</a>
-  </div>
-  <script>
-    try {{ window.location.href = "{deep_link}"; }} catch(e) {{}}
-  </script>
-</body>
-</html>"""
-        return HTMLResponse(content=html_content)
-
     else:
-        # Web deployment redirect
-        frontend_url = settings.get_frontend_app_url().rstrip("/")
-        redirect_target = f"{frontend_url}/#/auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
+        # Web deployment redirect: prioritize calling web origin, then settings
+        target_base = origin.rstrip("/") if (origin and isinstance(origin, str) and origin.startswith("http")) else settings.get_frontend_app_url().rstrip("/")
+        redirect_target = f"{target_base}/#/auth-callback?access_token={urllib.parse.quote(access_token)}&refresh_token={urllib.parse.quote(refresh_token)}"
         return RedirectResponse(url=redirect_target)
+
 
 
 @router.post('/auth/google', response_model=TokenResponse)
@@ -1020,6 +1041,7 @@ async def exchange_google_token(
         random_pwd = secrets.token_urlsafe(24)
         hashed_pwd = utils.hash_password(random_pwd)
 
+        chosen_direct_role = models.Roles.TEACHER if str(payload.persona or "").lower() in ("teacher", "instructor") else (models.Roles.ADMIN if str(payload.persona or "").lower() == "admin" else models.Roles.STUDENT)
         actual_user = models.User(
             first_name=first_n,
             last_name=last_n,
@@ -1027,7 +1049,7 @@ async def exchange_google_token(
             email=user_email,
             password=hashed_pwd,
             username=candidate_username,
-            role=models.Roles.STUDENT,
+            role=chosen_direct_role,
             profile_picture_url=picture,
             is_verified=True,
             streak=1,
