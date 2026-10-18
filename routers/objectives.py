@@ -62,6 +62,7 @@ def get_platform_objectives(
             "target_unit": obj.target_unit,
             "current_value": min(c_val, obj.target_value),
             "coin_reward": obj.coin_reward,
+            "badge_reward_slug": getattr(obj, "badge_reward_slug", None),
             "icon": obj.icon,
             "progress_ratio": pct,
             "is_completed": is_comp,

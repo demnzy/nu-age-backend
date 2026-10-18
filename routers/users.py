@@ -1101,11 +1101,22 @@ def get_one_user(identifier: str | UUID | None= Query(None, description = "get a
     res = UserProfile.model_validate(user)
     res.active_count = active
     res.finished_count = finished
+    try:
+        from services import promo_service
+        res.primary_badge = promo_service.resolve_user_primary_badge(db, user.id)
+    except Exception:
+        pass
     return res
 
 @router.get('/me', response_model=UserBase)
 def get_current_user(user = Depends(auth.get_current_user), db:Session = Depends(get_db)):
-    return user
+    res = UserBase.model_validate(user)
+    try:
+        from services import promo_service
+        res.primary_badge = promo_service.resolve_user_primary_badge(db, user.id)
+    except Exception:
+        pass
+    return res
 # Update user email
 
 @router.patch('/me/update', response_model=UserBase)

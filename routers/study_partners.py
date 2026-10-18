@@ -9,7 +9,7 @@ import json
 import models
 import schemas
 from database import get_db
-from services import auth, coin_service
+from services import auth, coin_service, promo_service
 from services.notifications import dispatch_notification
 
 router = APIRouter(prefix="/study/partnerships", tags=["Study Partnerships"])
@@ -23,9 +23,12 @@ def _get_partner_user(partnership: models.StudyPartnership, current_user_id: uui
     return partnership.user_b if partnership.user_a_id == current_user_id else partnership.user_a
 
 
-def _format_user_summary(user: models.User, badge: Optional[str] = None) -> Dict[str, Any]:
+def _format_user_summary(user: models.User, badge: Optional[str] = None, db: Optional[Session] = None) -> Dict[str, Any]:
     if not user:
         return {}
+    p_badge = None
+    if db:
+        p_badge = promo_service.resolve_user_primary_badge(db, user.id)
     return {
         "id": str(user.id),
         "first_name": user.first_name,
@@ -36,6 +39,7 @@ def _format_user_summary(user: models.User, badge: Optional[str] = None) -> Dict
         "profile_picture_url": getattr(user, "profile_picture_url", None),
         "streak": getattr(user, "streak", 0) or 0,
         "badge": badge,
+        "primary_badge": p_badge,
     }
 
 
@@ -1521,8 +1525,8 @@ def get_study_leaderboard(
                 "duo_streak": effective_streak,
                 "best_duo_streak": d.best_duo_streak or 0,
                 "target_exam": clean_target,
-                "partner_a": _format_user_summary(d.user_a),
-                "partner_b": _format_user_summary(d.user_b),
+                "partner_a": _format_user_summary(d.user_a, db=db),
+                "partner_b": _format_user_summary(d.user_b, db=db),
                 "is_my_duo": (d.user_a_id == current_user.id or d.user_b_id == current_user.id),
             })
         return {"status": "success", "filter": "duo_streaks", "leaderboard": rankings}
@@ -1562,6 +1566,7 @@ def get_study_leaderboard(
                     "study_minutes": user_mins_map[uid],
                     "streak": getattr(u, "streak", 0) or 0,
                     "coins_balance": getattr(u, "coins_balance", 0) or 0,
+                    "primary_badge": promo_service.resolve_user_primary_badge(db, u.id),
                     "is_me": (u.id == current_user.id),
                 })
             return {"status": "success", "filter": "today", "leaderboard": rankings}
@@ -1583,6 +1588,7 @@ def get_study_leaderboard(
             "study_minutes": 0,
             "streak": getattr(u, "streak", 0) or 0,
             "coins_balance": getattr(u, "coins_balance", 0) or 0,
+            "primary_badge": promo_service.resolve_user_primary_badge(db, u.id),
             "is_me": (u.id == current_user.id),
         })
 

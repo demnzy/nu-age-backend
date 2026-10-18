@@ -35,6 +35,7 @@ class UserBase(BaseModel):
     streak: Optional[int] = 0
     university: Optional[str] = ""
     profile_picture_url: Optional[str] = None
+    primary_badge: Optional[dict] = None
     model_config = {'from_attributes' : True}
 
 class UserProfile(BaseModel):
@@ -52,6 +53,7 @@ class UserProfile(BaseModel):
     active_count: Optional[int] = 0
     finished_count: Optional[int] = 0
     profile_picture_url: Optional[str] = None
+    primary_badge: Optional[dict] = None
     model_config = {'from_attributes' : True}
     
 class UserReg(BaseModel):

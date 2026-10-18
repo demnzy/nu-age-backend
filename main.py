@@ -18,7 +18,7 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from fastapi import *
 from models import Base
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts, promo
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
 from database import engine
@@ -414,6 +414,83 @@ MIGRATION_STATEMENTS = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS ix_lesson_audio_lookup ON lesson_audio_cache(lesson_id, language);",
+    "ALTER TABLE platform_objectives ADD COLUMN IF NOT EXISTS badge_reward_slug VARCHAR(50);",
+    """
+    CREATE TABLE IF NOT EXISTS promo_codes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        code VARCHAR(50) UNIQUE NOT NULL,
+        title VARCHAR(100) NOT NULL,
+        description VARCHAR(255),
+        reward_coins INTEGER DEFAULT 0 NOT NULL,
+        reward_ai_credits INTEGER DEFAULT 0 NOT NULL,
+        reward_trial_days INTEGER DEFAULT 0 NOT NULL,
+        reward_badge_slug VARCHAR(50),
+        reward_pack_ids JSONB DEFAULT '[]'::jsonb,
+        ambassador_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+        ambassador_coin_reward INTEGER DEFAULT 0 NOT NULL,
+        max_uses INTEGER,
+        uses_count INTEGER DEFAULT 0 NOT NULL,
+        expires_at TIMESTAMPTZ,
+        is_active BOOLEAN DEFAULT TRUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_promo_codes_code ON promo_codes(code);",
+    "CREATE INDEX IF NOT EXISTS ix_promo_codes_active ON promo_codes(is_active);",
+    """
+    CREATE TABLE IF NOT EXISTS promo_code_redemptions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        promo_code_id UUID NOT NULL REFERENCES promo_codes(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        redeemed_at TIMESTAMPTZ DEFAULT NOW(),
+        rewards_granted JSONB DEFAULT '{}'::jsonb NOT NULL,
+        CONSTRAINT uq_user_promo_redemption UNIQUE (promo_code_id, user_id)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_promo_redemptions_user ON promo_code_redemptions(user_id);",
+    """
+    CREATE TABLE IF NOT EXISTS member_badges (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        slug VARCHAR(50) UNIQUE NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        description VARCHAR(255),
+        icon VARCHAR(50) DEFAULT 'STAR_ROUNDED' NOT NULL,
+        color_hex VARCHAR(20) DEFAULT '#4CAF50' NOT NULL,
+        gradient_start VARCHAR(20) DEFAULT '#2E7D32',
+        gradient_end VARCHAR(20) DEFAULT '#1B5E20',
+        is_automated BOOLEAN DEFAULT FALSE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_member_badges_slug ON member_badges(slug);",
+    """
+    CREATE TABLE IF NOT EXISTS user_badges (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        badge_id UUID NOT NULL REFERENCES member_badges(id) ON DELETE CASCADE,
+        is_primary BOOLEAN DEFAULT FALSE NOT NULL,
+        awarded_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT uq_user_badge UNIQUE (user_id, badge_id)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_user_badges_user ON user_badges(user_id);",
+    """
+    CREATE TABLE IF NOT EXISTS campus_ambassadors (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES "user"(id) ON DELETE SET NULL,
+        email VARCHAR NOT NULL UNIQUE,
+        university VARCHAR NOT NULL,
+        status VARCHAR(30) DEFAULT 'invited' NOT NULL,
+        invite_token VARCHAR(64) UNIQUE NOT NULL,
+        assigned_promo_code_id UUID REFERENCES promo_codes(id) ON DELETE SET NULL,
+        invited_at TIMESTAMPTZ DEFAULT NOW(),
+        accepted_at TIMESTAMPTZ,
+        notes VARCHAR(255)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_email ON campus_ambassadors(email);",
+    "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_status ON campus_ambassadors(status);",
+    "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_uni ON campus_ambassadors(university);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
@@ -522,6 +599,7 @@ app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
 app.include_router(study_partners.router, tags=["Study Partnerships"])
 app.include_router(objectives.router, tags=["Objectives & Nu-Coins"])
 app.include_router(tts.router, tags=["Lesson TTS Audio"])
+app.include_router(promo.router, tags=["Promo Codes & Badges"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(

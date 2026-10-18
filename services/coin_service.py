@@ -464,6 +464,22 @@ def claim_objective_reward(
         reference_id=str(obj.id),
     )
 
+    # Award badge if objective has a badge reward configured
+    badge_awarded_name = None
+    if getattr(obj, "badge_reward_slug", None):
+        try:
+            b = db.query(models.MemberBadge).filter(models.MemberBadge.slug == obj.badge_reward_slug).first()
+            if b:
+                ub = db.query(models.UserBadge).filter(
+                    models.UserBadge.user_id == user_id,
+                    models.UserBadge.badge_id == b.id
+                ).first()
+                if not ub:
+                    db.add(models.UserBadge(user_id=user_id, badge_id=b.id, is_primary=False))
+                badge_awarded_name = b.name
+        except Exception as b_ex:
+            print(f"[coin_service] Error awarding objective badge: {b_ex}")
+
     # Persist claimed state into UserNotification records in PostgreSQL
     try:
         user_notifs = db.query(models.UserNotification).filter(
@@ -483,4 +499,8 @@ def claim_objective_reward(
         print(f"[coin_service] Error updating user_notifications claimed status: {ex}")
 
     db.commit()
-    return True, obj.coin_reward, f"Successfully claimed +{obj.coin_reward} Nu-Coins!"
+    msg = f"Successfully claimed +{obj.coin_reward} Nu-Coins!"
+    if badge_awarded_name:
+        msg += f" and unlocked '{badge_awarded_name}' badge!"
+    return True, obj.coin_reward, msg
+

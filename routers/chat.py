@@ -6,7 +6,7 @@ from fastapi import WebSocket
 from uuid import UUID
 import models
 from database import get_db
-from services import auth
+from services import auth, promo_service
 from services.auth import verify_ws_token 
 from pydantic import BaseModel
 from typing import Optional
@@ -263,7 +263,8 @@ async def chat_websocket(
                 "sender": {
                     "id": str(user.id),
                     "name": sender_name,
-                    "profile_picture_url": getattr(user, "profile_picture_url", None)
+                    "profile_picture_url": getattr(user, "profile_picture_url", None),
+                    "primary_badge": promo_service.resolve_user_primary_badge(db, user.id) if user else None,
                 }
             }
 
@@ -716,7 +717,8 @@ def get_channel_messages(
             "sender": {
                 "id": str(msg.sender.id),
                 "name": f"{msg.sender.first_name} {msg.sender.last_name}",
-                "profile_picture_url": getattr(msg.sender, "profile_picture_url", None)
+                "profile_picture_url": getattr(msg.sender, "profile_picture_url", None),
+                "primary_badge": promo_service.resolve_user_primary_badge(db, msg.sender.id) if msg.sender else None,
             }
         })
         
@@ -779,6 +781,7 @@ async def send_channel_message_rest(
             "id": str(user.id),
             "name": sender_name,
             "profile_picture_url": getattr(user, "profile_picture_url", None),
+            "primary_badge": promo_service.resolve_user_primary_badge(db, user.id) if user else None,
         },
     }
 

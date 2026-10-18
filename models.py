@@ -4,7 +4,7 @@ from database import Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, backref
 from schemas import Roles, Gender
@@ -1131,6 +1131,7 @@ class PlatformObjective(Base):
     target_value = Column(Integer, default=1, nullable=False)
     target_unit = Column(String(30), default="count", nullable=False)  # days, minutes, questions, courses
     coin_reward = Column(Integer, default=50, nullable=False)
+    badge_reward_slug = Column(String(50), nullable=True)  # Optional badge awarded on objective claim
     icon = Column(String(50), default="EMOJI_TROPHY", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -1150,5 +1151,107 @@ class UserObjectiveProgress(Base):
     claimed_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", backref="objective_progress")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. PROMO CODES, GAMIFICATION BADGES & CAMPUS AMBASSADORS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PromoCode(Base):
+    __tablename__ = "promo_codes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    code = Column(String(50), unique=True, nullable=False, index=True)  # Upper-cased e.g. "WELCOME2026", "CAMPUSVIP"
+    title = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
+
+    # Multi-reward payload combinations accounted for atomically
+    reward_coins = Column(Integer, default=0, nullable=False)
+    reward_ai_credits = Column(Integer, default=0, nullable=False)
+    reward_trial_days = Column(Integer, default=0, nullable=False)
+    reward_badge_slug = Column(String(50), nullable=True)
+    reward_pack_ids = Column(JSON, nullable=True)  # List of pack IDs or slugs
+
+    # Optional Ambassador Attribution
+    ambassador_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True)
+    ambassador_coin_reward = Column(Integer, default=0, nullable=False)
+
+    # Limits and Lifecycle
+    max_uses = Column(Integer, nullable=True)  # None = Unlimited
+    uses_count = Column(Integer, default=0, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    ambassador = relationship("User", foreign_keys=[ambassador_id], backref="attributed_promo_codes")
+    redemptions = relationship("PromoCodeRedemption", back_populates="promo_code", cascade="all, delete-orphan")
+
+
+class PromoCodeRedemption(Base):
+    __tablename__ = "promo_code_redemptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    promo_code_id = Column(UUID(as_uuid=True), ForeignKey("promo_codes.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    redeemed_at = Column(DateTime(timezone=True), server_default=func.now())
+    rewards_granted = Column(JSON, nullable=False)
+
+    promo_code = relationship("PromoCode", back_populates="redemptions")
+    user = relationship("User", backref="promo_redemptions")
+
+    __table_args__ = (
+        UniqueConstraint("promo_code_id", "user_id", name="uq_user_promo_redemption"),
+    )
+
+
+class MemberBadge(Base):
+    __tablename__ = "member_badges"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    slug = Column(String(50), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    description = Column(String(255), nullable=True)
+    icon = Column(String(50), default="STAR_ROUNDED", nullable=False)
+    color_hex = Column(String(20), default="#4CAF50", nullable=False)
+    gradient_start = Column(String(20), default="#2E7D32", nullable=True)
+    gradient_end = Column(String(20), default="#1B5E20", nullable=True)
+    is_automated = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserBadge(Base):
+    __tablename__ = "user_badges"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    badge_id = Column(UUID(as_uuid=True), ForeignKey("member_badges.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_primary = Column(Boolean, default=False, nullable=False, index=True)
+    awarded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", backref="user_badges")
+    badge = relationship("MemberBadge")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "badge_id", name="uq_user_badge"),
+    )
+
+
+class CampusAmbassador(Base):
+    __tablename__ = "campus_ambassadors"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    university = Column(String, nullable=False, index=True)
+    status = Column(String(30), default="invited", nullable=False, index=True)  # "invited", "active", "declined", "suspended"
+    invite_token = Column(String(64), unique=True, nullable=False, index=True)
+    assigned_promo_code_id = Column(UUID(as_uuid=True), ForeignKey("promo_codes.id", ondelete="SET NULL"), nullable=True)
+    invited_at = Column(DateTime(timezone=True), server_default=func.now())
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(String(255), nullable=True)
+
+    user = relationship("User", backref="ambassador_profile")
+    promo_code = relationship("PromoCode")
+
 
 

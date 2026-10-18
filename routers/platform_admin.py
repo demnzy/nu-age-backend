@@ -1623,6 +1623,7 @@ class PlatformObjectiveCreate(BaseModel):
     target_value: int = 1
     target_unit: str = "count"
     coin_reward: int = 50
+    badge_reward_slug: Optional[str] = None
     icon: str = "EMOJI_TROPHY"
     is_active: bool = True
 
@@ -1635,6 +1636,7 @@ class PlatformObjectiveUpdate(BaseModel):
     target_value: Optional[int] = None
     target_unit: Optional[str] = None
     coin_reward: Optional[int] = None
+    badge_reward_slug: Optional[str] = None
     icon: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -1674,6 +1676,7 @@ def get_all_platform_objectives_admin(
             "target_value": obj.target_value,
             "target_unit": obj.target_unit,
             "coin_reward": obj.coin_reward,
+            "badge_reward_slug": getattr(obj, "badge_reward_slug", None),
             "icon": obj.icon,
             "is_active": obj.is_active,
             "completions_count": c_count,
@@ -1743,6 +1746,7 @@ def create_platform_objective_admin(
         target_value=max(1, payload.target_value),
         target_unit=clean_unit,
         coin_reward=max(0, payload.coin_reward),
+        badge_reward_slug=payload.badge_reward_slug.strip() if payload.badge_reward_slug else None,
         icon=payload.icon.strip() or "EMOJI_TROPHY",
         is_active=payload.is_active,
     )
@@ -1755,6 +1759,7 @@ def create_platform_objective_admin(
         "message": f"Objective '{new_obj.title}' created successfully.",
         "objective_id": str(new_obj.id),
         "code": new_obj.code,
+        "badge_reward_slug": new_obj.badge_reward_slug,
         "metric_event": new_obj.metric_event,
     }
 
@@ -1792,6 +1797,8 @@ def update_platform_objective_admin(
         obj.target_unit = payload.target_unit.strip().lower()
     if payload.coin_reward is not None:
         obj.coin_reward = max(0, payload.coin_reward)
+    if payload.badge_reward_slug is not None:
+        obj.badge_reward_slug = payload.badge_reward_slug.strip() if payload.badge_reward_slug else None
     if payload.icon is not None:
         obj.icon = payload.icon.strip()
     if payload.is_active is not None:
@@ -1949,4 +1956,362 @@ def test_trigger_objective_notification(
             "is_claimed": prog.is_claimed,
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. PROMO CODES, BADGES & CAMPUS AMBASSADORS CONTROL PLANE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AdminCreatePromoCodeRequest(BaseModel):
+    code: str
+    title: str
+    description: Optional[str] = None
+    reward_coins: int = 0
+    reward_ai_credits: int = 0
+    reward_trial_days: int = 0
+    reward_badge_slug: Optional[str] = None
+    reward_pack_ids: Optional[List[str]] = None
+    ambassador_id: Optional[UUID] = None
+    ambassador_coin_reward: int = 0
+    max_uses: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    is_active: bool = True
+
+
+class AdminCreateBadgeRequest(BaseModel):
+    slug: str
+    name: str
+    description: Optional[str] = None
+    icon: str = "STAR_ROUNDED"
+    color_hex: str = "#4CAF50"
+    gradient_start: Optional[str] = None
+    gradient_end: Optional[str] = None
+    is_automated: bool = False
+
+
+class AdminAwardBadgeRequest(BaseModel):
+    badge_slug: str
+    is_primary: bool = False
+
+
+class AdminInviteAmbassadorRequest(BaseModel):
+    email: str
+    university: str
+    notes: Optional[str] = None
+    assigned_promo_code_id: Optional[UUID] = None
+
+
+class AdminUpdateAmbassadorStatusRequest(BaseModel):
+    status: str
+
+
+# ── Promo Codes Management ───────────────────────────────────────────────────
+
+@router.get("/promo-codes")
+def list_promo_codes_admin(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Returns all promo codes with redemption counts, limits, and ambassador attribution."""
+    codes = db.query(models.PromoCode).order_by(models.PromoCode.created_at.desc()).all()
+    results = []
+    for c in codes:
+        amb_name = "—"
+        if c.ambassador:
+            amb_name = f"{c.ambassador.first_name or ''} {c.ambassador.last_name or ''}".strip() or c.ambassador.username or "—"
+
+        results.append({
+            "id": str(c.id),
+            "code": c.code,
+            "title": c.title,
+            "description": c.description,
+            "reward_coins": c.reward_coins,
+            "reward_ai_credits": c.reward_ai_credits,
+            "reward_trial_days": c.reward_trial_days,
+            "reward_badge_slug": c.reward_badge_slug,
+            "reward_pack_ids": c.reward_pack_ids,
+            "ambassador_id": str(c.ambassador_id) if c.ambassador_id else None,
+            "ambassador_name": amb_name,
+            "ambassador_coin_reward": c.ambassador_coin_reward,
+            "max_uses": c.max_uses,
+            "uses_count": c.uses_count or 0,
+            "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+            "is_active": c.is_active,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        })
+
+    return {
+        "status": "success",
+        "total": len(results),
+        "promo_codes": results,
+    }
+
+
+@router.post("/promo-codes")
+def create_promo_code_admin(
+    payload: AdminCreatePromoCodeRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Creates a new general or ambassador-attributed promo code with configurable rewards."""
+    clean_code = payload.code.strip().upper()
+    if not clean_code:
+        raise HTTPException(status_code=400, detail="Promo code string cannot be empty.")
+
+    existing = db.query(models.PromoCode).filter(models.PromoCode.code == clean_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Promo code '{clean_code}' already exists.")
+
+    new_promo = models.PromoCode(
+        code=clean_code,
+        title=payload.title.strip(),
+        description=payload.description.strip() if payload.description else None,
+        reward_coins=max(0, payload.reward_coins),
+        reward_ai_credits=max(0, payload.reward_ai_credits),
+        reward_trial_days=max(0, payload.reward_trial_days),
+        reward_badge_slug=payload.reward_badge_slug.strip() if payload.reward_badge_slug else None,
+        reward_pack_ids=payload.reward_pack_ids or [],
+        ambassador_id=payload.ambassador_id,
+        ambassador_coin_reward=max(0, payload.ambassador_coin_reward),
+        max_uses=payload.max_uses if (payload.max_uses and payload.max_uses > 0) else None,
+        expires_at=payload.expires_at,
+        is_active=payload.is_active,
+    )
+    db.add(new_promo)
+    db.commit()
+    db.refresh(new_promo)
+
+    return {
+        "status": "success",
+        "message": f"Promo code '{new_promo.code}' created successfully.",
+        "promo_code_id": str(new_promo.id),
+        "code": new_promo.code,
+    }
+
+
+@router.put("/promo-codes/{code_id}/toggle-active")
+def toggle_promo_code_active_admin(
+    code_id: UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Toggles active/disabled status for a promo code."""
+    promo = db.query(models.PromoCode).filter(models.PromoCode.id == code_id).first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo code not found.")
+
+    promo.is_active = not promo.is_active
+    db.commit()
+    db.refresh(promo)
+
+    status_str = "activated" if promo.is_active else "deactivated"
+    return {
+        "status": "success",
+        "message": f"Promo code '{promo.code}' has been {status_str}.",
+        "is_active": promo.is_active,
+    }
+
+
+@router.delete("/promo-codes/{code_id}")
+def delete_promo_code_admin(
+    code_id: UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Deletes a promo code and its redemption logs."""
+    promo = db.query(models.PromoCode).filter(models.PromoCode.id == code_id).first()
+    if not promo:
+        raise HTTPException(status_code=404, detail="Promo code not found.")
+
+    db.delete(promo)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Promo code '{promo.code}' has been deleted.",
+    }
+
+
+# ── Badges Management ────────────────────────────────────────────────────────
+
+@router.get("/badges")
+def list_badges_admin(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Returns all badges registered in the system."""
+    from services.promo_service import seed_default_badges_if_empty
+    seed_default_badges_if_empty(db)
+
+    badges = db.query(models.MemberBadge).order_by(models.MemberBadge.created_at.asc()).all()
+    results = [
+        {
+            "id": str(b.id),
+            "slug": b.slug,
+            "name": b.name,
+            "description": b.description,
+            "icon": b.icon,
+            "color_hex": b.color_hex,
+            "gradient_start": b.gradient_start,
+            "gradient_end": b.gradient_end,
+            "is_automated": b.is_automated,
+            "created_at": b.created_at.isoformat() if b.created_at else None,
+        }
+        for b in badges
+    ]
+
+    return {
+        "status": "success",
+        "total": len(results),
+        "badges": results,
+    }
+
+
+@router.post("/badges")
+def create_badge_admin(
+    payload: AdminCreateBadgeRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Creates a new custom badge."""
+    clean_slug = payload.slug.strip().lower()
+    if not clean_slug:
+        raise HTTPException(status_code=400, detail="Badge slug cannot be empty.")
+
+    existing = db.query(models.MemberBadge).filter(models.MemberBadge.slug == clean_slug).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Badge with slug '{clean_slug}' already exists.")
+
+    new_badge = models.MemberBadge(
+        slug=clean_slug,
+        name=payload.name.strip(),
+        description=payload.description.strip() if payload.description else None,
+        icon=payload.icon.strip() or "STAR_ROUNDED",
+        color_hex=payload.color_hex.strip() or "#4CAF50",
+        gradient_start=payload.gradient_start,
+        gradient_end=payload.gradient_end,
+        is_automated=payload.is_automated,
+    )
+    db.add(new_badge)
+    db.commit()
+    db.refresh(new_badge)
+
+    return {
+        "status": "success",
+        "message": f"Badge '{new_badge.name}' created successfully.",
+        "badge_id": str(new_badge.id),
+        "slug": new_badge.slug,
+    }
+
+
+@router.post("/users/{user_id}/award-badge")
+def award_badge_to_user_admin(
+    user_id: UUID,
+    payload: AdminAwardBadgeRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Directly awards a badge to any learner's account."""
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == payload.badge_slug.strip().lower()).first()
+    if not badge:
+        raise HTTPException(status_code=404, detail=f"Badge '{payload.badge_slug}' not found.")
+
+    existing_ub = db.query(models.UserBadge).filter(
+        models.UserBadge.user_id == user_id,
+        models.UserBadge.badge_id == badge.id
+    ).first()
+
+    if existing_ub:
+        if payload.is_primary and not existing_ub.is_primary:
+            db.query(models.UserBadge).filter(
+                models.UserBadge.user_id == user_id,
+                models.UserBadge.is_primary == True
+            ).update({"is_primary": False})
+            existing_ub.is_primary = True
+            db.commit()
+        return {
+            "status": "success",
+            "message": f"User already owns '{badge.name}' badge.",
+            "badge_id": str(badge.id),
+        }
+
+    if payload.is_primary:
+        db.query(models.UserBadge).filter(
+            models.UserBadge.user_id == user_id,
+            models.UserBadge.is_primary == True
+        ).update({"is_primary": False})
+
+    new_ub = models.UserBadge(
+        user_id=user_id,
+        badge_id=badge.id,
+        is_primary=payload.is_primary
+    )
+    db.add(new_ub)
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Successfully awarded '{badge.name}' badge to {user.username}.",
+        "badge_id": str(badge.id),
+    }
+
+
+# ── Campus Ambassadors Management ─────────────────────────────────────────────
+
+@router.get("/ambassadors")
+def list_campus_ambassadors_admin(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Lists all registered and invited campus ambassadors with university & referral metrics."""
+    from services.ambassador_service import list_campus_ambassadors
+    items = list_campus_ambassadors(db)
+    return {
+        "status": "success",
+        "total": len(items),
+        "ambassadors": items,
+    }
+
+
+@router.post("/ambassadors/invite")
+def invite_campus_ambassador_admin(
+    payload: AdminInviteAmbassadorRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Dispatches a campus ambassador invitation email via Resend and records to DB."""
+    from services.ambassador_service import invite_campus_ambassador
+    ambassador = invite_campus_ambassador(
+        db=db,
+        email=payload.email,
+        university=payload.university,
+        notes=payload.notes,
+        assigned_promo_code_id=payload.assigned_promo_code_id,
+    )
+    return {
+        "status": "success",
+        "message": f"Campus Ambassador invitation sent to {ambassador.email} for {ambassador.university}.",
+        "ambassador_id": str(ambassador.id),
+        "email": ambassador.email,
+        "university": ambassador.university,
+        "status_code": ambassador.status,
+    }
+
+
+@router.put("/ambassadors/{ambassador_id}/status")
+def update_ambassador_status_admin(
+    ambassador_id: UUID,
+    payload: AdminUpdateAmbassadorStatusRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Updates the status of a campus ambassador ('active', 'suspended', 'declined', 'invited')."""
+    from services.ambassador_service import toggle_ambassador_status
+    res = toggle_ambassador_status(db, ambassador_id, payload.status)
+    return res
+
 
