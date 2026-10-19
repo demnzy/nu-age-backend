@@ -55,8 +55,20 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "https://api.nu-age.name.ng/users/auth/google/callback"
+    BRAVE_SEARCH_API_KEY: str = ""
+    BRAVE_API_KEY: str = ""
+    PEXELS_API_KEY: str = ""
     FRONTEND_APP_URL: str = "https://nu-age.name.ng"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def get_brave_search_api_key(self) -> str:
+        import os
+        val = self.BRAVE_SEARCH_API_KEY or self.BRAVE_API_KEY or os.getenv("BRAVE_SEARCH_API_KEY") or os.getenv("BRAVE_API_KEY") or ""
+        return str(val).strip().strip('"').strip("'")
+
+    def get_pexels_api_key(self) -> str:
+        import os
+        return str(self.PEXELS_API_KEY or os.getenv("PEXELS_API_KEY", "")).strip().strip('"').strip("'")
 
     def get_google_client_id(self) -> str:
         import os

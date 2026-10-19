@@ -16,6 +16,7 @@ import models
 from schemas import *
 # Import your session maker AND your Settings class
 from database import SessionLocal, Settings
+from services.image_search_service import resolve_contextual_image
 
 # --- Explicit timeout + capped retries for OpenAI client -------------------
 client = AsyncOpenAI(
@@ -211,21 +212,63 @@ async def resolve_image_placeholders(data: dict) -> dict:
     """
     Walk the parsed course draft:
     1. Converts `![alt](DIAGRAM:mermaid_code)` into working Mermaid diagrams.
-    2. Converts any residual `![alt](IMG:query)` into structured, deterministic Mermaid diagrams.
-    Zero reliance on Pollinations.ai or Unsplash stock photography.
+    2. Contextually resolves `![alt](IMG:query)` into high-resolution, verified educational images
+       using Google Custom Search, Wikimedia Commons, Pexels, and Wikipedia APIs.
+    3. Falls back gracefully to deterministic Mermaid diagrams if external image queries fail.
     """
+    # 1. Collect all unique (query, alt) pairs from IMG placeholders across the entire draft
+    img_placeholders = set()
+
+    def find_placeholders(node):
+        if isinstance(node, str):
+            for m in IMAGE_PLACEHOLDER_RE.finditer(node):
+                alt, q = m.group(1).strip(), m.group(2).strip()
+                if q:
+                    img_placeholders.add((q, alt))
+        elif isinstance(node, dict):
+            for v in node.values():
+                find_placeholders(v)
+        elif isinstance(node, list):
+            for v in node:
+                find_placeholders(v)
+
+    find_placeholders(data)
+
+    # 2. Resolve all unique image placeholders concurrently
+    url_map: dict[tuple[str, str], str] = {}
+    if img_placeholders:
+        async def _resolve_single(q: str, a: str):
+            resolved_url = None
+            try:
+                resolved_url = await resolve_contextual_image(q, a)
+            except Exception as e:
+                print(f"[WARNING] Exception in contextual image resolution for '{q}': {e}")
+
+            if not resolved_url:
+                # Deterministic Mermaid fallback guarantees zero broken links
+                mermaid_code = _convert_query_to_mermaid(q, a)
+                resolved_url = _render_mermaid_url(mermaid_code)
+            return (q, a, resolved_url)
+
+        results = await asyncio.gather(*[_resolve_single(q, a) for q, a in img_placeholders])
+        for q, a, url in results:
+            url_map[(q, a)] = url
+
+    # 3. Substitute diagrams and resolved images into text
     def replace_in_text(text: str) -> str:
-        # 1. Resolve Mermaid diagram placeholders using balanced parenthesis parsing
+        # 3a. Resolve Mermaid diagram placeholders using balanced parenthesis parsing
         text = _replace_diagram_placeholders(text)
 
-        # 2. Heal any previously truncated Mermaid URLs
+        # 3b. Heal any previously truncated Mermaid URLs
         text = _heal_truncated_mermaid_diagrams(text)
 
-        # 3. Resolve image placeholders into structured deterministic diagrams
+        # 3c. Replace IMG placeholders with resolved verified URLs (or Mermaid fallbacks)
         def _sub_img(m: re.Match) -> str:
-            alt, query = m.group(1), m.group(2)
-            mermaid_code = _convert_query_to_mermaid(query, alt)
-            url = _render_mermaid_url(mermaid_code)
+            alt, query = m.group(1).strip(), m.group(2).strip()
+            url = url_map.get((query, alt))
+            if not url:
+                mermaid_code = _convert_query_to_mermaid(query, alt)
+                url = _render_mermaid_url(mermaid_code)
             return f"![{alt}]({url})"
 
         return IMAGE_PLACEHOLDER_RE.sub(_sub_img, text)
@@ -846,19 +889,33 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Rich Markdown content in the `text` field.
    - Start with a compelling real-world hook that explains why this concept matters.
    - Use structured Markdown: ## and ### subheadings, **bold** key terms on first introduction, numbered/bulleted lists, > blockquotes for definitions or core rules, and Markdown tables when comparing concepts or formulas.
-    - MANDATORY VISUAL AID (Include at least 1 deterministic diagram in every text lesson):
-      Use Mermaid.js diagram syntax inside a `DIAGRAM:` placeholder:
-      ![Diagram Description](DIAGRAM:mermaid_code)
-      Choose the most appropriate diagram type:
-      a) Flowcharts & Pipelines: `flowchart LR` or `flowchart TD`
-         Example: `![Compilation Pipeline](DIAGRAM:flowchart LR\n  Source[.cpp] --> Preprocessor[Preprocessor] --> Compiler[Compiler] --> Assembler[Assembler] --> Linker[Linker] --> Binary[Executable])`
-      b) Memory Layouts & Architectures: `flowchart TB` with subgraphs
-         Example: `![Memory Layout](DIAGRAM:flowchart TB\n  subgraph Stack [Stack Memory]\n    S1[Local Vars]\n  end\n  subgraph Heap [Heap Memory]\n    H1[Dynamic Object]\n  end\n  S1 -->|Pointer ptr| H1)`
-      c) Multi-Actor & Network Interactions: `sequenceDiagram`
-         Example: `![OAuth Flow](DIAGRAM:sequenceDiagram\n  Client->>AuthServer: Request Token\n  AuthServer-->>Client: Issue JWT)`
-      d) State Transitions: `stateDiagram-v2`
-         Example: `![Connection States](DIAGRAM:stateDiagram-v2\n  [*] --> Disconnected\n  Disconnected --> Connecting: connect()\n  Connecting --> Connected: ok\n  Connected --> [*]: close())`
-      NEVER invent random external URLs or diffusion prompts. ALWAYS use the `![Caption](DIAGRAM:mermaid_syntax)` placeholder format.
+   - MANDATORY VISUAL AID (Include at least 1 visual aid or diagram in every text lesson):
+     Select the best format depending on whether the concept is abstract/logical or physical/real-world:
+
+     Format A: Deterministic Vector Diagrams (Use Mermaid.js for workflows, architectures, data structures, algorithms):
+     ![Diagram Description](DIAGRAM:mermaid_code)
+     Choose the most appropriate diagram type:
+     a) Flowcharts & Pipelines: `flowchart LR` or `flowchart TD`
+        Example: `![Compilation Pipeline](DIAGRAM:flowchart LR\n  Source[.cpp] --> Preprocessor[Preprocessor] --> Compiler[Compiler] --> Assembler[Assembler] --> Linker[Linker] --> Binary[Executable])`
+     b) Memory Layouts & Architectures: `flowchart TB` with subgraphs
+        Example: `![Memory Layout](DIAGRAM:flowchart TB\n  subgraph Stack [Stack Memory]\n    S1[Local Vars]\n  end\n  subgraph Heap [Heap Memory]\n    H1[Dynamic Object]\n  end\n  S1 -->|Pointer ptr| H1)`
+     c) Multi-Actor & Network Interactions: `sequenceDiagram`
+        Example: `![OAuth Flow](DIAGRAM:sequenceDiagram\n  Client->>AuthServer: Request Token\n  AuthServer-->>Client: Issue JWT)`
+     d) State Transitions: `stateDiagram-v2`
+        Example: `![Connection States](DIAGRAM:stateDiagram-v2\n  [*] --> Disconnected\n  Disconnected --> Connecting: connect()\n  Connecting --> Connected: ok\n  Connected --> [*]: close())`
+
+     Format B: Real-World Contextual Educational Images (Use for physical entities, biology/anatomy, chemistry apparatus, geography, history, hardware, astronomy):
+     ![Accurate Caption](IMG:targeted_academic_query)
+     Always supply a targeted, high-precision query with descriptive qualifiers (e.g., 'labeled diagram', 'cross section', 'micrograph', 'schematic', 'specimen', 'photograph').
+     Examples:
+     - `![Neuron Anatomy](IMG:neuron anatomy labeled diagram)`
+     - `![Bunsen Burner Apparatus](IMG:bunsen burner laboratory apparatus labeled diagram)`
+     - `![Mitosis Stages](IMG:mitosis phases cell division labeled diagram)`
+     - `![Heart Internal Anatomy](IMG:human heart cross section internal anatomy)`
+     - `![Rosetta Stone](IMG:rosetta stone museum artifact photograph)`
+     - `![Raspberry Pi 4 Pinout](IMG:raspberry pi 4 gpio pinout labeled diagram)`
+
+     NEVER invent random external URLs or markdown links with raw http/https. ALWAYS use either `![Caption](DIAGRAM:mermaid_syntax)` or `![Caption](IMG:targeted_query)` format.
    - End the `text` field with exactly 3 bullet points summarizing the core takeaways.
 
 2. "cards" (Atomic Flashcard Deck):
