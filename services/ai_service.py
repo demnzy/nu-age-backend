@@ -236,6 +236,7 @@ async def resolve_image_placeholders(data: dict) -> dict:
 
     # 2. Resolve all unique image placeholders concurrently
     url_map: dict[tuple[str, str], str] = {}
+    print(f"[ImageResolver] Scanning course draft: found {len(img_placeholders)} unique IMG: placeholders to resolve.")
     if img_placeholders:
         async def _resolve_single(q: str, a: str):
             resolved_url = None
@@ -248,6 +249,9 @@ async def resolve_image_placeholders(data: dict) -> dict:
                 # Deterministic Mermaid fallback guarantees zero broken links
                 mermaid_code = _convert_query_to_mermaid(q, a)
                 resolved_url = _render_mermaid_url(mermaid_code)
+                print(f"[ImageResolver] Fallback to Mermaid for query='{q}' (caption='{a}') -> {resolved_url[:60]}...")
+            else:
+                print(f"[ImageResolver] Successfully resolved image for query='{q}' (caption='{a}') -> {resolved_url}")
             return (q, a, resolved_url)
 
         results = await asyncio.gather(*[_resolve_single(q, a) for q, a in img_placeholders])
@@ -889,33 +893,26 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Rich Markdown content in the `text` field.
    - Start with a compelling real-world hook that explains why this concept matters.
    - Use structured Markdown: ## and ### subheadings, **bold** key terms on first introduction, numbered/bulleted lists, > blockquotes for definitions or core rules, and Markdown tables when comparing concepts or formulas.
-   - MANDATORY VISUAL AID (Include at least 1 visual aid or diagram in every text lesson):
-     Select the best format depending on whether the concept is abstract/logical or physical/real-world:
-
-     Format A: Deterministic Vector Diagrams (Use Mermaid.js for workflows, architectures, data structures, algorithms):
-     ![Diagram Description](DIAGRAM:mermaid_code)
-     Choose the most appropriate diagram type:
-     a) Flowcharts & Pipelines: `flowchart LR` or `flowchart TD`
-        Example: `![Compilation Pipeline](DIAGRAM:flowchart LR\n  Source[.cpp] --> Preprocessor[Preprocessor] --> Compiler[Compiler] --> Assembler[Assembler] --> Linker[Linker] --> Binary[Executable])`
-     b) Memory Layouts & Architectures: `flowchart TB` with subgraphs
-        Example: `![Memory Layout](DIAGRAM:flowchart TB\n  subgraph Stack [Stack Memory]\n    S1[Local Vars]\n  end\n  subgraph Heap [Heap Memory]\n    H1[Dynamic Object]\n  end\n  S1 -->|Pointer ptr| H1)`
-     c) Multi-Actor & Network Interactions: `sequenceDiagram`
-        Example: `![OAuth Flow](DIAGRAM:sequenceDiagram\n  Client->>AuthServer: Request Token\n  AuthServer-->>Client: Issue JWT)`
-     d) State Transitions: `stateDiagram-v2`
-        Example: `![Connection States](DIAGRAM:stateDiagram-v2\n  [*] --> Disconnected\n  Disconnected --> Connecting: connect()\n  Connecting --> Connected: ok\n  Connected --> [*]: close())`
-
-     Format B: Real-World Contextual Educational Images (Use for physical entities, biology/anatomy, chemistry apparatus, geography, history, hardware, astronomy):
-     ![Accurate Caption](IMG:targeted_academic_query)
-     Always supply a targeted, high-precision query with descriptive qualifiers (e.g., 'labeled diagram', 'cross section', 'micrograph', 'schematic', 'specimen', 'photograph').
+   - MANDATORY INLINE EDUCATIONAL IMAGE (You MUST include at least 1 image placeholder in EVERY text lesson):
+     Format: `![Accurate Caption](IMG:targeted_academic_query)`
+     Every text lesson MUST contain at least one contextually relevant, high-precision image placeholder that our automated multi-tier image retrieval engine will resolve via Brave Search, Wikimedia Commons, and Wikipedia.
+     Always supply targeted queries with descriptive qualifiers (e.g., 'labeled diagram', 'cross section', 'micrograph', 'screenshot', 'interface', 'photograph', 'schematic', 'chart').
      Examples:
-     - `![Neuron Anatomy](IMG:neuron anatomy labeled diagram)`
-     - `![Bunsen Burner Apparatus](IMG:bunsen burner laboratory apparatus labeled diagram)`
-     - `![Mitosis Stages](IMG:mitosis phases cell division labeled diagram)`
-     - `![Heart Internal Anatomy](IMG:human heart cross section internal anatomy)`
-     - `![Rosetta Stone](IMG:rosetta stone museum artifact photograph)`
-     - `![Raspberry Pi 4 Pinout](IMG:raspberry pi 4 gpio pinout labeled diagram)`
+     - Data Science & Computing: `![Data Science Workflow](IMG:data science lifecycle workflow labeled diagram)`, `![Spreadsheet Pivot Table](IMG:excel spreadsheet pivot table interface screenshot)`, `![Confusion Matrix](IMG:confusion matrix precision recall labeled diagram)`, `![Data Pipeline](IMG:etl data pipeline architecture labeled diagram)`
+     - Biology & Medicine: `![Neuron Anatomy](IMG:neuron anatomy labeled diagram)`, `![Mitosis Phases](IMG:mitosis cell division phases diagram)`
+     - Chemistry & Physics: `![Bunsen Burner Apparatus](IMG:bunsen burner laboratory apparatus labeled diagram)`, `![Electromagnetic Spectrum](IMG:electromagnetic spectrum labeled chart)`
+     - History & Culture: `![Rosetta Stone](IMG:rosetta stone museum artifact photograph)`
+     - Hardware & Electronics: `![Raspberry Pi 4 Pinout](IMG:raspberry pi 4 gpio pinout labeled diagram)`
 
-     NEVER invent random external URLs or markdown links with raw http/https. ALWAYS use either `![Caption](DIAGRAM:mermaid_syntax)` or `![Caption](IMG:targeted_query)` format.
+   - OPTIONAL PROCESS & VECTOR DIAGRAMS (Include when explaining logic flow, algorithms, or state machines):
+     Format: `![Diagram Description](DIAGRAM:mermaid_code)`
+     Choose appropriate Mermaid syntax:
+     a) Flowcharts & Pipelines: `flowchart LR` or `flowchart TD`
+     b) Memory Layouts & Architectures: `flowchart TB` with subgraphs
+     c) Multi-Actor & Network Interactions: `sequenceDiagram`
+     d) State Transitions: `stateDiagram-v2`
+
+     NEVER invent random external URLs or markdown links with raw http/https. ALWAYS use either `![Caption](IMG:targeted_query)` or `![Caption](DIAGRAM:mermaid_syntax)` format.
    - End the `text` field with exactly 3 bullet points summarizing the core takeaways.
 
 2. "cards" (Atomic Flashcard Deck):
@@ -1240,7 +1237,9 @@ async def synthesize_single_lesson(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "- Core Responsibility: Introduce, define, break down, and systematically explain brand-new concepts, theories, platforms, mechanisms, syntax, tools, or architectures from first principles.\n"
             "- Ground the student in fundamental mechanics and principles before subsequent supportive lessons challenge them.\n"
-            "- For 'text': Deliver high-density, structured Markdown (350-500 words). Include real-world hooks, deep technical prose, comparison tables, and at least ONE deterministic Mermaid diagram (`![Caption](DIAGRAM:mermaid_code)`).\n"
+            "- For 'text': Deliver high-density, structured Markdown (350-500 words). Include real-world hooks, deep technical prose, comparison tables, and:\n"
+            "  * MANDATORY INLINE IMAGE: You MUST include at least ONE contextually relevant image placeholder: `![Accurate Caption](IMG:targeted_academic_query)`. Use descriptive search qualifiers (e.g. 'labeled diagram', 'screenshot', 'interface', 'schematic', 'photograph', 'chart').\n"
+            "  * OPTIONAL PROCESS DIAGRAM: You may also include a Mermaid vector diagram (`![Caption](DIAGRAM:mermaid_code)`) for algorithms, pipelines, or state transitions.\n"
             "- For 'video': Provide an exact tutorial search query (`YOUTUBE: ...`) and 2-3 concise paragraphs of conceptual takeaways."
         )
     else:

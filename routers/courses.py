@@ -2,6 +2,7 @@ from fastapi import *
 from schemas import *
 from database import get_db
 from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.exc import IntegrityError
 from services.bunny_service import upload_audio_to_bunny
 from sqlalchemy import or_
 from database import Settings
@@ -39,11 +40,38 @@ async def create_course(
     if course_data.get("is_freelance"):
         course_data["teacher_id"] = str(user.id)
         course_data["org_id"] = DEFAULT_ORG_ID
- 
-    course = models.Course(**course_data)
-    db.add(course)
-    db.commit()
-    db.refresh(course)
+    name_clean = (course_data.get("name") or "").strip()
+    if not name_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course name cannot be empty."
+        )
+
+    # Check for duplicate course name before DB insert to prevent unhandled 500 crashes
+    existing = db.query(models.Course).filter(func.lower(models.Course.name) == func.lower(name_clean)).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A course titled '{existing.name}' already exists. Please choose a different title."
+        )
+
+    try:
+        course = models.Course(**course_data)
+        db.add(course)
+        db.commit()
+        db.refresh(course)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A course titled '{name_clean}' already exists. Please choose a different title."
+        )
+    except Exception as ex:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create course: {str(ex)}"
+        )
 
     # 4. INITIALIZE CHAT (New Logic for UI compatibility)
     # This ensures every course has a chat_id to avoid the 404/Null errors in org_view.py
