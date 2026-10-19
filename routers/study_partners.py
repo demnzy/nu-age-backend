@@ -1126,7 +1126,12 @@ def _resolve_study_pack_or_material(db: Session, item_id: uuid.UUID, user_id: uu
     if pack:
         return pack
 
-    # 2. Check if item_id matches a personal StudyMaterial in the vault
+    # 2. Check if item_id matches a PartnershipSharedPack
+    share = db.query(models.PartnershipSharedPack).filter_by(id=item_id).first()
+    if share and share.pack:
+        return share.pack
+
+    # 3. Check if item_id matches a personal StudyMaterial in the vault
     mat = db.query(models.StudyMaterial).filter_by(id=item_id).first()
     if not mat:
         # Check if item_id is an existing source_material_id
