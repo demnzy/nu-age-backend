@@ -86,6 +86,12 @@ async def search_brave_images(query: str, api_key: str) -> Optional[str]:
     if not clean_q or not api_key:
         return None
 
+    # Brave Image Search enforces maximum 50 words and 400 characters
+    tokens = clean_q.split()[:40]
+    safe_q = " ".join(tokens)[:350].strip()
+    if not safe_q:
+        return None
+
     endpoint = "https://api.search.brave.com/res/v1/images/search"
     headers = {
         "Accept": "application/json",
@@ -93,15 +99,16 @@ async def search_brave_images(query: str, api_key: str) -> Optional[str]:
         "X-Subscription-Token": api_key,
         "User-Agent": "NuAge-EducationalPlatform/1.0 (course-image-engine; contact@nu-age.name.ng)",
     }
+    # Note: Brave Image Search strictly allows safesearch: 'strict' or 'off' (NOT 'moderate')
     params = {
-        "q": clean_q,
+        "q": safe_q,
         "count": 5,
-        "safesearch": "moderate",
+        "safesearch": "strict",
         "search_lang": "en",
     }
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=6.0) as client:
             res = await client.get(endpoint, headers=headers, params=params)
             if res.status_code == 200:
                 data = res.json()
@@ -118,6 +125,8 @@ async def search_brave_images(query: str, api_key: str) -> Optional[str]:
                     thumb = ((item.get("properties") or {}).get("thumbnail") or {}).get("src")
                     if thumb and await is_valid_image_url(thumb):
                         return thumb
+            else:
+                print(f"[WARNING] Brave Image Search returned HTTP {res.status_code} for '{safe_q}': {res.text}")
     except Exception as e:
         print(f"[WARNING] Brave Image Search failed for '{query}': {e}")
 
