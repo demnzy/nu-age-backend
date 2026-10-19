@@ -1970,12 +1970,8 @@ class AdminCreatePromoCodeRequest(BaseModel):
     reward_ai_credits: int = 0
     reward_trial_days: int = 0
     reward_badge_slug: Optional[str] = None
-    reward_pack_ids: Optional[List[str]] = None
+    scoped_university: Optional[str] = None
     rewards: Optional[Dict[str, Any]] = None  # Flexible support for nested rewards payload
-    ambassador_id: Optional[UUID] = None
-    ambassador_user_id: Optional[UUID] = None  # Alias
-    ambassador_coin_reward: int = 0
-    referral_bonus_coins: int = 0  # Alias
     max_uses: Optional[int] = None
     expires_at: Optional[datetime] = None
     is_active: bool = True
@@ -1992,6 +1988,16 @@ class AdminCreateBadgeRequest(BaseModel):
     is_automated: bool = False
 
 
+class AdminUpdateBadgeRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    color_hex: Optional[str] = None
+    gradient_start: Optional[str] = None
+    gradient_end: Optional[str] = None
+    is_automated: Optional[bool] = None
+
+
 class AdminAwardBadgeRequest(BaseModel):
     badge_slug: str
     is_primary: bool = False
@@ -2000,8 +2006,6 @@ class AdminAwardBadgeRequest(BaseModel):
 class AdminInviteAmbassadorRequest(BaseModel):
     email: str
     university: str
-    name: Optional[str] = None
-    faculty: Optional[str] = None
     notes: Optional[str] = None
     assigned_promo_code_id: Optional[UUID] = None
 
@@ -2030,7 +2034,7 @@ def list_promo_codes_admin(
             "ai_credits": c.reward_ai_credits,
             "trial_days": c.reward_trial_days,
             "badge_slug": c.reward_badge_slug,
-            "study_pack_ids": c.reward_pack_ids or [],
+            "scoped_university": c.scoped_university,
         }
 
         results.append({
@@ -2043,7 +2047,7 @@ def list_promo_codes_admin(
             "reward_ai_credits": c.reward_ai_credits,
             "reward_trial_days": c.reward_trial_days,
             "reward_badge_slug": c.reward_badge_slug,
-            "reward_pack_ids": c.reward_pack_ids,
+            "scoped_university": c.scoped_university,
             "ambassador_id": str(c.ambassador_id) if c.ambassador_id else None,
             "ambassador_name": amb_name,
             "ambassador_coin_reward": c.ambassador_coin_reward,
@@ -2069,7 +2073,7 @@ def create_promo_code_admin(
     db: Session = Depends(get_db),
     current_admin: models.User = Depends(get_current_super_admin),
 ):
-    """Creates a new general or ambassador-attributed promo code with configurable rewards."""
+    """Creates a new general or university-scoped promo code with configurable rewards."""
     clean_code = payload.code.strip().upper()
     if not clean_code:
         raise HTTPException(status_code=400, detail="Promo code string cannot be empty.")
@@ -2083,7 +2087,7 @@ def create_promo_code_admin(
     reward_ai_credits = max(0, payload.reward_ai_credits)
     reward_trial_days = max(0, payload.reward_trial_days)
     reward_badge_slug = payload.reward_badge_slug.strip() if payload.reward_badge_slug else None
-    reward_pack_ids = payload.reward_pack_ids or []
+    scoped_university = payload.scoped_university.strip() if payload.scoped_university and payload.scoped_university.strip() else None
 
     if payload.rewards and isinstance(payload.rewards, dict):
         if "coins" in payload.rewards:
@@ -2094,8 +2098,8 @@ def create_promo_code_admin(
             reward_trial_days = max(0, int(payload.rewards["trial_days"] or 0))
         if "badge_slug" in payload.rewards and payload.rewards["badge_slug"]:
             reward_badge_slug = str(payload.rewards["badge_slug"]).strip()
-        if "study_pack_ids" in payload.rewards and isinstance(payload.rewards["study_pack_ids"], list):
-            reward_pack_ids = payload.rewards["study_pack_ids"]
+        if "scoped_university" in payload.rewards and payload.rewards["scoped_university"]:
+            scoped_university = str(payload.rewards["scoped_university"]).strip()
 
     # Validate badge if specified
     if reward_badge_slug:
@@ -2103,24 +2107,6 @@ def create_promo_code_admin(
         if not b_exists:
             raise HTTPException(status_code=400, detail=f"Badge with slug '{reward_badge_slug}' does not exist.")
 
-    # Validate pack IDs if specified
-    if reward_pack_ids:
-        for p_id in reward_pack_ids:
-            try:
-                p_uuid = UUID(str(p_id))
-                if not db.query(models.StudyPack).filter(models.StudyPack.id == p_uuid).first():
-                    raise HTTPException(status_code=400, detail=f"Study pack '{p_id}' not found.")
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid study pack UUID: '{p_id}'.")
-
-    # Resolve ambassador attribution & kickback
-    amb_id = payload.ambassador_id or payload.ambassador_user_id
-    if amb_id:
-        u_exists = db.query(models.User).filter(models.User.id == amb_id).first()
-        if not u_exists:
-            raise HTTPException(status_code=400, detail=f"Attributed ambassador user ID '{amb_id}' not found.")
-
-    amb_reward = max(0, max(payload.ambassador_coin_reward, payload.referral_bonus_coins))
     code_title = payload.title.strip() if payload.title and payload.title.strip() else clean_code
 
     new_promo = models.PromoCode(
@@ -2131,9 +2117,7 @@ def create_promo_code_admin(
         reward_ai_credits=reward_ai_credits,
         reward_trial_days=reward_trial_days,
         reward_badge_slug=reward_badge_slug,
-        reward_pack_ids=reward_pack_ids,
-        ambassador_id=amb_id,
-        ambassador_coin_reward=amb_reward,
+        scoped_university=scoped_university,
         max_uses=payload.max_uses if (payload.max_uses and payload.max_uses > 0) else None,
         expires_at=payload.expires_at,
         is_active=payload.is_active,
@@ -2265,6 +2249,75 @@ def create_badge_admin(
     }
 
 
+@router.put("/badges/{badge_id}")
+def update_badge_admin(
+    badge_id: UUID,
+    payload: AdminUpdateBadgeRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Updates custom badge details (name, description, icon, color, gradients, automated status)."""
+    badge = db.query(models.MemberBadge).filter(models.MemberBadge.id == badge_id).first()
+    if not badge:
+        raise HTTPException(status_code=404, detail="Badge not found.")
+
+    if payload.name is not None:
+        badge.name = payload.name.strip()
+    if payload.description is not None:
+        badge.description = payload.description.strip() or None
+    if payload.icon is not None:
+        badge.icon = payload.icon.strip() or "STAR_ROUNDED"
+    if payload.color_hex is not None:
+        badge.color_hex = payload.color_hex.strip() or "#4CAF50"
+    if payload.gradient_start is not None:
+        badge.gradient_start = payload.gradient_start.strip() or None
+    if payload.gradient_end is not None:
+        badge.gradient_end = payload.gradient_end.strip() or None
+    if payload.is_automated is not None:
+        badge.is_automated = payload.is_automated
+
+    db.commit()
+    db.refresh(badge)
+    return {
+        "status": "success",
+        "message": f"Badge '{badge.name}' updated successfully.",
+        "badge": {
+            "id": str(badge.id),
+            "slug": badge.slug,
+            "name": badge.name,
+            "description": badge.description,
+            "icon": badge.icon,
+            "color_hex": badge.color_hex,
+            "gradient_start": badge.gradient_start,
+            "gradient_end": badge.gradient_end,
+            "is_automated": badge.is_automated,
+        }
+    }
+
+
+@router.delete("/badges/{badge_id}")
+def delete_badge_admin(
+    badge_id: UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """Deletes a badge and cascades removal of associated user badge records."""
+    badge = db.query(models.MemberBadge).filter(models.MemberBadge.id == badge_id).first()
+    if not badge:
+        raise HTTPException(status_code=404, detail="Badge not found.")
+
+    # Remove all user awards of this badge first to avoid orphaned references
+    db.query(models.UserBadge).filter(models.UserBadge.badge_id == badge.id).delete(synchronize_session=False)
+
+    db.delete(badge)
+    db.commit()
+    return {
+        "status": "success",
+        "message": f"Badge '{badge.name}' ({badge.slug}) deleted successfully.",
+        "badge_id": str(badge_id),
+    }
+
+
 @router.post("/users/{user_id}/award-badge")
 def award_badge_to_user_admin(
     user_id: UUID,
@@ -2344,21 +2397,13 @@ def invite_campus_ambassador_admin(
     db: Session = Depends(get_db),
     current_admin: models.User = Depends(get_current_super_admin),
 ):
-    """Dispatches a campus ambassador invitation email via Resend and records to DB."""
-    extra_notes = []
-    if payload.name:
-        extra_notes.append(f"Candidate: {payload.name.strip()}")
-    if payload.faculty:
-        extra_notes.append(f"Faculty: {payload.faculty.strip()}")
-    if payload.notes:
-        extra_notes.append(payload.notes.strip())
-    combined_notes = " | ".join(extra_notes) if extra_notes else None
+    clean_notes = payload.notes.strip() if payload.notes and payload.notes.strip() else None
 
     ambassador = invite_campus_ambassador(
         db=db,
         email=payload.email,
         university=payload.university,
-        notes=combined_notes,
+        notes=clean_notes,
         assigned_promo_code_id=payload.assigned_promo_code_id,
     )
     return {

@@ -208,6 +208,15 @@ def redeem_promo_code(db: Session, user_id: uuid.UUID, code_str: str) -> Dict[st
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
+    if promo.scoped_university:
+        user_uni = (user.university or "").strip().lower()
+        scoped_uni = promo.scoped_university.strip().lower()
+        if not user_uni or user_uni != scoped_uni:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"This promo code is exclusively reserved for students of {promo.scoped_university}."
+            )
+
     granted_summary: Dict[str, Any] = {}
 
     try:
@@ -264,22 +273,6 @@ def redeem_promo_code(db: Session, user_id: uuid.UUID, code_str: str) -> Dict[st
                     "icon": badge.icon,
                     "color_hex": badge.color_hex
                 }
-
-        # 5. Study Pack Unlocks into Buyer's Vault
-        if promo.reward_pack_ids and isinstance(promo.reward_pack_ids, list):
-            from services.pack_import_service import import_pack_into_vault
-            unlocked_packs = []
-            for pid in promo.reward_pack_ids:
-                try:
-                    p_uuid = uuid.UUID(str(pid))
-                    pack = db.query(models.StudyPack).filter(models.StudyPack.id == p_uuid).first()
-                    if pack:
-                        import_pack_into_vault(db=db, pack=pack, user_id=user_id, coins_spent=0, commit=False)
-                        unlocked_packs.append({"id": str(pack.id), "title": pack.title})
-                except Exception as p_ex:
-                    print(f"[Promo] Pack unlock error: {p_ex}")
-            if unlocked_packs:
-                granted_summary["packs"] = unlocked_packs
 
         # 6. Ambassador Referral Kickback (active ambassadors only)
         if promo.ambassador_id and promo.ambassador_id != user_id and promo.ambassador_coin_reward > 0:

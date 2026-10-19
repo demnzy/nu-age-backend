@@ -34,3 +34,12 @@
   - All automated testing must strictly use in-memory SQLite (`sqlite:///:memory:`), mock repositories (`unittest.mock`), or read-only probes of existing data.
   - Senders, credentials, and tokens used in verification scripts must rely on mocked sessions or isolated in-memory stores.
 
+## 7. End-to-End Feature Integrity & Scoping Invariants
+- **Zero Partial Feature Stubs**:
+  - Every administrative tool or gamification entity (e.g. badges, promo codes, ambassadors) must have its complete lifecycle implemented: full CRUD endpoints, schema validation, database persistence, and client consumption.
+- **Registered User Requirement for Ambassadors**:
+  - Campus ambassador invitation endpoints must strictly verify that the candidate email belongs to an existing user record in `models.User`. Reject invitations for unregistered emails with HTTP 400. Automatically derive candidate names from `models.User` rather than relying on redundant client form inputs.
+- **Institution/University Scoping for Promo Codes**:
+  - When promo codes are distributed by campus ambassadors, scope usage by institution (`scoped_university`), not by vague user UUIDs. Enforce that only learners registered under the matching university can redeem the code.
+
+

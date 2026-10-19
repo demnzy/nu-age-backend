@@ -1172,6 +1172,9 @@ class PromoCode(Base):
     reward_badge_slug = Column(String(50), nullable=True)
     reward_pack_ids = Column(JSON, nullable=True)  # List of pack IDs or slugs
 
+    # Optional University / Campus Scoping
+    scoped_university = Column(String(150), nullable=True, index=True)
+
     # Optional Ambassador Attribution
     ambassador_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True, index=True)
     ambassador_coin_reward = Column(Integer, default=0, nullable=False)

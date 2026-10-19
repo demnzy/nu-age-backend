@@ -491,6 +491,8 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_email ON campus_ambassadors(email);",
     "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_status ON campus_ambassadors(status);",
     "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_uni ON campus_ambassadors(university);",
+    "ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS scoped_university VARCHAR(150);",
+    "CREATE INDEX IF NOT EXISTS ix_promo_codes_scoped_uni ON promo_codes(scoped_university);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)

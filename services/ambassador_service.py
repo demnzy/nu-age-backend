@@ -20,8 +20,9 @@ import models
 from services.email_service import send_email
 
 
-def _build_ambassador_invite_html(email: str, university: str, accept_link: str) -> str:
+def _build_ambassador_invite_html(email: str, university: str, accept_link: str, candidate_name: Optional[str] = None) -> str:
     """Renders a responsive, high-converting HTML email invitation."""
+    greeting = f"Hello {candidate_name}," if candidate_name else "Hello,"
     return f"""
     <!DOCTYPE html>
     <html>
@@ -42,7 +43,7 @@ def _build_ambassador_invite_html(email: str, university: str, accept_link: str)
       <div class="card">
         <div class="badge">Official Invitation</div>
         <h1>Become a Campus Ambassador for Nu-Age</h1>
-        <p>Hello,</p>
+        <p>{greeting}</p>
         <p>You have been officially invited to lead student growth as a <strong>Campus Ambassador</strong> representing <strong>{university}</strong> on Nu-Age.</p>
         <p>As a verified ambassador, you will receive:</p>
         <ul style="color: #94A3B8; font-size: 14px; line-height: 1.6; padding-left: 20px;">
@@ -68,21 +69,30 @@ def _build_ambassador_invite_html(email: str, university: str, accept_link: str)
 def invite_campus_ambassador(
     db: Session,
     email: str,
-    university: str,
+    university: Optional[str] = None,
     notes: Optional[str] = None,
     assigned_promo_code_id: Optional[uuid.UUID] = None
 ) -> models.CampusAmbassador:
     """
-    Creates or refreshes a persistent CampusAmbassador invitation record and sends
-    the tokenized email invitation via Resend/SES.
+    Invites a registered learner to become a campus ambassador.
+    Enforces that the email belongs to an existing platform user in models.User.
     """
     clean_email = (email or "").strip().lower()
     clean_uni = (university or "").strip()
 
     if not clean_email or "@" not in clean_email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email address is required.")
+
+    # Strictly require candidate to be an existing registered learner
+    user = db.query(models.User).filter(models.User.email == clean_email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No registered Nu-Age account found with email '{clean_email}'. Campus Ambassadors must already be registered learners on the platform."
+        )
+
     if not clean_uni:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="University name is required.")
+        clean_uni = getattr(user, "university", None) or "Campus Partner"
 
     # Check for existing ambassador record
     existing = db.query(models.CampusAmbassador).filter(models.CampusAmbassador.email == clean_email).first()
@@ -91,21 +101,17 @@ def invite_campus_ambassador(
 
     invite_token = secrets.token_urlsafe(32)
 
-    # Check if a user with this email already exists
-    user = db.query(models.User).filter(models.User.email == clean_email).first()
-
     if existing:
         ambassador = existing
         ambassador.university = clean_uni
         ambassador.invite_token = invite_token
         ambassador.status = "invited"
         ambassador.invited_at = datetime.now(timezone.utc)
+        ambassador.user_id = user.id
         if notes:
             ambassador.notes = notes
         if assigned_promo_code_id:
             ambassador.assigned_promo_code_id = assigned_promo_code_id
-        if user:
-            ambassador.user_id = user.id
     else:
         ambassador = models.CampusAmbassador(
             email=clean_email,
@@ -114,7 +120,7 @@ def invite_campus_ambassador(
             status="invited",
             notes=notes,
             assigned_promo_code_id=assigned_promo_code_id,
-            user_id=user.id if user else None,
+            user_id=user.id,
         )
         db.add(ambassador)
 
@@ -122,8 +128,9 @@ def invite_campus_ambassador(
     db.refresh(ambassador)
 
     # Dispatch email invitation
+    candidate_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
     accept_url = f"https://nu-age.name.ng/ambassador/accept?token={invite_token}"
-    html_content = _build_ambassador_invite_html(clean_email, clean_uni, accept_url)
+    html_content = _build_ambassador_invite_html(clean_email, clean_uni, accept_url, candidate_name=candidate_name)
     subject = f"Invitation: Campus Ambassador for {clean_uni} - Nu-Age"
 
     try:
