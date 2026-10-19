@@ -179,6 +179,7 @@ def _format_active_partnership_payload(partnership, current_user, db: Session, t
             "challenged_time_seconds": ch.challenged_time_seconds,
             "winner_id": str(ch.winner_id) if ch.winner_id else None,
             "coins_awarded": ch.coins_awarded,
+            "wager_amount": getattr(ch, "wager_amount", 0) or 0,
             "question_snapshot": ch.question_snapshot or [],
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
         })
@@ -1347,6 +1348,7 @@ def get_shared_packs(
             "theme_gradient": p.theme_gradient,
             "questions_count": q_count,
             "flashcards_count": fc_count,
+            "flashcards": list(p_data.get("flashcards", [])),
             "sender_id": str(s.sender_id),
             "sender_name": s.sender.first_name if s.sender else "Partner",
             "is_sent_by_me": (s.sender_id == current_user.id),

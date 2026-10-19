@@ -285,8 +285,51 @@ def run_economy_rebalancing_tests():
     assert bal_b_tie == 75, f"User B matched 10 and refunded 10 back to 75, got {bal_b_tie}"
     print("[PASS] Exact tie refunded 100% of stakes to both players.")
 
+    # 4. Verify _format_active_partnership_payload preserves wager_amount
+    from datetime import date
+    from routers.study_partners import _format_active_partnership_payload, get_shared_packs
+    active_payload = _format_active_partnership_payload(partnership, user_b, db, date.today())
+    recent_ch = active_payload.get("recent_challenges", [])
+    assert len(recent_ch) > 0, "Recent challenges must not be empty"
+    for rch in recent_ch:
+        assert "wager_amount" in rch, f"wager_amount must be present in recent_challenges, keys: {rch.keys()}"
+    print("[PASS] _format_active_partnership_payload successfully serializes wager_amount to recent_challenges!")
+
+    # 5. Verify get_shared_packs preloads flashcards
+    test_pack = models.StudyPack(
+        creator_id=user_a.id,
+        title="Cell Biology Flashcards",
+        category="Biology",
+        pack_data={
+            "questions": [{"q": "Q1", "a": "A1"}],
+            "flashcards": [
+                {"front": "Mitochondria", "back": "Powerhouse of the cell"},
+                {"front": "Ribosome", "back": "Site of protein synthesis"}
+            ]
+        }
+    )
+    db.add(test_pack)
+    db.commit()
+
+    shared_pack_rec = models.PartnershipSharedPack(
+        partnership_id=partnership.id,
+        pack_id=test_pack.id,
+        sender_id=user_a.id,
+        recipient_id=user_b.id,
+        status="accepted",
+    )
+    db.add(shared_pack_rec)
+    db.commit()
+
+    shared_res = get_shared_packs(partnership.id, db=db, current_user=user_a)
+    packs_list = shared_res.get("shared_packs", [])
+    assert len(packs_list) > 0, "Shared packs list should have shared pack"
+    assert "flashcards" in packs_list[0], "Preloaded flashcards array must be present"
+    assert len(packs_list[0]["flashcards"]) == 2, f"Should have 2 flashcards, got {len(packs_list[0]['flashcards'])}"
+    print("[PASS] get_shared_packs preloads flashcards with 0ms latency for instant preview!")
+
     print("\n=======================================================")
-    print("ALL NU-COINS ECONOMY REBALANCING TESTS PASSED (100%)!")
+    print("ALL NU-COINS ECONOMY & DUEL/PACK AUDIT TESTS PASSED (100%)!")
     print("=======================================================")
 
 if __name__ == "__main__":
