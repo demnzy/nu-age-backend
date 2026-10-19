@@ -732,6 +732,31 @@ def create_partner_challenge(
         except Exception:
             pack_uuid = None
 
+    wager_amount = int(payload.get("wager_amount") or 0)
+    if wager_amount < 0 or wager_amount not in (0, 10, 25, 50, 100):
+        raise HTTPException(status_code=400, detail="Invalid wager amount. Allowed stakes: 0, 10, 25, 50, 100 Nu-Coins.")
+
+    is_escrowed = False
+    if wager_amount > 0:
+        c_coins = coin_service.get_user_coins(db, current_user.id)
+        if c_coins < wager_amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient Nu-Coins for stake. You have {c_coins} coins, but {wager_amount} coins are required."
+            )
+        ok, _, msg = coin_service.spend_coins(
+            db,
+            user_id=current_user.id,
+            amount=wager_amount,
+            category="duel_wager_escrow",
+            description=f"Escrowed {wager_amount} Nu-Coins for Quickfire Duel against {partner.first_name}",
+            source_type="challenge_escrow",
+            reference_id=f"duel_wager_{current_user.id}",
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        is_escrowed = True
+
     challenge = models.PartnerChallenge(
         partnership_id=partnership.id,
         challenger_id=current_user.id,
@@ -748,6 +773,8 @@ def create_partner_challenge(
         challenger_time_seconds=c_time,
         challenger_breakdown=c_breakdown,
         challenger_completed_at=datetime.now(timezone.utc),
+        wager_amount=wager_amount,
+        is_escrowed=is_escrowed,
     )
 
     db.add(challenge)
@@ -760,11 +787,12 @@ def create_partner_challenge(
 
     # Notify partner of duel
     try:
+        wager_text = f" ⚔️ Stake: {wager_amount} Nu-Coins each!" if wager_amount > 0 else ""
         dispatch_notification(
             db=db,
             recipient_user_ids=[partner.id],
             title="Partner Challenge Received! ⚔️",
-            body=f"{current_user.first_name} challenged you to a {len(questions)}-question Quickfire Duel in {challenge.subject}!",
+            body=f"{current_user.first_name} challenged you to a {len(questions)}-question Quickfire Duel in {challenge.subject}!{wager_text}",
             category="partner_challenge",
             action_route=f"/network?tab=partners&duel={challenge.id}",
             sender_id=current_user.id,
@@ -819,7 +847,8 @@ def _format_challenge_history_item(ch: models.PartnerChallenge, current_user: mo
         "challenged_time_seconds": ch.challenged_time_seconds,
         "outcome": outcome,
         "winner_id": str(ch.winner_id) if ch.winner_id else None,
-        "coins_awarded": ch.coins_awarded if ch.coins_awarded is not None else (35 if outcome == "won" else (10 if outcome in ("lost", "tie") else 0)),
+        "coins_awarded": ch.coins_awarded or 0,
+        "wager_amount": getattr(ch, "wager_amount", 0) or 0,
         "completed_at": (ch.challenged_completed_at or ch.created_at).isoformat() if (ch.challenged_completed_at or ch.created_at) else None,
     }
 
@@ -897,7 +926,8 @@ def get_partner_challenge(
         "challenged_time_seconds": ch.challenged_time_seconds,
         "challenged_breakdown": ch.challenged_breakdown,
         "winner_id": str(ch.winner_id) if ch.winner_id else None,
-        "coins_awarded": ch.coins_awarded,
+        "coins_awarded": ch.coins_awarded or 0,
+        "wager_amount": getattr(ch, "wager_amount", 0) or 0,
     }
 
 
@@ -959,41 +989,92 @@ def submit_partner_challenge(
     ch.challenged_completed_at = datetime.now(timezone.utc)
     ch.status = "completed"
 
+    # If this was a wagered duel, match stake from challenged partner
+    wager = getattr(ch, "wager_amount", 0) or 0
+    if wager > 0:
+        d_coins = coin_service.get_user_coins(db, current_user.id)
+        if d_coins < wager:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Matching stake of {wager} Nu-Coins required to complete this wagered duel. You have {d_coins} coins."
+            )
+        ok, _, msg = coin_service.spend_coins(
+            db,
+            user_id=current_user.id,
+            amount=wager,
+            category="duel_wager_match",
+            description=f"Matched {wager} Nu-Coins stake for duel against {ch.challenger.first_name}",
+            source_type="challenge_match",
+            reference_id=str(ch.id),
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+
     # Evaluate Winner (Score first, then speed tie-breaker)
     c_score = ch.challenger_score or 0
     c_time = ch.challenger_time_seconds or 999999
 
     if challenged_score > c_score:
-        ch.winner_id = current_user.id
-        ch.coins_awarded = 35
-        coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.record_metric_event(db, current_user.id, "win_duel", 1)
+        winner_id = current_user.id
     elif c_score > challenged_score:
-        ch.winner_id = ch.challenger_id
-        ch.coins_awarded = 35
-        coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-        coin_service.record_metric_event(db, ch.challenger_id, "win_duel", 1)
+        winner_id = ch.challenger_id
     else:
         # Tie breaker on time
         if challenged_time < c_time:
-            ch.winner_id = current_user.id
-            ch.coins_awarded = 35
-            coin_service.grant_coins(db, current_user.id, 35, category="duel_win", description=f"Won duel on speed against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.grant_coins(db, ch.challenger_id, 10, category="duel_complete", description=f"Completed duel against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.record_metric_event(db, current_user.id, "win_duel", 1)
+            winner_id = current_user.id
         elif c_time < challenged_time:
-            ch.winner_id = ch.challenger_id
-            ch.coins_awarded = 35
-            coin_service.grant_coins(db, ch.challenger_id, 35, category="duel_win", description=f"Won duel on speed against {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.grant_coins(db, current_user.id, 10, category="duel_complete", description=f"Completed duel against {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.record_metric_event(db, ch.challenger_id, "win_duel", 1)
+            winner_id = ch.challenger_id
         else:
-            ch.winner_id = None
-            ch.coins_awarded = 20
-            coin_service.grant_coins(db, current_user.id, 20, category="duel_draw", description=f"Tied duel with {ch.challenger.first_name}", source_type="challenge", reference_id=str(ch.id))
-            coin_service.grant_coins(db, ch.challenger_id, 20, category="duel_draw", description=f"Tied duel with {current_user.first_name}", source_type="challenge", reference_id=str(ch.id))
+            winner_id = None
+
+    ch.winner_id = winner_id
+
+    # Settle Wagered Pot vs Casual Free Duel
+    if wager > 0:
+        total_pot = wager * 2
+        platform_burn = int(total_pot * 0.10)
+        winner_payout = total_pot - platform_burn
+
+        if winner_id:
+            ch.coins_awarded = winner_payout
+            winner_user = current_user if winner_id == current_user.id else ch.challenger
+            loser_user = ch.challenger if winner_id == current_user.id else current_user
+            coin_service.grant_coins(
+                db=db,
+                user_id=winner_id,
+                amount=winner_payout,
+                category="duel_wager_win",
+                description=f"Won {wager}-coin wagered duel against {loser_user.first_name}! (Pot: {winner_payout} coins)",
+                source_type="challenge",
+                reference_id=str(ch.id),
+            )
+        else:
+            # Exact tie: refund both players 100% of their stake
+            ch.coins_awarded = wager
+            coin_service.grant_coins(
+                db=db,
+                user_id=current_user.id,
+                amount=wager,
+                category="duel_wager_refund",
+                description=f"Tied duel with {ch.challenger.first_name}: refunded {wager} Nu-Coins stake",
+                source_type="challenge",
+                reference_id=str(ch.id),
+            )
+            coin_service.grant_coins(
+                db=db,
+                user_id=ch.challenger_id,
+                amount=wager,
+                category="duel_wager_refund",
+                description=f"Tied duel with {current_user.first_name}: refunded {wager} Nu-Coins stake",
+                source_type="challenge",
+                reference_id=str(ch.id),
+            )
+    else:
+        # Casual duel: Exactly 0 coins awarded to either player
+        ch.coins_awarded = 0
+
+    if winner_id:
+        coin_service.record_metric_event(db, winner_id, "win_duel", 1)
 
     # Record study activity for challenged partner on this partnership
     p = ch.partnership or db.query(models.StudyPartnership).filter(models.StudyPartnership.id == ch.partnership_id).first()
@@ -1333,17 +1414,6 @@ def accept_shared_pack(
                     explanation=q.get("explanation", ""),
                 ))
             db.flush()
-
-    # Award Nu-Coins to sender for knowledge sharing
-    coin_service.grant_coins(
-        db=db,
-        user_id=share.sender_id,
-        amount=20,
-        category="pack_share",
-        description=f"{current_user.first_name} accepted your shared study pack!",
-        source_type="partnership_shared_pack",
-        reference_id=str(share.id),
-    )
 
     db.commit()
 

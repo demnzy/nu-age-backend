@@ -316,6 +316,8 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_partner_challenges_status ON partner_challenges(status);",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS coins_balance INTEGER DEFAULT 0;",
     "ALTER TABLE partner_challenges ADD COLUMN IF NOT EXISTS pack_id UUID REFERENCES study_packs(id) ON DELETE SET NULL;",
+    "ALTER TABLE partner_challenges ADD COLUMN IF NOT EXISTS wager_amount INTEGER DEFAULT 0;",
+    "ALTER TABLE partner_challenges ADD COLUMN IF NOT EXISTS is_escrowed BOOLEAN DEFAULT FALSE;",
     """
     CREATE TABLE IF NOT EXISTS partnership_shared_packs (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

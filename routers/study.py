@@ -271,14 +271,12 @@ async def import_youtube_material(
     sub = check_material_upload_allowed(user.id, db)
     _, effective_plan, _, is_expired = get_effective_subscription(user.id, db)
 
-    from monetization_models import CreditBalance, CreditLedgerEntry
-    credit_bal = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
-    effective_gen_limit = (effective_plan.generations_limit + (sub.bonus_generations or 0)) if effective_plan and effective_plan.generations_limit is not None else None
+    plan_limit = effective_plan.generations_limit if effective_plan and effective_plan.generations_limit is not None else None
     has_gen_quota = (
         not effective_plan
-        or effective_gen_limit is None
-        or sub.generations_used < effective_gen_limit
-        or (credit_bal and credit_bal.balance > 0)
+        or plan_limit is None
+        or sub.generations_used < plan_limit
+        or (sub.bonus_generations or 0) > 0
     )
     if not has_gen_quota:
         if is_expired:
@@ -371,17 +369,21 @@ async def import_youtube_material(
     db.refresh(new_mat)
 
     # Queue generation engine for the newly imported YouTube material and count toward student quota
-    effective_gen_limit = (sub.plan.generations_limit + (sub.bonus_generations or 0)) if sub.plan and sub.plan.generations_limit is not None else None
-    if effective_gen_limit is not None and sub.generations_used >= effective_gen_limit:
-        if credit_bal and credit_bal.balance > 0:
-            credit_bal.balance -= 1
-            db.add(CreditLedgerEntry(
-                user_id=user.id,
-                delta=-1,
-                reason="generation_spend",
-                reference_id=str(new_mat.id),
-                balance_after=credit_bal.balance,
-            ))
+    plan_limit = sub.plan.generations_limit if sub.plan and sub.plan.generations_limit is not None else None
+    if plan_limit is not None and sub.generations_used >= plan_limit:
+        if (sub.bonus_generations or 0) > 0:
+            sub.bonus_generations -= 1
+        else:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_generations",
+                    "free_used": sub.generations_used,
+                    "free_limit": plan_limit,
+                    "bonus_generations": 0,
+                    "message": "You're out of monthly generation quota. Exchange Nu-Coins for AI generation credits in the Store or top up.",
+                }
+            )
     else:
         sub.generations_used += 1
 
@@ -915,23 +917,22 @@ async def generate_study_content(
     credit_source = "free_quota"
     credit_balance = None  # only set if we end up spending a credit
 
-    effective_gen_limit = (effective_plan.generations_limit + (sub.bonus_generations or 0)) if effective_plan and effective_plan.generations_limit is not None else None
-    if effective_gen_limit is not None and sub.generations_used >= effective_gen_limit:
-        # Free quota + bonus quota exhausted — fall back to purchased credits instead of
-        # hard-403ing, same idea as the old check but with a paid path.
-        credit_balance = db.query(CreditBalance).filter(CreditBalance.user_id == user.id).first()
-
-        if not credit_balance or credit_balance.balance <= 0:
+    plan_gen_limit = effective_plan.generations_limit if effective_plan and effective_plan.generations_limit is not None else None
+    if plan_gen_limit is not None and sub.generations_used >= plan_gen_limit:
+        # Plan monthly quota exhausted — check bonus_generations (explicitly purchased or exchanged)
+        if (sub.bonus_generations or 0) > 0:
+            sub.bonus_generations -= 1
+            credit_source = "bonus_generations"
+        else:
             if is_expired:
                 raise HTTPException(
                     status_code=402,
                     detail={
                         "error": "subscription_expired",
                         "free_used": sub.generations_used,
-                        "free_limit": effective_gen_limit,
-                        "bonus_generations": sub.bonus_generations or 0,
-                        "credits_remaining": 0,
-                        "message": "Your subscription has expired. Renew your plan or buy credits to continue generating study content.",
+                        "free_limit": plan_gen_limit,
+                        "bonus_generations": 0,
+                        "message": "Your subscription has expired. Renew your plan or exchange Nu-Coins for AI generation credits in the Store.",
                     }
                 )
             raise HTTPException(
@@ -939,22 +940,11 @@ async def generate_study_content(
                 detail={
                     "error": "insufficient_generations",
                     "free_used": sub.generations_used,
-                    "free_limit": effective_gen_limit,
-                    "bonus_generations": sub.bonus_generations or 0,
-                    "credits_remaining": credit_balance.balance if credit_balance else 0,
-                    "message": "You're out of generation quota and credits. Buy an AI booster pack or Nu-Coins to continue.",
+                    "free_limit": plan_gen_limit,
+                    "bonus_generations": 0,
+                    "message": "You're out of monthly generation quota. Exchange Nu-Coins for AI generation credits in the Store or top up.",
                 }
             )
-
-        credit_balance.balance -= 1
-        db.add(CreditLedgerEntry(
-            user_id=user.id,
-            delta=-1,
-            reason="generation_spend",
-            reference_id=",".join(str(m) for m in payload.material_ids),
-            balance_after=credit_balance.balance,
-        ))
-        credit_source = "credits"
     else:
         sub.generations_used += 1
     # --------------------------------------

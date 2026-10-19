@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 import models
 from database import get_db, Settings
-from services import auth
+from services import auth, coin_service
 from services.notifications import dispatch_notification
 from services.payment_service import get_payment_gateway, PaystackGateway
 from routers.platform_admin import get_current_super_admin
@@ -404,6 +404,94 @@ def get_store_catalog(db: Session = Depends(get_db)):
         "org_plans": [_to_dict(p) for p in products if p.category == "org_plan"],
         "org_seats": [_to_dict(p) for p in products if p.category == "org_seats"],
         "org_products": [_to_dict(p) for p in products if p.category in ("org_plan", "org_seats")],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPLICIT IN-STORE NU-COINS -> AI GENERATION CREDITS EXCHANGE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ExchangeCoinsPayload(BaseModel):
+    package_id: str = Field(..., description="Package ID: ai_gen_1, ai_gen_5, ai_gen_12, ai_gen_25")
+
+
+EXCHANGE_TIERS: Dict[str, Dict[str, Any]] = {
+    "ai_gen_1": {"generations": 1, "coins": 25, "label": "1 Generation", "discount": None},
+    "ai_gen_5": {"generations": 5, "coins": 100, "label": "5 Generations", "discount": "Save 25 Coins"},
+    "ai_gen_12": {"generations": 12, "coins": 200, "label": "12 Generations", "discount": "Save 100 Coins"},
+    "ai_gen_25": {"generations": 25, "coins": 400, "label": "25 Generations", "discount": "Save 225 Coins"},
+}
+
+
+@router.get("/store/exchange-tiers")
+def get_exchange_tiers():
+    """Returns available packages for explicitly exchanging Nu-Coins into bonus AI Generation Credits."""
+    return {
+        "tiers": [
+            {
+                "id": k,
+                "generations": v["generations"],
+                "coins": v["coins"],
+                "label": v["label"],
+                "discount": v["discount"],
+            }
+            for k, v in EXCHANGE_TIERS.items()
+        ]
+    }
+
+
+@router.post("/store/exchange-coins")
+def exchange_coins_for_generations(
+    payload: ExchangeCoinsPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Explicit in-store conversion: exchanges a user's earned Nu-Coins for bonus AI Generation credits.
+    Does NOT automatically deduct; user must explicitly invoke this exchange action.
+    """
+    tier = EXCHANGE_TIERS.get(payload.package_id)
+    if not tier:
+        raise HTTPException(status_code=400, detail="Invalid exchange package. Choose ai_gen_1, ai_gen_5, ai_gen_12, or ai_gen_25.")
+
+    coins_required = tier["coins"]
+    gen_awarded = tier["generations"]
+
+    user_coins = coin_service.get_user_coins(db, current_user.id)
+    if user_coins < coins_required:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient Nu-Coins. You have {user_coins} coins, but this package requires {coins_required} Nu-Coins."
+        )
+
+    # Deduct coins from user's unified wallet
+    success, new_bal, msg = coin_service.spend_coins(
+        db=db,
+        user_id=current_user.id,
+        amount=coins_required,
+        category="store_ai_exchange",
+        description=f"Exchanged {coins_required} Nu-Coins for +{gen_awarded} AI Generation Credits",
+        source_type="store_exchange",
+        reference_id=payload.package_id,
+    )
+    if not success:
+        raise HTTPException(status_code=400, detail=msg)
+
+    # Credit UserSubscription.bonus_generations
+    sub = db.query(models.UserSubscription).filter(models.UserSubscription.user_id == current_user.id).first()
+    if not sub:
+        sub = models.UserSubscription(user_id=current_user.id, plan_id="free")
+        db.add(sub)
+    sub.bonus_generations = (sub.bonus_generations or 0) + gen_awarded
+    db.commit()
+
+    return {
+        "success": True,
+        "package_id": payload.package_id,
+        "generations_added": gen_awarded,
+        "new_bonus_generations": sub.bonus_generations,
+        "new_coins_balance": new_bal,
+        "message": f"🎉 Successfully exchanged {coins_required} Nu-Coins for +{gen_awarded} AI Generation Credits!",
     }
 
 
