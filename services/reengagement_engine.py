@@ -201,29 +201,99 @@ TIER_6_OBJECTIVE_QUEST_COPY = [
     },
 ]
 
-AUTOMATED_CATEGORIES = ("streak_warning", "duo_nudge", "daytime_nudge", "reengagement", "course_progress", "objective_quest")
+TIER_7_NEW_COURSE_COPY = [
+    {
+        "title": "Fresh on Nu-Age: {course_title}! 🆕✨",
+        "body": "A brand new course just dropped in {category}! Be among the first to explore it and earn milestone Nu-Coins 🚀",
+    },
+    {
+        "title": "New course alert: {course_title} 🎓",
+        "body": "Expand your knowledge! {course_title} was just published this month. Check out Lesson 1 today 💡",
+    },
+    {
+        "title": "Have you seen this yet? 👀📚",
+        "body": "{course_title} is trending on Nu-Age! Jump in and start learning before everyone else ⚡",
+    },
+    {
+        "title": "Level up your skills with {course_title} 🧠",
+        "body": "Brand new material just landed in {category}! Dive into {course_title} and claim your early learner badge 🏆",
+    },
+    {
+        "title": "Your next favorite course is here 📖",
+        "body": "{course_title} dropped this month! Take 5 minutes on your break to see what's inside 🎯",
+    },
+]
 
+AUTOMATED_CATEGORIES = (
+    "streak_warning",
+    "duo_nudge",
+    "daytime_nudge",
+    "reengagement",
+    "course_progress",
+    "objective_quest",
+    "new_courses",
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. ANTI-SPAM & RECENT DISPATCH FILTER
+# 3. ANTI-SPAM & MULTI-NUDGE DAILY VOLUME LIMITS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def user_was_recently_nudged(db: Session, user_id: UUID, window_hours: float = 18.0) -> bool:
+MAX_DAILY_AUTOMATED_NOTIFICATIONS = 3  # Increased from 1 (allows daytime focus + evening streak protection)
+MIN_HOURS_BETWEEN_NUDGES = 4.0        # Minimum spacing between automated nudges to prevent rapid alerts
+
+
+def check_user_nudge_eligibility(
+    db: Session,
+    user_id: UUID,
+    max_daily: int = MAX_DAILY_AUTOMATED_NOTIFICATIONS,
+    min_interval_hours: float = MIN_HOURS_BETWEEN_NUDGES,
+) -> tuple[bool, str]:
     """
-    Checks if an automated re-engagement or streak notification was already sent
-    to this user within the sliding window (defaults to 18 hours), preventing spam.
+    Checks whether a user is eligible to receive another automated re-engagement nudge.
+    Safeguards:
+    1. Minimum interval spacing (defaults to 4.0 hours) to prevent clustered spam.
+    2. Daily volume cap (defaults to 3 automated notifications per 24h rolling window).
+    Returns (eligible: bool, reason: str).
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+    now = datetime.now(timezone.utc)
+
+    # 1. Spacing guard
+    min_cutoff = now - timedelta(hours=min_interval_hours)
     recent = (
         db.query(models.UserNotification.id)
         .filter(
             models.UserNotification.user_id == user_id,
             models.UserNotification.category.in_(AUTOMATED_CATEGORIES),
-            models.UserNotification.created_at >= cutoff,
+            models.UserNotification.created_at >= min_cutoff,
         )
         .first()
     )
-    return recent is not None
+    if recent is not None:
+        return False, "min_interval"
+
+    # 2. Daily volume guard (past 24 hours)
+    day_cutoff = now - timedelta(hours=24.0)
+    count_today = (
+        db.query(func.count(models.UserNotification.id))
+        .filter(
+            models.UserNotification.user_id == user_id,
+            models.UserNotification.category.in_(AUTOMATED_CATEGORIES),
+            models.UserNotification.created_at >= day_cutoff,
+        )
+        .scalar() or 0
+    )
+    if count_today >= max_daily:
+        return False, "daily_limit"
+
+    return True, "eligible"
+
+
+def user_was_recently_nudged(db: Session, user_id: UUID, window_hours: float = MIN_HOURS_BETWEEN_NUDGES) -> bool:
+    """
+    Backward-compatible helper. Checks if user is ineligible for a nudge within window_hours.
+    """
+    eligible, _ = check_user_nudge_eligibility(db, user_id, min_interval_hours=window_hours)
+    return not eligible
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -265,8 +335,11 @@ def evaluate_and_dispatch_nudges(
         "dispatched_tier_4_inactivity": 0,
         "dispatched_tier_5_course_progress": 0,
         "dispatched_tier_6_quest": 0,
+        "dispatched_tier_7_new_course": 0,
         "skipped_quiet_hours": False,
         "skipped_recently_nudged": 0,
+        "skipped_daily_limit_reached": 0,
+        "skipped_min_interval": 0,
         "skipped_already_studied": 0,
         "dispatched_records": [],
     }
@@ -329,6 +402,33 @@ def evaluate_and_dispatch_nudges(
         if en.course and en.course.name:
             enrollments_by_user.setdefault(en.student_id, []).append(en)
 
+    # Pre-fetch all user enrollments to map previously taken course IDs & category affinities
+    all_enrollments = (
+        db.query(models.Enrollment)
+        .options(joinedload(models.Enrollment.course))
+        .filter(models.Enrollment.student_id.in_(user_ids))
+        .all()
+    )
+    all_enrolled_course_ids_by_user: Dict[UUID, set] = {}
+    preferred_category_ids_by_user: Dict[UUID, set] = {}
+    for en in all_enrollments:
+        all_enrolled_course_ids_by_user.setdefault(en.student_id, set()).add(en.course_id)
+        if en.course and en.course.category_id:
+            preferred_category_ids_by_user.setdefault(en.student_id, set()).add(en.course.category_id)
+
+    # Pre-fetch public courses created in the last 30 days for Tier 7 New Courses
+    cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+    new_courses_pool = (
+        db.query(models.Course)
+        .options(joinedload(models.Course.category), joinedload(models.Course.organisation))
+        .filter(
+            models.Course.created_at >= cutoff_30d,
+            or_(models.Course.public == "true", models.Course.public == True),
+        )
+        .order_by(models.Course.created_at.desc())
+        .all()
+    )
+
     # Pre-fetch active platform objectives & incomplete user progress
     active_objectives = (
         db.query(models.PlatformObjective)
@@ -355,10 +455,16 @@ def evaluate_and_dispatch_nudges(
         u_streak = getattr(user, "streak", 0) or 0
         u_last_login = getattr(user, "last_login_date", None)
 
-        # Anti-spam guard: max 1 automated notification per user per 18 hours
-        if not force and user_was_recently_nudged(db, u_id, window_hours=18.0):
-            stats["skipped_recently_nudged"] += 1
-            continue
+        # Anti-spam & daily limit guard (up to 3/day, >= 4h spacing)
+        if not force:
+            eligible, reason = check_user_nudge_eligibility(db, u_id)
+            if not eligible:
+                if reason == "daily_limit":
+                    stats["skipped_daily_limit_reached"] += 1
+                else:
+                    stats["skipped_min_interval"] += 1
+                stats["skipped_recently_nudged"] += 1
+                continue
 
         user_partnerships = partnerships_by_user.get(u_id, [])
         user_enrollments = enrollments_by_user.get(u_id, [])
@@ -497,6 +603,75 @@ def evaluate_and_dispatch_nudges(
                 "progress": prog_val,
             })
             continue
+
+        if (preferred_tier == 7 or category == "new_courses") and new_courses_pool:
+            user_enrolled_ids = all_enrolled_course_ids_by_user.get(u_id, set())
+            user_categories = preferred_category_ids_by_user.get(u_id, set())
+            user_uni = (getattr(user, "university", "") or "").strip().lower()
+
+            candidate_courses = [
+                c for c in new_courses_pool 
+                if c.id not in user_enrolled_ids and c.admin_id != u_id
+            ]
+
+            if candidate_courses:
+                def _days_since_created(dt) -> int:
+                    if not dt:
+                        return 999
+                    now = datetime.now(timezone.utc)
+                    if getattr(dt, "tzinfo", None) is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return max(0, (now - dt).days)
+
+                def _score_candidate_course(c: models.Course) -> float:
+                    score = 0.0
+                    if c.category_id and c.category_id in user_categories:
+                        score += 5.0
+                    if user_uni and c.organisation and user_uni in (c.organisation.name or "").lower():
+                        score += 3.0
+                    if c.created_at and _days_since_created(c.created_at) <= 7:
+                        score += 2.0
+                    score += float(getattr(c, "rating", 4.5) or 4.5) * 0.1
+                    return score
+
+                candidate_courses.sort(key=_score_candidate_course, reverse=True)
+                top_matched_course = candidate_courses[0]
+                c_title = top_matched_course.name.strip()
+                display_course_title = (c_title[:32] + "...") if len(c_title) > 35 else c_title
+                cat_name = top_matched_course.category.name if top_matched_course.category else "General"
+
+                template = random.choice(TIER_7_NEW_COURSE_COPY)
+                title = template["title"].format(course_title=display_course_title, category=cat_name)
+                body = template["body"].format(course_title=display_course_title, category=cat_name)
+                action_rt = f"/courses/{top_matched_course.id}/view"
+
+                if not dry_run:
+                    dispatch_notification(
+                        db=db,
+                        recipient_user_ids=[u_id],
+                        title=title,
+                        body=body,
+                        category="new_courses",
+                        action_route=action_rt,
+                        data_payload={
+                            "type": "new_course_discovery",
+                            "course_id": str(top_matched_course.id),
+                            "course_title": top_matched_course.name,
+                            "category": cat_name,
+                        },
+                        send_push=True,
+                        collapse_id=f"new_course_{top_matched_course.id}",
+                    )
+                stats["dispatched_tier_7_new_course"] += 1
+                stats["dispatched_records"].append({
+                    "user_id": str(u_id),
+                    "tier": 7,
+                    "title": title,
+                    "body": body,
+                    "course": top_matched_course.name,
+                    "category": cat_name,
+                })
+                continue
 
         # ─────────────────────────────────────────────────────────────────────
         # EVALUATE TIER 2: DUO ACCOUNTABILITY NUDGE (High Priority)
@@ -719,6 +894,94 @@ def evaluate_and_dispatch_nudges(
                     "progress": prog_val,
                 })
                 continue
+
+        # ─────────────────────────────────────────────────────────────────────
+        # EVALUATE TIER 7: NEW COURSES DISCOVERY
+        # Condition: Public course(s) created in the last 30 days that the user isn't enrolled in
+        # Time window: Daytime/afternoon (10:00 to 18:00 WAT)
+        # ─────────────────────────────────────────────────────────────────────
+        if new_courses_pool:
+            eval_new_courses_now = False
+            if force:
+                eval_new_courses_now = True
+            elif 10.0 <= current_hour_wat <= 18.0:
+                eval_new_courses_now = True
+
+            if eval_new_courses_now:
+                user_enrolled_ids = all_enrolled_course_ids_by_user.get(u_id, set())
+                user_categories = preferred_category_ids_by_user.get(u_id, set())
+                user_uni = (getattr(user, "university", "") or "").strip().lower()
+
+                candidate_courses = [
+                    c for c in new_courses_pool 
+                    if c.id not in user_enrolled_ids and c.admin_id != u_id
+                ]
+
+                # Trigger new course discovery if user has a category match or has no active in-progress enrollments
+                should_nudge_new_course = False
+                if candidate_courses:
+                    has_category_match = any(c.category_id in user_categories for c in candidate_courses if c.category_id)
+                    if has_category_match or not user_enrollments:
+                        should_nudge_new_course = True
+
+                if should_nudge_new_course:
+                    def _days_since_created(dt) -> int:
+                        if not dt:
+                            return 999
+                        now = datetime.now(timezone.utc)
+                        if getattr(dt, "tzinfo", None) is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return max(0, (now - dt).days)
+
+                    def _score_normal_course(c: models.Course) -> float:
+                        score = 0.0
+                        if c.category_id and c.category_id in user_categories:
+                            score += 5.0
+                        if user_uni and c.organisation and user_uni in (c.organisation.name or "").lower():
+                            score += 3.0
+                        if c.created_at and _days_since_created(c.created_at) <= 7:
+                            score += 2.0
+                        score += float(getattr(c, "rating", 4.5) or 4.5) * 0.1
+                        return score
+
+                    candidate_courses.sort(key=_score_normal_course, reverse=True)
+                    top_matched_course = candidate_courses[0]
+                    c_title = top_matched_course.name.strip()
+                    display_course_title = (c_title[:32] + "...") if len(c_title) > 35 else c_title
+                    cat_name = top_matched_course.category.name if top_matched_course.category else "General"
+
+                    template = random.choice(TIER_7_NEW_COURSE_COPY)
+                    title = template["title"].format(course_title=display_course_title, category=cat_name)
+                    body = template["body"].format(course_title=display_course_title, category=cat_name)
+                    action_rt = f"/courses/{top_matched_course.id}/view"
+
+                    if not dry_run:
+                        dispatch_notification(
+                            db=db,
+                            recipient_user_ids=[u_id],
+                            title=title,
+                            body=body,
+                            category="new_courses",
+                            action_route=action_rt,
+                            data_payload={
+                                "type": "new_course_discovery",
+                                "course_id": str(top_matched_course.id),
+                                "course_title": top_matched_course.name,
+                                "category": cat_name,
+                            },
+                            send_push=True,
+                            collapse_id=f"new_course_{top_matched_course.id}",
+                        )
+                    stats["dispatched_tier_7_new_course"] += 1
+                    stats["dispatched_records"].append({
+                        "user_id": str(u_id),
+                        "tier": 7,
+                        "title": title,
+                        "body": body,
+                        "course": top_matched_course.name,
+                        "category": cat_name,
+                    })
+                    continue
 
         # ─────────────────────────────────────────────────────────────────────
         # EVALUATE TIER 4: INACTIVITY RE-ENGAGEMENT (2 to 3 days absent)

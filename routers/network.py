@@ -66,7 +66,36 @@ def send_request(target_user_id: uuid.UUID, db: Session = Depends(get_db), curre
     new_request = models.Connection(requester_id=current_user.id, addressee_id=target_user_id)
     db.add(new_request)
     db.commit()
-    
+
+    # Seamlessly dispatch notification to recipient
+    try:
+        sender_first = getattr(current_user, "first_name", "") or ""
+        sender_last = getattr(current_user, "last_name", "") or ""
+        sender_name = f"{sender_first} {sender_last}".strip()
+        if not sender_name:
+            sender_name = getattr(current_user, "username", "Someone") or "Someone"
+
+        from services.notifications import dispatch_notification
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=[target_user_id],
+            sender_id=current_user.id,
+            title="New Connection Request 🤝",
+            body=f"{sender_name} sent you a connection request on Nu-Age.",
+            category="network_request",
+            action_route="/network",
+            data_payload={
+                "type": "network_request",
+                "request_id": str(new_request.id),
+                "requester_id": str(current_user.id),
+                "requester_name": sender_name,
+            },
+            send_push=True,
+            collapse_id=f"net_req_{current_user.id}",
+        )
+    except Exception as notif_err:
+        print(f"[network] Warning: failed to dispatch friend request notification: {notif_err}")
+
     return {"status": "success", "request_id": str(new_request.id), "message": "Friend request sent."}
 
 @router.post("/requests/{request_id}/accept")
@@ -82,6 +111,36 @@ def accept_request(request_id: uuid.UUID, db: Session = Depends(get_db), current
         
     req.status = "accepted"
     db.commit()
+
+    # Seamlessly notify requester that their connection request was accepted
+    try:
+        accepter_first = getattr(current_user, "first_name", "") or ""
+        accepter_last = getattr(current_user, "last_name", "") or ""
+        accepter_name = f"{accepter_first} {accepter_last}".strip()
+        if not accepter_name:
+            accepter_name = getattr(current_user, "username", "Someone") or "Someone"
+
+        from services.notifications import dispatch_notification
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=[req.requester_id],
+            sender_id=current_user.id,
+            title="Connection Accepted! 🎉",
+            body=f"{accepter_name} accepted your connection request on Nu-Age.",
+            category="network_accepted",
+            action_route="/network",
+            data_payload={
+                "type": "network_accepted",
+                "request_id": str(req.id),
+                "partner_id": str(current_user.id),
+                "partner_name": accepter_name,
+            },
+            send_push=True,
+            collapse_id=f"net_acc_{current_user.id}",
+        )
+    except Exception as notif_err:
+        print(f"[network] Warning: failed to dispatch friend request accepted notification: {notif_err}")
+
     return {"status": "success", "message": "Friend request accepted."}
 
 # ══════════════════════════════════════════════════════════════════════════════

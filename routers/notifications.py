@@ -126,16 +126,16 @@ def mark_all_notifications_as_read(
 @router.post("/engine/run-evaluations", status_code=status.HTTP_200_OK)
 def trigger_reengagement_evaluations(
     dry_run: bool = Query(False, description="Simulate without writing notifications or sending pushes"),
-    force: bool = Query(False, description="Bypass quiet hours and 18h window for testing"),
+    force: bool = Query(False, description="Bypass quiet hours, minimum spacing intervals, and daily volume limits for testing"),
     user_id: Optional[UUID] = Query(None, description="Target specific user ID (optional)"),
-    preferred_tier: Optional[int] = Query(None, description="Force evaluate a specific tier (1=streak, 2=duo, 3=daytime, 4=inactivity, 5=course_progress)"),
-    category: Optional[str] = Query(None, description="Filter/target specific category, e.g. course_progress"),
+    preferred_tier: Optional[int] = Query(None, description="Force evaluate a specific tier (1=streak, 2=duo, 3=daytime, 4=inactivity, 5=course_progress, 6=quest, 7=new_courses)"),
+    category: Optional[str] = Query(None, description="Filter/target specific category, e.g. new_courses, course_progress, objective_quest"),
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     """
     Evaluates users for Duolingo-style re-engagement, streak decay warnings,
-    duo partner accountability, and course in-progress nudges.
+    duo partner accountability, course in-progress nudges, and new courses discovery.
     If invoked by a learner, scopes evaluation safely to that user.
     Admins can trigger system-wide evaluations or target specific users.
     """
@@ -165,8 +165,8 @@ def trigger_reengagement_evaluations(
 
 @router.get("/engine/preview", status_code=status.HTTP_200_OK)
 def preview_my_reengagement_nudge(
-    preferred_tier: Optional[int] = Query(None, description="Force preview of specific tier (e.g. 5 for course_progress)"),
-    category: Optional[str] = Query(None, description="Filter preview to specific category (e.g. course_progress)"),
+    preferred_tier: Optional[int] = Query(None, description="Force preview of specific tier (e.g. 7 for new_courses, 5 for course_progress)"),
+    category: Optional[str] = Query(None, description="Filter preview to specific category (e.g. new_courses, course_progress)"),
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):

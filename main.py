@@ -495,6 +495,25 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_campus_ambassadors_uni ON campus_ambassadors(university);",
     "ALTER TABLE promo_codes ADD COLUMN IF NOT EXISTS scoped_university VARCHAR(150);",
     "CREATE INDEX IF NOT EXISTS ix_promo_codes_scoped_uni ON promo_codes(scoped_university);",
+    """
+    CREATE TABLE IF NOT EXISTS campus_ambassador_applications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        full_name VARCHAR(150) NOT NULL,
+        email VARCHAR NOT NULL,
+        university VARCHAR NOT NULL,
+        department VARCHAR(150) NOT NULL,
+        level VARCHAR(50) NOT NULL,
+        phone VARCHAR(50),
+        notes TEXT,
+        status VARCHAR(30) DEFAULT 'pending' NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        reviewed_at TIMESTAMPTZ,
+        reviewed_by UUID REFERENCES "user"(id) ON DELETE SET NULL
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_email ON campus_ambassador_applications(email);",
+    "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_status ON campus_ambassador_applications(status);",
+    "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_uni ON campus_ambassador_applications(university);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)
@@ -611,12 +630,22 @@ app.add_middleware(
     allow_origins=[
         "https://nu-age.name.ng",
         "https://www.nu-age.name.ng",
+        "https://nu-age.com.ng",
+        "https://www.nu-age.com.ng",
         "https://learn.nu-age.name.ng",
         "https://learn.nu-age.com.ng",
+        "https://nu-web.vercel.app",
         "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5500",
         "http://localhost:8000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5500",
+        "http://127.0.0.1:8000",
     ],
-    allow_origin_regex=r"^https://.*\.nu-age\.name\.ng$",
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?|https://(.*\.)?nu-age\.(name|com)\.ng|https://.*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"], 
