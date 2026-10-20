@@ -13,6 +13,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
@@ -74,8 +75,9 @@ def invite_campus_ambassador(
     assigned_promo_code_id: Optional[uuid.UUID] = None
 ) -> models.CampusAmbassador:
     """
-    Invites a registered learner to become a campus ambassador.
-    Enforces that the email belongs to an existing platform user in models.User.
+    Invites a learner to become a campus ambassador.
+    Mirrors the organisation invitation model: candidates may already be registered
+    or may register after receiving the invitation.
     """
     clean_email = (email or "").strip().lower()
     clean_uni = (university or "").strip()
@@ -83,19 +85,12 @@ def invite_campus_ambassador(
     if not clean_email or "@" not in clean_email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email address is required.")
 
-    # Strictly require candidate to be an existing registered learner
-    user = db.query(models.User).filter(models.User.email == clean_email).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No registered Nu-Age account found with email '{clean_email}'. Campus Ambassadors must already be registered learners on the platform."
-        )
-
+    user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
     if not clean_uni:
         clean_uni = getattr(user, "university", None) or "Campus Partner"
 
     # Check for existing ambassador record
-    existing = db.query(models.CampusAmbassador).filter(models.CampusAmbassador.email == clean_email).first()
+    existing = db.query(models.CampusAmbassador).filter(func.lower(models.CampusAmbassador.email) == clean_email).first()
     if existing and existing.status == "active":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This user is already an active Campus Ambassador.")
 
@@ -107,7 +102,7 @@ def invite_campus_ambassador(
         ambassador.invite_token = invite_token
         ambassador.status = "invited"
         ambassador.invited_at = datetime.now(timezone.utc)
-        ambassador.user_id = user.id
+        ambassador.user_id = user.id if user else None
         if notes:
             ambassador.notes = notes
         if assigned_promo_code_id:
@@ -120,7 +115,7 @@ def invite_campus_ambassador(
             status="invited",
             notes=notes,
             assigned_promo_code_id=assigned_promo_code_id,
-            user_id=user.id,
+            user_id=user.id if user else None,
         )
         db.add(ambassador)
 
@@ -128,8 +123,8 @@ def invite_campus_ambassador(
     db.refresh(ambassador)
 
     # Dispatch email invitation
-    candidate_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
-    accept_url = f"https://nu-age.name.ng/ambassador/accept?token={invite_token}"
+    candidate_name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None
+    accept_url = f"https://nu-age.name.ng/ambassadors/accept?token={invite_token}"
     html_content = _build_ambassador_invite_html(clean_email, clean_uni, accept_url, candidate_name=candidate_name)
     subject = f"Invitation: Campus Ambassador for {clean_uni} - Nu-Age"
 
@@ -141,10 +136,78 @@ def invite_campus_ambassador(
     return ambassador
 
 
+def process_ambassador_invitation(db: Session, token: str) -> Dict[str, Any]:
+    """
+    Public endpoint logic mirroring /organisations/process-invite.
+    Evaluates invitation token, checks user presence, and returns:
+    - 'success': Activates ambassador role and awards badge.
+    - 'already_active': Idempotent return for already-active ambassador.
+    - 'needs_signup': User not registered yet, directs to sign up first.
+    """
+    clean_tok = (token or "").strip()
+    if not clean_tok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token is required.")
+
+    ambassador = db.query(models.CampusAmbassador).filter(models.CampusAmbassador.invite_token == clean_tok).first()
+    if not ambassador:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid or expired invitation token.")
+
+    if ambassador.status == "active":
+        return {
+            "status": "already_active",
+            "university": ambassador.university,
+            "email": ambassador.email,
+            "message": "Invitation already accepted.",
+        }
+
+    # Check if targeted email is registered on platform
+    user = db.query(models.User).filter(func.lower(models.User.email) == func.lower(ambassador.email)).first()
+    if not user:
+        return {
+            "status": "needs_signup",
+            "email": ambassador.email,
+            "university": ambassador.university,
+            "message": f"Account not found for {ambassador.email}. Please sign up on Nu-Age first.",
+        }
+
+    # Activate ambassador
+    ambassador.status = "active"
+    ambassador.user_id = user.id
+    ambassador.accepted_at = datetime.now(timezone.utc)
+
+    # Note: Promo code binding is intentionally NOT done automatically here (managed manually).
+
+    # Award campus_ambassador badge
+    badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == "campus_ambassador").first()
+    if badge:
+        user_badge = db.query(models.UserBadge).filter(
+            models.UserBadge.user_id == user.id,
+            models.UserBadge.badge_id == badge.id
+        ).first()
+        if not user_badge:
+            user_badge = models.UserBadge(
+                user_id=user.id,
+                badge_id=badge.id,
+                is_primary=True
+            )
+            db.add(user_badge)
+
+    db.commit()
+
+    candidate_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username
+    return {
+        "status": "success",
+        "university": ambassador.university,
+        "name": candidate_name,
+        "email": ambassador.email,
+        "message": f"Congratulations! You are now an active Campus Ambassador for {ambassador.university}.",
+    }
+
+
 def accept_ambassador_invitation(db: Session, token: str, user_id: uuid.UUID) -> Dict[str, Any]:
     """
     Accepts an invitation using the secure invite token and binds to the user's account.
-    Awards the 'campus_ambassador' badge immediately.
+    Maintained for authenticated in-app calls.
     """
     clean_tok = (token or "").strip()
     if not clean_tok:
@@ -165,12 +228,6 @@ def accept_ambassador_invitation(db: Session, token: str, user_id: uuid.UUID) ->
     ambassador.user_id = user_id
     ambassador.accepted_at = datetime.now(timezone.utc)
 
-    # Link assigned promo code if exists
-    if ambassador.assigned_promo_code_id:
-        promo = db.query(models.PromoCode).filter(models.PromoCode.id == ambassador.assigned_promo_code_id).first()
-        if promo and not promo.ambassador_id:
-            promo.ambassador_id = user_id
-
     # Award campus_ambassador badge
     badge = db.query(models.MemberBadge).filter(models.MemberBadge.slug == "campus_ambassador").first()
     if badge:
@@ -182,7 +239,7 @@ def accept_ambassador_invitation(db: Session, token: str, user_id: uuid.UUID) ->
             user_badge = models.UserBadge(
                 user_id=user_id,
                 badge_id=badge.id,
-                is_primary=True  # Automatically set as primary
+                is_primary=True
             )
             db.add(user_badge)
 
@@ -268,3 +325,174 @@ def toggle_ambassador_status(db: Session, ambassador_id: uuid.UUID, new_status: 
         "ambassador_id": str(ambassador.id),
         "new_status": ambassador.status,
     }
+
+
+def submit_ambassador_application(db: Session, payload: Dict[str, Any]) -> models.CampusAmbassadorApplication:
+    """
+    Persists a public ambassador application from nu-web/ambassadors.html.
+    """
+    clean_email = (payload.get("email") or "").strip().lower()
+    clean_name = (payload.get("full_name") or "").strip()
+    clean_uni = (payload.get("university") or "").strip()
+    clean_dept = (payload.get("department") or "").strip()
+    clean_level = (payload.get("level") or "").strip()
+    clean_phone = (payload.get("phone") or "").strip() or None
+    clean_notes = (payload.get("notes") or "").strip() or None
+
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A valid email address is required.")
+    if not clean_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Full name is required.")
+    if not clean_uni:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="University is required.")
+    if not clean_dept:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Department is required.")
+    if not clean_level:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Level of study is required.")
+
+    # Check for existing pending application with this email to avoid duplicate rows
+    existing = db.query(models.CampusAmbassadorApplication).filter(
+        func.lower(models.CampusAmbassadorApplication.email) == clean_email,
+        models.CampusAmbassadorApplication.status == "pending"
+    ).first()
+
+    if existing:
+        existing.full_name = clean_name
+        existing.university = clean_uni
+        existing.department = clean_dept
+        existing.level = clean_level
+        existing.phone = clean_phone
+        existing.notes = clean_notes
+        app = existing
+    else:
+        app = models.CampusAmbassadorApplication(
+            full_name=clean_name,
+            email=clean_email,
+            university=clean_uni,
+            department=clean_dept,
+            level=clean_level,
+            phone=clean_phone,
+            notes=clean_notes,
+            status="pending",
+        )
+        db.add(app)
+
+    db.commit()
+    db.refresh(app)
+    return app
+
+
+def list_ambassador_applications_admin(db: Session, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Returns campus ambassador applications left-joined with models.User to surface platform learner metrics.
+    """
+    query = db.query(
+        models.CampusAmbassadorApplication,
+        models.User
+    ).outerjoin(
+        models.User,
+        func.lower(models.User.email) == func.lower(models.CampusAmbassadorApplication.email)
+    )
+
+    if status_filter and status_filter.strip() and status_filter.strip().lower() != "all":
+        query = query.filter(models.CampusAmbassadorApplication.status == status_filter.strip().lower())
+
+    records = query.order_by(models.CampusAmbassadorApplication.created_at.desc()).all()
+    results = []
+
+    for app, user in records:
+        is_on_platform = bool(user is not None)
+        user_id = str(user.id) if user else None
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or user.username if user else None
+        username = user.username if user else None
+        avatar_url = getattr(user, "profile_picture_url", None) if user else None
+        registered_at = user.created_at.isoformat() if (user and getattr(user, "created_at", None)) else None
+        coins_balance = getattr(user, "coins_balance", 0) if user else 0
+        streak = getattr(user, "streak", 0) if user else 0
+        is_verified = bool(getattr(user, "is_verified", False)) if user else False
+
+        # Course enrollments count
+        courses_enrolled_count = 0
+        if user:
+            courses_enrolled_count = db.query(func.count(models.Enrollment.course_id)).filter(
+                models.Enrollment.student_id == user.id
+            ).scalar() or 0
+
+        results.append({
+            "id": str(app.id),
+            "full_name": app.full_name,
+            "email": app.email,
+            "university": app.university,
+            "department": app.department,
+            "level": app.level,
+            "phone": app.phone,
+            "notes": app.notes,
+            "status": app.status,
+            "created_at": app.created_at.isoformat() if app.created_at else None,
+            "reviewed_at": app.reviewed_at.isoformat() if app.reviewed_at else None,
+            "reviewed_by": str(app.reviewed_by) if app.reviewed_by else None,
+            # Platform user presence & stats
+            "is_on_platform": is_on_platform,
+            "user_id": user_id,
+            "user_name": user_name,
+            "username": username,
+            "avatar_url": avatar_url,
+            "registered_at": registered_at,
+            "courses_enrolled_count": courses_enrolled_count,
+            "coins_balance": coins_balance,
+            "streak": streak,
+            "is_verified": is_verified,
+        })
+
+    return results
+
+
+def review_ambassador_application(
+    db: Session,
+    application_id: uuid.UUID,
+    action: str,
+    admin_user_id: Optional[uuid.UUID] = None
+) -> Dict[str, Any]:
+    """
+    Approves or rejects a campus ambassador application.
+    When approved, automatically creates a CampusAmbassador record and sends invitation email.
+    """
+    app = db.query(models.CampusAmbassadorApplication).filter(models.CampusAmbassadorApplication.id == application_id).first()
+    if not app:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
+
+    clean_action = (action or "").strip().lower()
+    if clean_action not in ("approve", "reject"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Action must be 'approve' or 'reject'.")
+
+    now = datetime.now(timezone.utc)
+    if clean_action == "approve":
+        app.status = "approved"
+        app.reviewed_at = now
+        app.reviewed_by = admin_user_id
+        db.commit()
+
+        # Automatically dispatch ambassador invitation
+        amb = invite_campus_ambassador(
+            db=db,
+            email=app.email,
+            university=app.university,
+            notes=f"Approved application from {app.full_name}",
+        )
+        return {
+            "status": "success",
+            "message": f"Application approved! Invitation email sent to {app.email}.",
+            "ambassador_id": str(amb.id),
+            "application_status": "approved",
+        }
+    else:
+        app.status = "rejected"
+        app.reviewed_at = now
+        app.reviewed_by = admin_user_id
+        db.commit()
+        return {
+            "status": "success",
+            "message": f"Application for {app.email} rejected.",
+            "application_status": "rejected",
+        }
+

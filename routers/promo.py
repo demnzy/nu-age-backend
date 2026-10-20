@@ -26,6 +26,22 @@ class AmbassadorAcceptRequest(BaseModel):
     token: str
 
 
+class AmbassadorProcessRequest(BaseModel):
+    token: str
+
+
+class AmbassadorApplicationRequest(BaseModel):
+    full_name: str
+    email: str
+    university: str
+    department: str
+    level: str
+    phone: Optional[str] = None
+    notes: Optional[str] = None
+    is_enrolled: bool = True
+    applied_at: Optional[str] = None
+
+
 @router.post("/redeem", status_code=status.HTTP_200_OK)
 def redeem_promo_code_endpoint(
     payload: PromoRedeemRequest,
@@ -67,6 +83,35 @@ def equip_badge_endpoint(
     return result
 
 
+@router.post("/ambassadors/apply", status_code=status.HTTP_201_CREATED)
+def apply_for_ambassador_endpoint(
+    payload: AmbassadorApplicationRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Public endpoint for submitting campus ambassador applications from nu-web/ambassadors.html.
+    """
+    app = ambassador_service.submit_ambassador_application(db, payload.model_dump())
+    return {
+        "status": "success",
+        "message": "Application submitted successfully.",
+        "id": str(app.id)
+    }
+
+
+@router.post("/ambassador/process", status_code=status.HTTP_200_OK)
+def process_ambassador_invitation_endpoint(
+    payload: AmbassadorProcessRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Consolidated unauthenticated invitation processing endpoint for campus ambassadors,
+    mirroring /organisations/process-invite. Consumed by nu-web/ambassadors/accept.
+    """
+    result = ambassador_service.process_ambassador_invitation(db, payload.token)
+    return result
+
+
 @router.post("/ambassador/accept", status_code=status.HTTP_200_OK)
 def accept_ambassador_invitation_endpoint(
     payload: AmbassadorAcceptRequest,
@@ -78,3 +123,4 @@ def accept_ambassador_invitation_endpoint(
     """
     result = ambassador_service.accept_ambassador_invitation(db, payload.token, current_user.id)
     return result
+

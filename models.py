@@ -1259,4 +1259,24 @@ class CampusAmbassador(Base):
     promo_code = relationship("PromoCode")
 
 
+class CampusAmbassadorApplication(Base):
+    __tablename__ = "campus_ambassador_applications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    full_name = Column(String(150), nullable=False)
+    email = Column(String, nullable=False, index=True)
+    university = Column(String, nullable=False, index=True)
+    department = Column(String(150), nullable=False)
+    level = Column(String(50), nullable=False)
+    phone = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+    status = Column(String(30), default="pending", nullable=False, index=True)  # "pending", "approved", "rejected"
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+
+
+
 

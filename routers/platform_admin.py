@@ -2416,6 +2416,52 @@ def invite_campus_ambassador_admin(
     }
 
 
+@router.get("/ambassadors/applications")
+def list_ambassador_applications_admin(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Lists all campus ambassador applications with joined platform learner stats (courses enrolled, coins, etc.).
+    """
+    from services.ambassador_service import list_ambassador_applications_admin as list_apps
+    items = list_apps(db, status_filter=status_filter)
+    return {
+        "status": "success",
+        "total": len(items),
+        "applications": items,
+    }
+
+
+@router.post("/ambassadors/applications/{application_id}/approve")
+def approve_ambassador_application_admin(
+    application_id: UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Approves a campus ambassador application and dispatches the activation invitation email.
+    """
+    from services.ambassador_service import review_ambassador_application
+    result = review_ambassador_application(db, application_id, action="approve", admin_user_id=current_admin.id)
+    return result
+
+
+@router.post("/ambassadors/applications/{application_id}/reject")
+def reject_ambassador_application_admin(
+    application_id: UUID,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_super_admin),
+):
+    """
+    Rejects a campus ambassador application.
+    """
+    from services.ambassador_service import review_ambassador_application
+    result = review_ambassador_application(db, application_id, action="reject", admin_user_id=current_admin.id)
+    return result
+
+
 @router.put("/ambassadors/{ambassador_id}/status")
 def update_ambassador_status_admin(
     ambassador_id: UUID,
@@ -2427,5 +2473,6 @@ def update_ambassador_status_admin(
     from services.ambassador_service import toggle_ambassador_status
     res = toggle_ambassador_status(db, ambassador_id, payload.status)
     return res
+
 
 
