@@ -27,7 +27,7 @@ PRESET_BADGES = [
     {
         "slug": "campus_ambassador",
         "name": "Campus Ambassador",
-        "description": "Official campus representative for Nu-Age.",
+        "description": "Official campus representative for Nu Age.",
         "icon": "SCHOOL_ROUNDED",
         "color_hex": "#4CAF50",
         "gradient_start": "#2E7D32",
@@ -87,7 +87,7 @@ PRESET_BADGES = [
     {
         "slug": "beta_tester",
         "name": "Beta Pioneer",
-        "description": "Early adopter driving the future of Nu-Age learning.",
+        "description": "Early adopter driving the future of Nu Age learning.",
         "icon": "SHIELD_ROUNDED",
         "color_hex": "#FF5722",
         "gradient_start": "#BF360C",
@@ -128,17 +128,13 @@ def _apply_pro_trial(db: Session, user_id: uuid.UUID, days: int) -> Dict[str, An
         db.flush()
 
     # Ensure plan_obj for pro exists
-    plan_obj = db.query(models.StudyPlan).filter(models.StudyPlan.id == "pro").first()
-    if not plan_obj:
-        plan_obj = models.StudyPlan(id="pro", label="Pro Scholar", materials_limit=45, generations_limit=100)
-        db.add(plan_obj)
-        db.flush()
+    plan_obj = db.query(models.StoreProduct).filter(models.StoreProduct.id == "pro").first()
 
     if sub.expires_at:
         exp = sub.expires_at
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
-        if exp > now and sub.plan_id in ("pro", "unlimited"):
+        if exp > now and sub.plan_id == "pro":
             new_exp = exp + timedelta(days=days)
         else:
             new_exp = now + timedelta(days=days)

@@ -5,7 +5,7 @@
 #
 #   1. Student AI Self-Study Hub generations
 #      -> existing free quota (UserSubscription.generations_used vs
-#         StudyPlan.generations_limit) PLUS a purchasable, non-expiring
+#         StoreProduct.generations_limit) PLUS a purchasable, non-expiring
 #         credit balance (CreditBalance) for consumable top-ups.
 #
 #   2. Organisation AI course drafting

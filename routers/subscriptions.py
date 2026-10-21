@@ -15,7 +15,10 @@ def get_plans_config(db: Session = Depends(get_db)):
     Returns the dynamic plan configuration from the database 
     formatted exactly as the frontend expects.
     """
-    plans = db.query(models.StudyPlan).all()
+    plans = db.query(models.StoreProduct).filter(
+        models.StoreProduct.category == "plan",
+        models.StoreProduct.is_active == True
+    ).order_by(models.StoreProduct.display_order.asc()).all()
     
     if not plans:
         raise HTTPException(status_code=404, detail="No study plans configured in the database.")
@@ -49,7 +52,7 @@ def get_subscription_status(
     # Auto-create a free tier record if they don't have one
     if not sub:
         # Ensure the 'free' plan exists in the DB first
-        free_plan = db.query(models.StudyPlan).filter(models.StudyPlan.id == "free").first()
+        free_plan = db.query(models.StoreProduct).filter(models.StoreProduct.id == "free").first()
         if not free_plan:
              raise HTTPException(status_code=500, detail="Database missing 'free' base plan.")
              
@@ -92,7 +95,7 @@ def get_subscription_status(
     effective_plan = sub.plan
     effective_plan_id = sub.plan_id
     if is_expired and sub.plan_id != "free":
-        free_plan = db.query(models.StudyPlan).filter(models.StudyPlan.id == "free").first()
+        free_plan = db.query(models.StoreProduct).filter(models.StoreProduct.id == "free").first()
         if free_plan:
             effective_plan = free_plan
             effective_plan_id = "free"

@@ -529,7 +529,7 @@ def send_organisation_invite_email(email: str, invite_link: str, org_name: str, 
         <div class="email-card">
 
           <div class="banner">
-            <img src="https://nu-age-cdn.b-cdn.net/logos/Nu%20logo%20only.jpeg" alt="Nu-age Banner" />
+            <img src="https://nu-age-cdn.b-cdn.net/logos/Nu%20logo%20only.jpeg" alt="Nu Age Banner" />
           </div>
 
           <div class="header-strip">

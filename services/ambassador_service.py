@@ -22,44 +22,219 @@ from services.email_service import send_email
 
 
 def _build_ambassador_invite_html(email: str, university: str, accept_link: str, candidate_name: Optional[str] = None) -> str:
-    """Renders a responsive, high-converting HTML email invitation."""
+    """Renders a responsive, high-converting HTML email invitation in Nu Age brand colors."""
     greeting = f"Hello {candidate_name}," if candidate_name else "Hello,"
     return f"""
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Campus Ambassador Invitation — Nu Age</title>
       <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0F1117; color: #FFFFFF; margin: 0; padding: 24px; }}
-        .card {{ background-color: #181B24; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px; max-width: 540px; margin: 0 auto; }}
-        .badge {{ display: inline-block; background-color: rgba(76, 175, 80, 0.15); color: #4CAF50; font-weight: 700; font-size: 11px; padding: 4px 10px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; }}
-        h1 {{ font-size: 22px; margin: 0 0 12px 0; color: #FFFFFF; }}
-        p {{ font-size: 14px; line-height: 1.6; color: #94A3B8; margin: 0 0 16px 0; }}
-        .highlight {{ color: #4CAF50; font-weight: 600; }}
-        .cta {{ display: inline-block; background-color: #4CAF50; color: #FFFFFF; text-decoration: none; font-weight: 700; font-size: 14px; padding: 12px 28px; border-radius: 10px; margin-top: 12px; margin-bottom: 24px; }}
-        .footer {{ font-size: 11px; color: #64748B; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 16px; }}
+        body {{
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+          background-color: #F4F8F4;
+          color: #0F172A;
+          margin: 0;
+          padding: 32px 16px;
+        }}
+        .email-container {{
+          max-width: 560px;
+          margin: 0 auto;
+        }}
+        .card {{
+          background-color: #FFFFFF;
+          border: 1px solid #E2E8F0;
+          border-radius: 16px;
+          padding: 36px 32px;
+          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+        }}
+        .brand-header {{
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 22px;
+        }}
+        .brand-logo {{
+          width: 34px;
+          height: 34px;
+          border-radius: 8px;
+          vertical-align: middle;
+        }}
+        .brand-title {{
+          font-size: 18px;
+          font-weight: 800;
+          color: #0F172A;
+          letter-spacing: -0.3px;
+        }}
+        .brand-title span {{
+          color: #37BF14;
+        }}
+        .badge {{
+          display: inline-block;
+          background-color: #EDF7EE;
+          color: #156637;
+          border: 1px solid rgba(55, 191, 20, 0.35);
+          font-weight: 700;
+          font-size: 11px;
+          padding: 4px 12px;
+          border-radius: 20px;
+          text-transform: uppercase;
+          letter-spacing: 0.6px;
+          margin-bottom: 14px;
+        }}
+        h1 {{
+          font-size: 22px;
+          font-weight: 800;
+          margin: 0 0 14px 0;
+          color: #0F172A;
+          line-height: 1.3;
+        }}
+        p {{
+          font-size: 14.5px;
+          line-height: 1.65;
+          color: #334155;
+          margin: 0 0 16px 0;
+        }}
+        .perks-container {{
+          margin: 20px 0 24px 0;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }}
+        .perk-item {{
+          background: #F8FAF8;
+          border: 1px solid #E2E8F0;
+          border-left: 3.5px solid #37BF14;
+          border-radius: 10px;
+          padding: 12px 14px;
+          text-align: left;
+        }}
+        .perk-item strong {{
+          color: #0F172A;
+          font-size: 13.5px;
+        }}
+        .perk-item p {{
+          margin: 3px 0 0 0;
+          font-size: 12.5px;
+          color: #64748B;
+          line-height: 1.45;
+        }}
+        .cta-wrap {{
+          text-align: center;
+          margin: 28px 0 20px 0;
+        }}
+        .cta-btn {{
+          display: inline-block;
+          background-color: #156637;
+          color: #FFFFFF !important;
+          text-decoration: none;
+          font-weight: 700;
+          font-size: 15px;
+          padding: 14px 34px;
+          border-radius: 12px;
+          box-shadow: 0 4px 14px rgba(21, 102, 55, 0.25);
+        }}
+        .link-fallback {{
+          font-size: 12px;
+          color: #64748B;
+          background: #F8FAFC;
+          border: 1px dashed #CBD5E1;
+          border-radius: 8px;
+          padding: 12px 14px;
+          word-break: break-all;
+          line-height: 1.5;
+        }}
+        .link-fallback a {{
+          color: #156637;
+          font-weight: 600;
+          text-decoration: underline;
+        }}
+        .signature {{
+          border-top: 1px solid #E2E8F0;
+          margin-top: 28px;
+          padding-top: 20px;
+        }}
+        .signature .name {{
+          font-size: 14px;
+          font-weight: 700;
+          color: #0F172A;
+        }}
+        .signature .role {{
+          font-size: 12px;
+          color: #156637;
+          font-weight: 600;
+          margin-top: 2px;
+        }}
+        .footer {{
+          font-size: 11.5px;
+          color: #64748B;
+          text-align: center;
+          margin-top: 20px;
+          line-height: 1.6;
+        }}
       </style>
     </head>
     <body>
-      <div class="card">
-        <div class="badge">Official Invitation</div>
-        <h1>Become a Campus Ambassador for Nu-Age</h1>
-        <p>{greeting}</p>
-        <p>You have been officially invited to lead student growth as a <strong>Campus Ambassador</strong> representing <strong>{university}</strong> on Nu-Age.</p>
-        <p>As a verified ambassador, you will receive:</p>
-        <ul style="color: #94A3B8; font-size: 14px; line-height: 1.6; padding-left: 20px;">
-          <li>An exclusive <strong style="color:#FFF;">Campus Ambassador</strong> badge displayed on your profile, chat messages, and leaderboards.</li>
-          <li>A dedicated promo code to distribute to students at {university} with custom study perks.</li>
-          <li>Nu-Coin commissions and AI credits for every student onboarding and redemption.</li>
-          <li>Direct mentorship and access to the Nu-Age leadership network.</li>
-        </ul>
-        <div style="text-align: center;">
-          <a href="{accept_link}" class="cta">Accept Ambassador Role</a>
+      <div class="email-container">
+        <div class="card">
+          <table cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 18px;">
+            <tr>
+              <td style="vertical-align: middle; padding-right: 10px;">
+                <img src="https://nu-age-cdn.b-cdn.net/logos/icon.png" alt="Nu Age Logo" class="brand-logo" />
+              </td>
+              <td style="vertical-align: middle;">
+                <span class="brand-title">Nu Age<span style="color:#37BF14;">.</span></span>
+              </td>
+            </tr>
+          </table>
+
+          <div class="badge">Official Invitation</div>
+          <h1>Become a Campus Ambassador for Nu Age</h1>
+
+          <p>{greeting}</p>
+          <p>You have been officially invited to lead student growth as a <strong>Campus Ambassador</strong> representing <strong>{university}</strong> on Nu Age.</p>
+
+          <p>As a verified campus ambassador, you will unlock:</p>
+
+          <div class="perks-container">
+            <div class="perk-item">
+              <strong>🏅 Verified Ambassador Badge</strong>
+              <p>Distinguished profile badge displayed across student chats, course discussions, and community leaderboards.</p>
+            </div>
+            <div class="perk-item">
+              <strong>🎟️ Dedicated Promo Code</strong>
+              <p>Your unique code for students at {university} with custom discounts and bonus study packs.</p>
+            </div>
+            <div class="perk-item">
+              <strong>💰 Nu-Coin Commissions &amp; AI Credits</strong>
+              <p>Earn Nu-Coins and AI credits directly to your account for student sign-ups, course redemptions, and active study groups.</p>
+            </div>
+            <div class="perk-item">
+              <strong>🤝 Direct Mentorship &amp; Executive Network</strong>
+              <p>Monthly leadership calls, product roadmap previews, priority support, and official recommendation letters.</p>
+            </div>
+          </div>
+
+          <div class="cta-wrap">
+            <a href="{accept_link}" class="cta-btn">Accept Ambassador Invitation &rarr;</a>
+          </div>
+
+          <div class="link-fallback">
+            If the button above does not open, copy and paste this link into your browser:<br>
+            <a href="{accept_link}">{accept_link}</a>
+          </div>
+
+          <div class="signature">
+            <div class="name">Tobi Davies</div>
+            <div class="role">Founder &amp; Engineering &bull; Nu Age</div>
+          </div>
         </div>
-        <p style="font-size: 12px; color: #64748B;">Or copy and paste this link into your browser:<br><span style="color:#4CAF50;">{accept_link}</span></p>
+
         <div class="footer">
-          Nu-Age Learning Technologies • Bridging Higher Education and Intelligence<br>
-          If you did not expect this invitation, you can safely ignore this email.
+          &copy; 2026 Nu Age &bull; The African Learning Ecosystem &bull; Offline-First Continuity<br>
+          If you were not expecting this invitation, you can safely ignore this email.
         </div>
       </div>
     </body>
@@ -126,7 +301,7 @@ def invite_campus_ambassador(
     candidate_name = f"{user.first_name or ''} {user.last_name or ''}".strip() if user else None
     accept_url = f"https://nu-age.name.ng/ambassadors/accept?token={invite_token}"
     html_content = _build_ambassador_invite_html(clean_email, clean_uni, accept_url, candidate_name=candidate_name)
-    subject = f"Invitation: Campus Ambassador for {clean_uni} - Nu-Age"
+    subject = f"Invitation: Campus Ambassador for {clean_uni} - Nu Age"
 
     try:
         send_email(to=clean_email, subject=subject, html=html_content)
@@ -167,7 +342,7 @@ def process_ambassador_invitation(db: Session, token: str) -> Dict[str, Any]:
             "status": "needs_signup",
             "email": ambassador.email,
             "university": ambassador.university,
-            "message": f"Account not found for {ambassador.email}. Please sign up on Nu-Age first.",
+            "message": f"Account not found for {ambassador.email}. Please sign up on Nu Age first.",
         }
 
     # Activate ambassador

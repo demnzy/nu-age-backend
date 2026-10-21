@@ -31,6 +31,9 @@ class StoreProductPayload(BaseModel):
     bonus_materials: Optional[int] = 0
     bonus_generations: Optional[int] = 0
     bonus_coins: Optional[int] = 0
+    materials_limit: Optional[int] = None
+    generations_limit: Optional[int] = None
+    exam_quota: Optional[int] = None
     plan_id: Optional[str] = None
     org_seats: Optional[int] = 0
     is_active: Optional[bool] = True
@@ -120,6 +123,26 @@ async def initialize_payment(
     # Generate a collision-resistant unique transaction reference
     ref_prefix = payload.purpose[:4].lower()
     ref = f"nu_{ref_prefix}_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4().hex[:6]}"
+
+    meta = payload.metadata or {}
+    req_plan_id = meta.get("plan_id") or meta.get("product_id")
+    if req_plan_id:
+        if str(req_plan_id).lower() == "unlimited":
+            raise HTTPException(
+                status_code=400,
+                detail="The requested subscription plan is not available."
+            )
+        if payload.purpose == "plan_upgrade":
+            plan_prod = db.query(models.StoreProduct).filter(
+                models.StoreProduct.id == req_plan_id,
+                models.StoreProduct.category == "plan",
+                models.StoreProduct.is_active == True,
+            ).first()
+            if not plan_prod:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The requested subscription plan is inactive or does not exist."
+                )
 
     org_uuid = None
     if payload.organisation_id:
@@ -388,6 +411,9 @@ def get_store_catalog(db: Session = Depends(get_db)):
             "bonus_materials": p.bonus_materials,
             "bonus_generations": p.bonus_generations,
             "bonus_coins": p.bonus_coins,
+            "materials_limit": p.materials_limit,
+            "generations_limit": p.generations_limit,
+            "exam_quota": p.exam_quota,
             "plan_id": p.plan_id,
             "org_seats": p.org_seats,
             "is_active": p.is_active,
@@ -541,6 +567,9 @@ def create_store_product(
         bonus_materials=payload.bonus_materials or 0,
         bonus_generations=payload.bonus_generations or 0,
         bonus_coins=payload.bonus_coins or 0,
+        materials_limit=payload.materials_limit,
+        generations_limit=payload.generations_limit,
+        exam_quota=payload.exam_quota,
         plan_id=payload.plan_id,
         org_seats=payload.org_seats or 0,
         is_active=payload.is_active if payload.is_active is not None else True,
@@ -576,6 +605,9 @@ def update_store_product(
     prod.bonus_materials = payload.bonus_materials or 0
     prod.bonus_generations = payload.bonus_generations or 0
     prod.bonus_coins = payload.bonus_coins or 0
+    prod.materials_limit = payload.materials_limit
+    prod.generations_limit = payload.generations_limit
+    prod.exam_quota = payload.exam_quota
     prod.plan_id = payload.plan_id
     prod.org_seats = payload.org_seats or 0
     if payload.is_active is not None:
@@ -705,6 +737,9 @@ def _seed_store_catalog_if_empty(db: Session):
             bonus_materials=0,
             bonus_generations=0,
             bonus_coins=0,
+            materials_limit=25,
+            generations_limit=40,
+            exam_quota=10,
             plan_id="free",
             display_order=1,
             is_active=True,
@@ -728,30 +763,11 @@ def _seed_store_catalog_if_empty(db: Session):
             bonus_materials=0,
             bonus_generations=0,
             bonus_coins=0,
+            materials_limit=45,
+            generations_limit=100,
+            exam_quota=40,
             plan_id="pro",
             display_order=2,
-            is_active=True,
-        ),
-        models.StoreProduct(
-            id="unlimited",
-            name="Unlimited Ultimate",
-            category="plan",
-            price=8500,
-            badge="BEST VALUE",
-            interval="month",
-            description="Unbounded power for medical, law, and intensive exam candidates.",
-            features=[
-                "Unlimited Material Upload slots",
-                "Unlimited AI Study Deck Generation bundles",
-                "Unlimited Exam Simulations & Timer drills",
-                "Deep Grounded Document Synthesis",
-                "Early Access to new learning AI models",
-            ],
-            bonus_materials=0,
-            bonus_generations=0,
-            bonus_coins=0,
-            plan_id="unlimited",
-            display_order=3,
             is_active=True,
         ),
         # Boosters
@@ -971,18 +987,15 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
             print(f"[FULFILLMENT] Credited User {tx.user_id}: +{extra_mats} mats, +{extra_gens} AI gens, +{extra_coins} Nu-Coins")
 
     elif purpose == "plan_upgrade":
-        new_plan_id = meta.get("plan_id") or (prod.plan_id if prod else None) or "pro"
+        new_plan_id = meta.get("plan_id") or (prod.plan_id if prod else None) or (prod.id if prod and prod.category == "plan" else None) or "pro"
         if tx.user_id:
-            plan_obj = db.query(models.StudyPlan).filter(models.StudyPlan.id == new_plan_id).first()
+            plan_obj = db.query(models.StoreProduct).filter(
+                models.StoreProduct.id == new_plan_id,
+                models.StoreProduct.category == "plan"
+            ).first()
             if not plan_obj:
-                if new_plan_id == "pro":
-                    plan_obj = models.StudyPlan(id="pro", label="Pro Scholar", materials_limit=45, generations_limit=100)
-                elif new_plan_id == "unlimited":
-                    plan_obj = models.StudyPlan(id="unlimited", label="Unlimited", materials_limit=None, generations_limit=None)
-                else:
-                    plan_obj = models.StudyPlan(id=new_plan_id, label=new_plan_id.title(), materials_limit=50, generations_limit=100)
-                db.add(plan_obj)
-                db.flush()
+                new_plan_id = "pro"
+                plan_obj = db.query(models.StoreProduct).filter(models.StoreProduct.id == "pro").first()
 
             sub = db.query(models.UserSubscription).filter(
                 models.UserSubscription.user_id == tx.user_id

@@ -1,11 +1,53 @@
-# 1. Ignore Python compiled files (Junk)
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
 
-# 2. Ignore the Configuration file IF it contains passwords
+# Caches and runtime state
+.cache/
+.pytest_cache/
+*.log
+
+# Environment and service credentials
 .env
-services\nu-age-firebase-adminsdk-fbsvc-540228e785.json
-# 3. Ignore the DBML/SQL dumps we just generated (Optional, but keeps repo clean)
+*.env
+services/nu-age-firebase-adminsdk-*.json
+services\nu-age-firebase-adminsdk-*.json
+*.json.bak
+
+# Local databases and SQLite stores
+*.db
+*.sqlite
+*.sqlite3
+nuage.db
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Scratch & developer test files
+scratch/
+tests/
+test_*.py
+GEMINI.md
+AGENTS.md
+
+# Database dumps & export artifacts
 *.dbml
 *.sql
-*.png
+
+# IDE, OS and local Agent configurations
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+.agents/
+.gemini/

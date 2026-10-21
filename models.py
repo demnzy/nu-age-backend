@@ -419,26 +419,49 @@ class Question(Base):
     material = relationship("StudyMaterial", back_populates="questions")
     user = relationship("User", backref="study_questions")
 
-class StudyPlan(Base):
-        __tablename__ = "study_plans"
+class StoreProduct(Base):
+    __tablename__ = "store_products"
 
-        # We use strings like "free", "pro", "unlimited" as the primary ID
-        id = Column(String, primary_key=True, index=True) 
-        label = Column(String, nullable=False)
-        
-        # Nullable because "unlimited" will have None
-        materials_limit = Column(Integer, nullable=True)
-        generations_limit = Column(Integer, nullable=True)
+    id = Column(String(100), primary_key=True)                 # unique slug e.g. 'free', 'pro', 'starter_booster', 'coins_50'
+    name = Column(String(255), nullable=False)                 # Display title e.g. "Pro Scholar", "Starter Booster"
+    category = Column(String(50), nullable=False, index=True)  # 'plan', 'booster', 'coins', 'org_plan', 'org_seats'
+    price = Column(Float, nullable=False)                      # Major unit NGN (e.g. 2500.0)
+    badge = Column(String(50), nullable=True)                  # e.g. "MOST POPULAR", "BEST VALUE", "QUICK TOP-UP"
+    description = Column(Text, nullable=True)
+    interval = Column(String(50), default="one-time")          # 'month', 'one-time', 'forever'
+    features = Column(JSONB, default=list)                     # List of feature bullet points
 
-# 2. The updated Subscription table
+    # Unified Authoritative Entitlements for Scholar Plans
+    materials_limit = Column(Integer, nullable=True)           # Total document upload slots (e.g. 25, 45, or None for unlimited)
+    generations_limit = Column(Integer, nullable=True)         # Per-cycle monthly AI generations allowance (e.g. 40, 100, or None)
+    exam_quota = Column(Integer, nullable=True)                # Monthly practice exam simulations allowance (e.g. 10, 40, or None)
+
+    # Consumable Booster & Coin Additions
+    bonus_materials = Column(Integer, default=0, nullable=False)
+    bonus_generations = Column(Integer, default=0, nullable=False)
+    bonus_coins = Column(Integer, default=0, nullable=False)
+    plan_id = Column(String(50), nullable=True)
+    org_seats = Column(Integer, default=0, nullable=False)
+
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    display_order = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    @property
+    def label(self) -> str:
+        """Backwards-compatible alias for plan label."""
+        return self.name
+
+# 2. The Subscription table
 class UserSubscription(Base):
     __tablename__ = "user_subscriptions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), unique=True, nullable=False)
     
-    # Foreign Key pointing to the StudyPlan table
-    plan_id = Column(String, ForeignKey("study_plans.id"), default="free", nullable=False) 
+    # Foreign Key pointing to the unified store_products table
+    plan_id = Column(String(100), ForeignKey("store_products.id"), default="free", nullable=False) 
     
     materials_uploaded = Column(Integer, default=0, nullable=False)
     bonus_materials = Column(Integer, default=0, nullable=False)
@@ -456,7 +479,7 @@ class UserSubscription(Base):
 
     # Relationships
     user = relationship("User", backref="subscription")
-    plan = relationship("StudyPlan") # Allows us to access sub.plan.materials_limit
+    plan = relationship("StoreProduct", foreign_keys=[plan_id]) # Access sub.plan.materials_limit and sub.plan.generations_limit
 
 class Connection(Base):
     __tablename__ = "connections"
@@ -871,29 +894,6 @@ class PaymentTransaction(Base):
     user = relationship("User", foreign_keys=[user_id])
     organisation = relationship("Organisation", foreign_keys=[organisation_id])
 
-
-class StoreProduct(Base):
-    __tablename__ = "store_products"
-
-    id = Column(String(100), primary_key=True)                 # unique slug e.g. 'starter_booster', 'pro_scholar', 'coins_50'
-    name = Column(String(255), nullable=False)                 # Display title e.g. "Starter Study Booster"
-    category = Column(String(50), nullable=False, index=True)  # 'plans', 'boosters', 'coins', 'org'
-    price = Column(Float, nullable=False)                      # Major unit NGN (e.g. 1000.0)
-    badge = Column(String(50), nullable=True)                  # e.g. "MOST POPULAR", "BEST VALUE", "QUICK TOP-UP"
-    description = Column(Text, nullable=True)
-    interval = Column(String(50), default="one-time")          # 'month', 'one-time'
-    features = Column(JSONB, default=list)                     # List of feature bullet points
-    
-    bonus_materials = Column(Integer, default=0, nullable=False)
-    bonus_generations = Column(Integer, default=0, nullable=False)
-    bonus_coins = Column(Integer, default=0, nullable=False)
-    plan_id = Column(String(50), nullable=True)                # e.g. 'pro', 'unlimited'
-    org_seats = Column(Integer, default=0, nullable=False)
-
-    is_active = Column(Boolean, default=True, nullable=False, index=True)
-    display_order = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 # ── SELF-STUDY PACK MARKETPLACE & COMMUNITY HUB ─────────────────────────────

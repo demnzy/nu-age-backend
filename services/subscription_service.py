@@ -20,7 +20,7 @@ from services.notifications import dispatch_notification
 logger = logging.getLogger("subscription_service")
 
 
-def get_effective_subscription(user_id: UUID, db: Session) -> Tuple[models.UserSubscription, models.StudyPlan, str, bool]:
+def get_effective_subscription(user_id: UUID, db: Session) -> Tuple[models.UserSubscription, models.StoreProduct, str, bool]:
     """
     Evaluates and returns:
     (sub, effective_plan, current_status, is_expired)
@@ -38,7 +38,7 @@ def get_effective_subscription(user_id: UUID, db: Session) -> Tuple[models.UserS
     ).first()
 
     if not sub:
-        free_plan = db.query(models.StudyPlan).filter(models.StudyPlan.id == "free").first()
+        free_plan = db.query(models.StoreProduct).filter(models.StoreProduct.id == "free").first()
         sub = models.UserSubscription(user_id=user_id, plan_id="free")
         db.add(sub)
         db.commit()
@@ -75,7 +75,7 @@ def get_effective_subscription(user_id: UUID, db: Session) -> Tuple[models.UserS
     # Determine effective plan
     effective_plan = sub.plan
     if is_expired and sub.plan_id != "free":
-        free_plan = db.query(models.StudyPlan).filter(models.StudyPlan.id == "free").first()
+        free_plan = db.query(models.StoreProduct).filter(models.StoreProduct.id == "free").first()
         if free_plan:
             effective_plan = free_plan
 
@@ -169,8 +169,8 @@ def check_subscription_renewals(db: Session) -> dict:
                         from services.email_service import send_email
                         send_email(
                             to=user.email,
-                            subject=f"⏰ Your Nu-Age {plan_name} Subscription Renews Soon",
-                            html=f"<p>Hi {user.first_name},</p><p>Your <strong>{plan_name}</strong> plan is set to expire on {exp.strftime('%b %d, %Y')}.<br>Log into Nu-Age to renew your plan and keep your study limits active.</p>"
+                            subject=f"⏰ Your Nu Age {plan_name} Subscription Renews Soon",
+                            html=f"<p>Hi {user.first_name},</p><p>Your <strong>{plan_name}</strong> plan is set to expire on {exp.strftime('%b %d, %Y')}.<br>Log into Nu Age to renew your plan and keep your study limits active.</p>"
                         )
                     except Exception as email_err:
                         logger.warning(f"Failed to send email renewal reminder to {user.email}: {email_err}")
@@ -198,7 +198,7 @@ def check_subscription_renewals(db: Session) -> dict:
                         from services.email_service import send_email
                         send_email(
                             to=user.email,
-                            subject=f"⚠️ Action Required: Nu-Age {plan_name} Grace Period Active",
+                            subject=f"⚠️ Action Required: Nu Age {plan_name} Grace Period Active",
                             html=f"<p>Hi {user.first_name},</p><p>Your {plan_name} subscription has expired. You are currently in your 3-day grace period until {grace.strftime('%b %d, %Y')}. Please renew now to prevent service interruption.</p>"
                         )
                     except Exception as email_err:

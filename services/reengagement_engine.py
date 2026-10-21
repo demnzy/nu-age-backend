@@ -56,7 +56,7 @@ TIER_1_STREAK_AT_RISK_COPY = [
     },
     {
         "title": "Emergency streak alert! 🚨🔥",
-        "body": "You've worked so hard for {streak} consecutive days! Don't throw it away now. Open Nu-Age and secure the flame.",
+        "body": "You've worked so hard for {streak} consecutive days! Don't throw it away now. Open Nu Age and secure the flame.",
     },
     {
         "title": "5 minutes now = streak saved ⚡",
@@ -71,7 +71,7 @@ TIER_2_DUO_ACCOUNTABILITY_COPY = [
     },
     {
         "title": "Accountability check! 🤝",
-        "body": "{partner_name} did their part today! Jump into Nu-Age for 10 minutes so you both lock today's Duo Streak together 🎯",
+        "body": "{partner_name} did their part today! Jump into Nu Age for 10 minutes so you both lock today's Duo Streak together 🎯",
     },
     {
         "title": "{partner_name} is waiting on you! ⚡",
@@ -117,7 +117,7 @@ TIER_4_INACTIVITY_COMEBACK_COPY = [
     },
     {
         "title": "These questions won't answer themselves! 📚",
-        "body": "You've been away for {days} days. Jump back into Nu-Age today and restart your momentum 🚀",
+        "body": "You've been away for {days} days. Jump back into Nu Age today and restart your momentum 🚀",
     },
     {
         "title": "Streaks reset, but knowledge doesn't 🔥",
@@ -203,7 +203,7 @@ TIER_6_OBJECTIVE_QUEST_COPY = [
 
 TIER_7_NEW_COURSE_COPY = [
     {
-        "title": "Fresh on Nu-Age: {course_title}! 🆕✨",
+        "title": "Fresh on Nu Age: {course_title}! 🆕✨",
         "body": "A brand new course just dropped in {category}! Be among the first to explore it and earn milestone Nu-Coins 🚀",
     },
     {
@@ -212,7 +212,7 @@ TIER_7_NEW_COURSE_COPY = [
     },
     {
         "title": "Have you seen this yet? 👀📚",
-        "body": "{course_title} is trending on Nu-Age! Jump in and start learning before everyone else ⚡",
+        "body": "{course_title} is trending on Nu Age! Jump in and start learning before everyone else ⚡",
     },
     {
         "title": "Level up your skills with {course_title} 🧠",
