@@ -109,6 +109,8 @@ def accept_request(request_id: uuid.UUID, db: Session = Depends(get_db), current
     if not req:
         raise HTTPException(status_code=404, detail="Request not found.")
         
+    requester_id = req.requester_id
+    req_id = req.id
     req.status = "accepted"
     db.commit()
 
@@ -123,7 +125,7 @@ def accept_request(request_id: uuid.UUID, db: Session = Depends(get_db), current
         from services.notifications import dispatch_notification
         dispatch_notification(
             db=db,
-            recipient_user_ids=[req.requester_id],
+            recipient_user_ids=[requester_id],
             sender_id=current_user.id,
             title="Connection Accepted! 🎉",
             body=f"{accepter_name} accepted your connection request on Nu-Age.",
@@ -131,12 +133,12 @@ def accept_request(request_id: uuid.UUID, db: Session = Depends(get_db), current
             action_route="/network",
             data_payload={
                 "type": "network_accepted",
-                "request_id": str(req.id),
+                "request_id": str(req_id),
                 "partner_id": str(current_user.id),
                 "partner_name": accepter_name,
             },
             send_push=True,
-            collapse_id=f"net_acc_{current_user.id}",
+            collapse_id=f"net_acc_{req_id}",
         )
     except Exception as notif_err:
         print(f"[network] Warning: failed to dispatch friend request accepted notification: {notif_err}")

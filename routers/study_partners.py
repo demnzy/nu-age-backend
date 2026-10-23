@@ -489,21 +489,36 @@ def accept_partnership(
     if not partnership:
         raise HTTPException(status_code=404, detail="Pending partnership request not found.")
 
+    user_a_id = partnership.user_a_id
+    p_id = partnership.id
     partnership.status = "active"
     partnership.duo_streak = 0
     db.commit()
 
     # Notify requester
     try:
+        accepter_first = getattr(current_user, "first_name", "") or ""
+        accepter_last = getattr(current_user, "last_name", "") or ""
+        accepter_name = f"{accepter_first} {accepter_last}".strip()
+        if not accepter_name:
+            accepter_name = getattr(current_user, "username", "Someone") or "Someone"
+
         dispatch_notification(
             db=db,
-            recipient_user_ids=[partnership.user_a_id],
+            recipient_user_ids=[user_a_id],
             title="Study Partnership Formed! 🔥",
-            body=f"{current_user.first_name} accepted your study partnership. Start your Duo Streak today!",
+            body=f"{accepter_name} accepted your study partnership. Start your Duo Streak today!",
             category="study_partner_accepted",
-            action_route="/self-study",
+            action_route="/network",
             sender_id=current_user.id,
-            collapse_id=f"partner_accepted_{partnership.id}",
+            data_payload={
+                "type": "study_partner_accepted",
+                "partnership_id": str(p_id),
+                "partner_id": str(current_user.id),
+                "partner_name": accepter_name,
+            },
+            send_push=True,
+            collapse_id=f"partner_accepted_{p_id}",
         )
     except Exception as e:
         print(f"[Partnership] Notification error: {e}")
@@ -820,6 +835,8 @@ def _format_challenge_history_item(ch: models.PartnerChallenge, current_user: mo
     outcome = "tie"
     if ch.status == "challenger_done":
         outcome = "pending" if is_my_challenge else "needs_action"
+    elif ch.status in ("cancelled", "declined"):
+        outcome = ch.status
     elif ch.winner_id:
         outcome = "won" if ch.winner_id == current_user.id else "lost"
 
@@ -869,7 +886,7 @@ def get_all_challenges_history(
             models.PartnerChallenge.challenger_id == current_user.id,
             models.PartnerChallenge.challenged_id == current_user.id
         ),
-        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done"])
+        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done", "cancelled", "declined"])
     ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
 
     return {"challenges": [_format_challenge_history_item(ch, current_user) for ch in challenges]}
@@ -956,7 +973,7 @@ def get_challenge_history(
 
     challenges = db.query(models.PartnerChallenge).filter(
         models.PartnerChallenge.partnership_id == partnership.id,
-        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done"])
+        models.PartnerChallenge.status.in_(["completed", "expired", "challenger_done", "cancelled", "declined"])
     ).order_by(models.PartnerChallenge.created_at.desc()).limit(limit).all()
 
     return {"challenges": [_format_challenge_history_item(ch, current_user) for ch in challenges]}
@@ -1110,6 +1127,125 @@ def submit_partner_challenge(
         "challenged_score": challenged_score,
         "coins_awarded": ch.coins_awarded,
         "coins_balance": coin_service.get_user_coins(db, current_user.id),
+    }
+
+
+@router.post("/challenges/{challenge_id}/cancel")
+@router.post("/{partnership_id}/challenges/{challenge_id}/cancel")
+def cancel_partner_challenge(
+    challenge_id: uuid.UUID,
+    partnership_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Allows the challenger to cancel an unanswered challenge and receive a 100% refund
+    of their escrowed wager.
+    """
+    ch = db.query(models.PartnerChallenge).filter(
+        models.PartnerChallenge.id == challenge_id,
+        models.PartnerChallenge.challenger_id == current_user.id
+    ).first()
+
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found or you are not the challenger.")
+
+    if ch.status != "challenger_done":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot cancel challenge with status '{ch.status}'. Only pending challenges can be cancelled."
+        )
+
+    wager = getattr(ch, "wager_amount", 0) or 0
+    refunded_coins = 0
+    if wager > 0 and getattr(ch, "is_escrowed", False):
+        coin_service.grant_coins(
+            db=db,
+            user_id=ch.challenger_id,
+            amount=wager,
+            category="duel_wager_refund",
+            description=f"Cancelled duel: refunded {wager} Nu-Coins stake",
+            source_type="challenge_cancel",
+            reference_id=str(ch.id),
+        )
+        ch.is_escrowed = False
+        refunded_coins = wager
+
+    ch.status = "cancelled"
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Challenge cancelled successfully.{f' Refunded {refunded_coins} Nu-Coins stake.' if refunded_coins else ''}",
+        "refunded_coins": refunded_coins,
+        "coins_balance": coin_service.get_user_coins(db, current_user.id),
+    }
+
+
+@router.post("/challenges/{challenge_id}/decline")
+@router.post("/{partnership_id}/challenges/{challenge_id}/decline")
+def decline_partner_challenge(
+    challenge_id: uuid.UUID,
+    partnership_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Allows the challenged partner to decline an incoming duel.
+    Automatically refunds the challenger's escrowed wager and notifies them.
+    """
+    ch = db.query(models.PartnerChallenge).filter(
+        models.PartnerChallenge.id == challenge_id,
+        models.PartnerChallenge.challenged_id == current_user.id
+    ).first()
+
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found or you are not the invited partner.")
+
+    if ch.status != "challenger_done":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot decline challenge with status '{ch.status}'. Only pending challenges can be declined."
+        )
+
+    wager = getattr(ch, "wager_amount", 0) or 0
+    refunded_coins = 0
+    if wager > 0 and getattr(ch, "is_escrowed", False):
+        coin_service.grant_coins(
+            db=db,
+            user_id=ch.challenger_id,
+            amount=wager,
+            category="duel_wager_refund",
+            description=f"{current_user.first_name} declined duel: refunded {wager} Nu-Coins stake",
+            source_type="challenge_decline",
+            reference_id=str(ch.id),
+        )
+        ch.is_escrowed = False
+        refunded_coins = wager
+
+    ch.status = "declined"
+    db.commit()
+
+    # Notify challenger that challenge was declined and stake was refunded
+    try:
+        wager_notice = f" Your {wager} Nu-Coins stake has been refunded." if wager > 0 else ""
+        dispatch_notification(
+            db=db,
+            recipient_user_ids=[ch.challenger_id],
+            title="Duel Declined 🛡️",
+            body=f"{current_user.first_name} declined the Quickfire Duel.{wager_notice}",
+            category="partner_challenge_declined",
+            action_route="/network?tab=partners",
+            sender_id=current_user.id,
+            collapse_id=f"duel_declined_{ch.id}",
+        )
+    except Exception as e:
+        print(f"[Challenge Decline] Notification error: {e}")
+
+    return {
+        "status": "success",
+        "message": "Challenge declined.",
+        "refunded_coins_to_challenger": refunded_coins,
     }
 
 
