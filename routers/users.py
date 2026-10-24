@@ -175,6 +175,31 @@ async def verify_password(
 
     return {"message": "Password reset OTP sent."}
 
+class SetPasswordPayload(BaseModel):
+    new_password: str
+
+@router.post('/auth/set-password')
+def set_user_password(
+    payload: SetPasswordPayload,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Allows an authenticated user (such as one who registered via Google OAuth)
+    to set or update their account password for email+password login.
+    """
+    new_pw = (payload.new_password or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    
+    current_user.password = utils.hash_password(new_pw)
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "status": "success",
+        "message": "Password successfully set! You can now log in using your email and password.",
+    }
+
 @router.post('/auth/register', response_model=UserBase)
 async def register_user(
     user: UserReg, 
