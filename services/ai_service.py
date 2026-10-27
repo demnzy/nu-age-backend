@@ -1708,3 +1708,237 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
     except Exception as ex:
         print(f"[Vision Extraction Error]: {ex}")
         raise
+
+
+async def process_and_generate_journal_content(
+    user_id: str,
+    journal_id: str,
+    material_ids: List[str],
+    content_text: str,
+    types_requested: List[str]
+):
+    """
+    Background worker for Journal (Course Notebook) AI generation.
+    Synthesizes across up to 5 constituent study materials to generate:
+    1. Cross-modular high-yield flashcards
+    2. Scenario-based questions (quiz/exam)
+    3. An executive Course Study Guide (syllabus brief & key concept map)
+    """
+    db: Session = SessionLocal()
+    parsed_journal_id = uuid.UUID(str(journal_id)) if not isinstance(journal_id, uuid.UUID) else journal_id
+    parsed_user_id = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+
+    parsed_mat_ids = []
+    for mid in material_ids:
+        try:
+            parsed_mat_ids.append(uuid.UUID(str(mid)) if not isinstance(mid, uuid.UUID) else mid)
+        except Exception:
+            pass
+
+    try:
+        journal = db.query(models.Journal).filter(models.Journal.id == parsed_journal_id).first()
+        if journal:
+            journal.is_generating = True
+
+        if parsed_mat_ids:
+            mats = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(parsed_mat_ids)).all()
+            for m in mats:
+                m.is_generating = True
+        db.commit()
+
+        # Step 1: Generate Flashcards and Questions across chunks
+        chunks = chunk_text(content_text, max_chunk_tokens=3000)
+        total_fc_saved = 0
+        total_q_saved = 0
+
+        system_prompt = """
+You are an expert academic professor and curriculum designer on Nu-Age.
+You are synthesizing a comprehensive Course Journal (course notebook) comprising multiple lecture modules.
+Your task is to take the provided multi-module text and produce unified, high-yield study materials that connect concepts across lectures.
+
+You MUST respond with raw JSON that strictly matches the required schema. Do not include markdown or code fences in the outer response. JSON only.
+
+FLASHCARD RULES:
+- Direct question on front, concise 2-4 line concept explanation on back.
+- Rich Markdown syntax (bold terms, bullet points, clean code formatting).
+
+QUIZ/EXAM RULES:
+- Scenario-based questions that test application and understanding across modules.
+- 4 plausible options, integer answer_index, and clear explanation.
+"""
+
+        settings = Settings()
+        for index, chunk in enumerate(chunks[:4]):
+            try:
+                generation_goals = []
+                if "flashcards" in types_requested:
+                    generation_goals.append("- Generate 6 Flashcards covering core principles and cross-modular connections.")
+                if "exam" in types_requested:
+                    generation_goals.append("- Generate 4 EXAM multiple-choice questions (complex scenarios, tricky distractors).")
+                elif "quiz" in types_requested:
+                    generation_goals.append("- Generate 3 QUIZ multiple-choice questions (factual and conceptual application).")
+
+                goals_text = "\n".join(generation_goals)
+                user_prompt = f"TARGET OUTPUTS FOR THIS COURSE SECTION:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
+
+                response = await client.beta.chat.completions.parse(
+                    model=settings.get_openai_model(),
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format=AIResponse,
+                    reasoning_effort=settings.get_openai_reasoning_effort("chunk_distractor"),
+                )
+                result = response.choices[0].message.parsed
+
+                primary_mat_id = parsed_mat_ids[0] if parsed_mat_ids else None
+
+                if "flashcards" in types_requested and result.flashcards:
+                    total_fc_saved += len(result.flashcards)
+                    for card in result.flashcards:
+                        db.add(models.Flashcard(
+                            user_id=parsed_user_id,
+                            material_id=primary_mat_id,
+                            journal_id=parsed_journal_id,
+                            front=card.front,
+                            back=card.back
+                        ))
+
+                if ("quiz" in types_requested or "exam" in types_requested) and result.questions:
+                    total_q_saved += len(result.questions)
+                    for q in result.questions:
+                        cleaned_q_text = re.sub(
+                            r'^\s*[\(\[]?\s*(?:exam[\s\-_]?level|tricky|straightforward|easy|medium|hard)\s*[\)\]]?[\s:\-–—]*',
+                            '',
+                            q.question_text or '',
+                            flags=re.IGNORECASE
+                        ).strip()
+                        db.add(models.Question(
+                            user_id=parsed_user_id,
+                            material_id=primary_mat_id,
+                            journal_id=parsed_journal_id,
+                            question_text=cleaned_q_text or q.question_text,
+                            options=q.options,
+                            answer_index=q.answer_index,
+                            explanation=q.explanation
+                        ))
+
+                db.commit()
+                await asyncio.sleep(0.5)
+            except Exception as chunk_err:
+                print(f"[Journal AI] Error on chunk {index}: {chunk_err}")
+                db.rollback()
+
+        # Step 2: Generate Executive Course Study Guide (Syllabus Brief)
+        try:
+            j_title = journal.title if journal else "Course Journal"
+            guide_prompt = (
+                f"You are a master curriculum advisor. Synthesize an Executive Course Study Guide for this Course Notebook "
+                f"titled '{j_title}'.\n\n"
+                f"SOURCE CONTENT SUMMARY:\n{content_text[:8000]}\n\n"
+                f"Write a rich GitHub-flavored Markdown document with the following sections:\n"
+                f"# 🎓 Course Overview & Key Themes\n"
+                f"- 2-3 paragraphs explaining the foundational principles and overarching big picture.\n\n"
+                f"# 📖 Module-by-Module Key Takeaways\n"
+                f"- Bulleted breakdown of essential ideas per module.\n\n"
+                f"# ⚡ High-Yield Concept Map & Formulas\n"
+                f"- Core definitions, contrasts, and critical formulas.\n\n"
+                f"# ⚠️ Common Exam Pitfalls & Misconceptions\n"
+                f"- 3-5 frequent traps students fall into during assessments."
+            )
+
+            guide_resp = await client.chat.completions.create(
+                model=settings.get_openai_model(),
+                messages=[
+                    {"role": "system", "content": "You create clean, authoritative academic study guides in GitHub Markdown."},
+                    {"role": "user", "content": guide_prompt}
+                ],
+                max_completion_tokens=2200,
+            )
+            study_guide_md = guide_resp.choices[0].message.content or ""
+            if journal and study_guide_md:
+                journal.study_guide = study_guide_md.strip()
+                db.commit()
+        except Exception as guide_err:
+            print(f"[Journal AI] Study guide generation error: {guide_err}")
+
+    except Exception as e:
+        print(f"[Journal AI] Critical background generation error: {e}")
+    finally:
+        try:
+            j = db.query(models.Journal).filter(models.Journal.id == parsed_journal_id).first()
+            if j:
+                j.is_generating = False
+            if parsed_mat_ids:
+                mats = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(parsed_mat_ids)).all()
+                for m in mats:
+                    m.is_generating = False
+            db.commit()
+        except Exception as fin_err:
+            print(f"[Journal AI] Cleanup error: {fin_err}")
+        finally:
+            db.close()
+
+
+async def ask_journal_tutor_response(
+    query: str,
+    journal_title: str = "Course Journal",
+    attached_materials: list = None,
+    combined_content: str = "",
+    conversation_history: list = None,
+) -> str:
+    """
+    NotebookLM-style Grounded AI Tutor that cites and references
+    sources across the student's Course Journal.
+    """
+    system_prompt = (
+        "You are the Grounded Notebook AI Tutor for Nu-Age, inspired by NotebookLM.\n"
+        "You are embedded inside a Course Journal (course notebook) that combines multiple study modules.\n"
+        "Your mission is to help the student understand complex multi-module material deeply, answer questions, "
+        "and draw connections across lectures.\n\n"
+        "GROUNDING DIRECTIVES:\n"
+        "1. Strictly ground your explanations in the provided Course Journal sources.\n"
+        "2. When answering, explicitly reference or cite which module or source document contains the idea "
+        "(e.g., 'From Lecture 1...', 'In your notes on Photosynthesis...').\n"
+        "3. Pedagogical clarity: Use clear steps, bold terms, bullet lists, and rich Markdown.\n"
+        "4. Encourage active recall: End with a short reflective thought or question to test comprehension.\n"
+    )
+
+    modules_summary = ""
+    if attached_materials:
+        modules_summary = "\nATTACHED COURSE MODULES IN THIS JOURNAL:\n"
+        for idx, m in enumerate(attached_materials, 1):
+            modules_summary += f"{idx}. {m.get('title', 'Module')} ({m.get('source_type', 'note')})\n"
+
+    system_prompt += (
+        f"\nJOURNAL CONTEXT:\n"
+        f"- Journal / Course Title: {journal_title}\n"
+        f"{modules_summary}\n"
+    )
+
+    if combined_content:
+        snippet = combined_content[:8000].strip()
+        system_prompt += f"- Journal Knowledge Corpus:\n\"\"\"\n{snippet}\n\"\"\"\n"
+
+    messages = [{"role": "system", "content": system_prompt}]
+    if conversation_history:
+        for msg in conversation_history[-6:]:
+            role = "user" if msg.get("is_user") or msg.get("role") == "user" else "assistant"
+            messages.append({"role": role, "content": msg.get("text", "")})
+
+    messages.append({"role": "user", "content": query})
+
+    try:
+        settings = Settings()
+        resp = await client.chat.completions.create(
+            model=settings.get_openai_model(),
+            messages=messages,
+            max_completion_tokens=1800,
+            temperature=0.4,
+        )
+        return resp.choices[0].message.content or "I couldn't synthesize an answer from your journal notes."
+    except Exception as e:
+        print(f"[Journal Tutor Error]: {e}")
+        raise
+

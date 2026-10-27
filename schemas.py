@@ -283,6 +283,57 @@ class QuestionResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+# --- Journal (Course Notebook) Schemas ---
+class JournalMaterialItem(BaseModel):
+    id: UUID
+    title: str
+    source_type: str
+    created_at: datetime
+    order_index: Optional[int] = 0
+    content: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class JournalCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    color: Optional[str] = "teal"
+    icon: Optional[str] = "book"
+    material_ids: Optional[List[UUID]] = []
+
+class JournalUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+
+class JournalResponse(BaseModel):
+    id: UUID
+    title: str
+    description: Optional[str] = None
+    color: str
+    icon: str
+    is_generating: bool = False
+    materials_count: int = 0
+    flashcards_count: int = 0
+    questions_count: int = 0
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class JournalDetailResponse(JournalResponse):
+    study_guide: Optional[str] = None
+    materials: List[JournalMaterialItem] = []
+
+class JournalGeneratePayload(BaseModel):
+    types: List[str] = ["flashcards", "quiz", "exam"]
+
+class AddMaterialsToJournalPayload(BaseModel):
+    material_ids: List[UUID]
 class ExamResponse(BaseModel):
     questions: List[QuestionResponse]
     duration_seconds: int

@@ -514,6 +514,37 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_email ON campus_ambassador_applications(email);",
     "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_status ON campus_ambassador_applications(status);",
     "CREATE INDEX IF NOT EXISTS ix_ambassador_apps_uni ON campus_ambassador_applications(university);",
+    """
+    CREATE TABLE IF NOT EXISTS journals (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        title VARCHAR NOT NULL,
+        description TEXT,
+        color VARCHAR DEFAULT 'teal',
+        icon VARCHAR DEFAULT 'book',
+        study_guide TEXT,
+        is_generating BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_journals_user ON journals(user_id);",
+    """
+    CREATE TABLE IF NOT EXISTS journal_materials (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        journal_id UUID NOT NULL REFERENCES journals(id) ON DELETE CASCADE,
+        material_id UUID NOT NULL REFERENCES study_materials(id) ON DELETE CASCADE,
+        order_index INTEGER DEFAULT 0 NOT NULL,
+        added_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT uq_journal_material UNIQUE (journal_id, material_id)
+    );
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_journal_materials_journal ON journal_materials(journal_id);",
+    "CREATE INDEX IF NOT EXISTS ix_journal_materials_material ON journal_materials(material_id);",
+    "ALTER TABLE flashcards ADD COLUMN IF NOT EXISTS journal_id UUID REFERENCES journals(id) ON DELETE CASCADE;",
+    "CREATE INDEX IF NOT EXISTS ix_flashcards_journal ON flashcards(journal_id);",
+    "ALTER TABLE questions ADD COLUMN IF NOT EXISTS journal_id UUID REFERENCES journals(id) ON DELETE CASCADE;",
+    "CREATE INDEX IF NOT EXISTS ix_questions_journal ON questions(journal_id);",
 ]
 
 _ALTER_ADD_COL = re.compile(r"^\s*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)", re.I)

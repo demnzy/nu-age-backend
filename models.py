@@ -369,6 +369,42 @@ class StudyMaterial(Base):
     user = relationship("User", backref="study_materials")
     flashcards = relationship("Flashcard", back_populates="material", cascade="all, delete-orphan")
     questions = relationship("Question", back_populates="material", cascade="all, delete-orphan")
+    journals = relationship("Journal", secondary="journal_materials", back_populates="materials")
+
+class Journal(Base):
+    __tablename__ = "journals"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    color = Column(String, default="teal")
+    icon = Column(String, default="book")
+    study_guide = Column(Text, nullable=True)
+    is_generating = Column(Boolean, default=False, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User", backref="journals")
+    materials = relationship("StudyMaterial", secondary="journal_materials", back_populates="journals")
+    flashcards = relationship("Flashcard", back_populates="journal", cascade="all, delete-orphan")
+    questions = relationship("Question", back_populates="journal", cascade="all, delete-orphan")
+
+class JournalMaterial(Base):
+    __tablename__ = "journal_materials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    journal_id = Column(UUID(as_uuid=True), ForeignKey("journals.id", ondelete="CASCADE"), nullable=False, index=True)
+    material_id = Column(UUID(as_uuid=True), ForeignKey("study_materials.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, default=0, nullable=False)
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("journal_id", "material_id", name="uq_journal_material"),
+    )
 
 class Flashcard(Base):
     __tablename__ = "flashcards"
@@ -376,6 +412,7 @@ class Flashcard(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
     material_id = Column(UUID(as_uuid=True), ForeignKey("study_materials.id", ondelete="SET NULL"), nullable=True, index=True)
+    journal_id = Column(UUID(as_uuid=True), ForeignKey("journals.id", ondelete="CASCADE"), nullable=True, index=True)
     
     front = Column(String, nullable=False)
     back = Column(String, nullable=False)
@@ -394,6 +431,7 @@ class Flashcard(Base):
 
     # Relationships
     material = relationship("StudyMaterial", back_populates="flashcards")
+    journal = relationship("Journal", back_populates="flashcards")
     user = relationship("User", backref="flashcards")
 
 class Question(Base):
@@ -402,6 +440,7 @@ class Question(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
     material_id = Column(UUID(as_uuid=True), ForeignKey("study_materials.id", ondelete="CASCADE"), nullable=True, index=True)
+    journal_id = Column(UUID(as_uuid=True), ForeignKey("journals.id", ondelete="CASCADE"), nullable=True, index=True)
     
     question_text = Column(String, nullable=False)
     options = Column(JSONB, nullable=False) # Stores the array of strings: ["A", "B", "C", "D"]
@@ -417,6 +456,7 @@ class Question(Base):
 
     # Relationships
     material = relationship("StudyMaterial", back_populates="questions")
+    journal = relationship("Journal", back_populates="questions")
     user = relationship("User", backref="study_questions")
 
 class StoreProduct(Base):

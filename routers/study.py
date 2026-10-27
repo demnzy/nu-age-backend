@@ -7,7 +7,12 @@ from datetime import datetime, timezone, timedelta
 import uuid
 import random
 from pydantic import BaseModel
-from services.ai_service import process_and_generate_content, get_material_generation_progress
+from services.ai_service import (
+    process_and_generate_content,
+    get_material_generation_progress,
+    process_and_generate_journal_content,
+    ask_journal_tutor_response,
+)
 import models
 import schemas
 from database import get_db
@@ -1130,4 +1135,722 @@ def log_study_session(
         "logged_minutes": mins,
         "logged_questions": qs,
     }
+
+
+# ==========================================
+# 4. COURSE NOTEBOOKS / JOURNALS
+# ==========================================
+
+def _get_journal_counts(db: Session, journal_id: uuid.UUID, user_id: uuid.UUID) -> tuple[int, int, int]:
+    """Computes (materials_count, flashcards_count, questions_count) for a Journal,
+    falling back to constituent material counts when journal-tagged items are not yet generated."""
+    links = db.query(models.JournalMaterial.material_id).filter(
+        models.JournalMaterial.journal_id == journal_id
+    ).all()
+    mids = [l[0] for l in links]
+    mat_count = len(mids)
+    fc_count = db.query(models.Flashcard).filter(models.Flashcard.journal_id == journal_id).count()
+    if fc_count == 0 and mids:
+        fc_count = db.query(models.Flashcard).filter(
+            models.Flashcard.material_id.in_(mids),
+            models.Flashcard.user_id == user_id
+        ).count()
+    q_count = db.query(models.Question).filter(models.Question.journal_id == journal_id).count()
+    if q_count == 0 and mids:
+        q_count = db.query(models.Question).filter(
+            models.Question.material_id.in_(mids),
+            models.Question.user_id == user_id
+        ).count()
+    return mat_count, fc_count, q_count
+
+
+@router.get("/journals", response_model=List[schemas.JournalResponse])
+def get_user_journals(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """Lists all Course Journals for the current authenticated learner."""
+    journals = db.query(models.Journal).filter(
+        models.Journal.user_id == user.id
+    ).order_by(models.Journal.created_at.desc()).all()
+
+    results = []
+    for j in journals:
+        mat_count, fc_count, q_count = _get_journal_counts(db, j.id, user.id)
+        results.append(schemas.JournalResponse(
+            id=j.id,
+            title=j.title,
+            description=j.description,
+            color=j.color or "teal",
+            icon=j.icon or "book",
+            is_generating=j.is_generating,
+            materials_count=mat_count,
+            flashcards_count=fc_count,
+            questions_count=q_count,
+            created_at=j.created_at,
+            updated_at=j.updated_at
+        ))
+    return results
+
+
+@router.post("/journals", response_model=schemas.JournalResponse)
+def create_journal(
+    payload: schemas.JournalCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Creates a new Course Journal container and groups optional existing vault materials.
+    Capped strictly at 5 sources.
+    """
+    initial_mids = payload.material_ids or []
+    if len(initial_mids) > 5:
+        raise HTTPException(status_code=400, detail="A Journal is capped at a maximum of 5 sources.")
+
+    journal = models.Journal(
+        user_id=user.id,
+        title=payload.title.strip(),
+        description=payload.description.strip() if payload.description else None,
+        color=payload.color or "teal",
+        icon=payload.icon or "book",
+    )
+    db.add(journal)
+    db.flush()
+
+    added_count = 0
+    if initial_mids:
+        # Verify ownership of materials
+        mats = db.query(models.StudyMaterial).filter(
+            models.StudyMaterial.id.in_(initial_mids),
+            models.StudyMaterial.user_id == user.id
+        ).all()
+        for idx, m in enumerate(mats):
+            db.add(models.JournalMaterial(
+                journal_id=journal.id,
+                material_id=m.id,
+                order_index=idx
+            ))
+            added_count += 1
+
+    db.commit()
+    db.refresh(journal)
+
+    mat_count, fc_count, q_count = _get_journal_counts(db, journal.id, user.id)
+
+    return schemas.JournalResponse(
+        id=journal.id,
+        title=journal.title,
+        description=journal.description,
+        color=journal.color or "teal",
+        icon=journal.icon or "book",
+        is_generating=journal.is_generating,
+        materials_count=mat_count,
+        flashcards_count=fc_count,
+        questions_count=q_count,
+        created_at=journal.created_at,
+        updated_at=journal.updated_at
+    )
+
+
+@router.post("/journals/create-multi", response_model=schemas.JournalResponse)
+async def create_multi_journal(
+    background_tasks: BackgroundTasks,
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    color: Optional[str] = Form("teal"),
+    icon: Optional[str] = Form("book"),
+    pasted_texts: Optional[List[str]] = Form(None),
+    pasted_titles: Optional[List[str]] = Form(None),
+    files: Optional[List[UploadFile]] = File(None),
+    auto_generate: bool = Form(True),
+    generate_types: Optional[List[str]] = Form(None),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Batch creates a Course Journal from up to 5 source materials simultaneously.
+    - Capped at 5 sources strictly.
+    - Upload Cost: Consumes 3 Material Upload Slots (the 3x Rule).
+    - Generation Cost: Consumes 3 AI Generation Credits if auto_generate is true.
+    - Excludes YouTube URLs per specification (files and text notes only).
+    """
+    all_files = files or []
+    all_texts = [t.strip() for t in (pasted_texts or []) if t and t.strip()]
+
+    total_sources = len(all_files) + len(all_texts)
+    if total_sources == 0:
+        raise HTTPException(status_code=400, detail="At least 1 source material is required to create a Journal.")
+    if total_sources > 5:
+        raise HTTPException(status_code=400, detail="Course Journals are capped at a maximum of 5 sources.")
+
+    # 1. Quota & Limits: Consumes 3 upload slots
+    from services.subscription_service import check_material_upload_allowed, get_effective_subscription
+    sub = check_material_upload_allowed(user.id, db)
+    _, effective_plan, _, is_expired = get_effective_subscription(user.id, db)
+
+    # Increment 3 upload slots
+    sub.materials_uploaded += 3
+
+    # Check 3 generation credits if auto_generate is enabled
+    req_types = generate_types or ["flashcards", "quiz", "exam"]
+    if auto_generate:
+        plan_gen_limit = effective_plan.generations_limit if effective_plan and effective_plan.generations_limit is not None else None
+        if plan_gen_limit is not None and (sub.generations_used + 3) > plan_gen_limit:
+            if (sub.bonus_generations or 0) >= 3:
+                sub.bonus_generations -= 3
+            else:
+                if is_expired:
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "subscription_expired",
+                            "message": "Your subscription has expired. Generating a Journal requires 3 credits. Please renew or purchase credits."
+                        }
+                    )
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "insufficient_generations",
+                        "message": "Generating a Course Journal requires 3 AI generation credits. Please upgrade or top up in the Store."
+                    }
+                )
+        else:
+            sub.generations_used += 3
+
+    db.commit()
+
+    # 2. Create Journal
+    journal = models.Journal(
+        user_id=user.id,
+        title=title.strip(),
+        description=description.strip() if description else None,
+        color=color or "teal",
+        icon=icon or "book",
+        is_generating=auto_generate,
+    )
+    db.add(journal)
+    db.flush()
+
+    created_materials = []
+    combined_corpus_parts = []
+    order_idx = 0
+
+    # Process uploaded files (PDFs, Images, TXT)
+    image_exts = {"png", "jpg", "jpeg", "webp"}
+    for f in all_files:
+        fname = f.filename or f"Module {order_idx + 1}"
+        ext = fname.split(".")[-1].lower() if "." in fname else "txt"
+        file_bytes = await f.read()
+        content_text = ""
+
+        if ext in image_exts:
+            source_type = "photo"
+            try:
+                content_text = await ai_service.extract_text_from_study_images([{
+                    "bytes": file_bytes,
+                    "mime_type": f.content_type or (f"image/{ext}" if ext != "jpg" else "image/jpeg"),
+                    "name": fname
+                }])
+            except Exception as ocr_err:
+                content_text = f"[Image Study Note: {fname}]"
+        elif ext == "pdf":
+            source_type = "pdf"
+            try:
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                for page_pdf in doc:
+                    content_text += page_pdf.get_text("text") + "\n"
+                doc.close()
+            except Exception:
+                content_text = f"[PDF Document: {fname}]"
+        else:
+            source_type = "text"
+            try:
+                content_text = file_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                content_text = f"[Text Document: {fname}]"
+
+        clean_title = re.sub(r"\.[a-zA-Z0-9]+$", "", fname)
+        mat = models.StudyMaterial(
+            user_id=user.id,
+            title=clean_title,
+            source_type=source_type,
+            content=content_text,
+            is_generating=auto_generate,
+        )
+        db.add(mat)
+        db.flush()
+
+        db.add(models.JournalMaterial(
+            journal_id=journal.id,
+            material_id=mat.id,
+            order_index=order_idx
+        ))
+        created_materials.append(mat)
+        combined_corpus_parts.append(f"## Module: {clean_title}\n{content_text}")
+        order_idx += 1
+
+    # Process pasted texts
+    all_titles = pasted_titles or []
+    for t_idx, txt in enumerate(all_texts):
+        custom_t = all_titles[t_idx].strip() if t_idx < len(all_titles) and all_titles[t_idx] and all_titles[t_idx].strip() else ""
+        clean_title = custom_t or f"{title.strip()} - Note {order_idx + 1}"
+        mat = models.StudyMaterial(
+            user_id=user.id,
+            title=clean_title,
+            source_type="text",
+            content=txt,
+            is_generating=auto_generate,
+        )
+        db.add(mat)
+        db.flush()
+
+        db.add(models.JournalMaterial(
+            journal_id=journal.id,
+            material_id=mat.id,
+            order_index=order_idx
+        ))
+        created_materials.append(mat)
+        combined_corpus_parts.append(f"## Module: {clean_title}\n{txt}")
+        order_idx += 1
+
+    db.commit()
+    db.refresh(journal)
+
+    # 3. Queue Background AI Generation
+    if auto_generate and created_materials:
+        combined_text = "\n\n".join(combined_corpus_parts)
+        background_tasks.add_task(
+            process_and_generate_journal_content,
+            user_id=str(user.id),
+            journal_id=str(journal.id),
+            material_ids=[str(m.id) for m in created_materials],
+            content_text=combined_text,
+            types_requested=req_types
+        )
+
+    return schemas.JournalResponse(
+        id=journal.id,
+        title=journal.title,
+        description=journal.description,
+        color=journal.color or "teal",
+        icon=journal.icon or "book",
+        is_generating=journal.is_generating,
+        materials_count=len(created_materials),
+        flashcards_count=0,
+        questions_count=0,
+        created_at=journal.created_at,
+        updated_at=journal.updated_at
+    )
+
+
+@router.get("/journals/{journal_id}", response_model=schemas.JournalDetailResponse)
+def get_journal_detail(
+    journal_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """Fetches details of a specific Course Journal including all constituent materials and study guide."""
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    links = db.query(models.JournalMaterial).filter(
+        models.JournalMaterial.journal_id == journal.id
+    ).order_by(models.JournalMaterial.order_index).all()
+
+    materials_list = []
+    for link in links:
+        m = db.query(models.StudyMaterial).filter(models.StudyMaterial.id == link.material_id).first()
+        if m:
+            materials_list.append(schemas.JournalMaterialItem(
+                id=m.id,
+                title=m.title,
+                source_type=m.source_type,
+                created_at=m.created_at,
+                order_index=link.order_index,
+                content=m.content
+            ))
+
+    _, fc_count, q_count = _get_journal_counts(db, journal.id, user.id)
+
+    return schemas.JournalDetailResponse(
+        id=journal.id,
+        title=journal.title,
+        description=journal.description,
+        color=journal.color or "teal",
+        icon=journal.icon or "book",
+        is_generating=journal.is_generating,
+        study_guide=journal.study_guide,
+        materials_count=len(materials_list),
+        flashcards_count=fc_count,
+        questions_count=q_count,
+        created_at=journal.created_at,
+        updated_at=journal.updated_at,
+        materials=materials_list
+    )
+
+
+@router.patch("/journals/{journal_id}", response_model=schemas.JournalResponse)
+def update_journal(
+    journal_id: uuid.UUID,
+    payload: schemas.JournalUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """Updates Course Journal metadata (title, description, color, icon)."""
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    if payload.title is not None and payload.title.strip():
+        journal.title = payload.title.strip()
+    if payload.description is not None:
+        journal.description = payload.description.strip() or None
+    if payload.color is not None:
+        journal.color = payload.color
+    if payload.icon is not None:
+        journal.icon = payload.icon
+
+    db.commit()
+    db.refresh(journal)
+
+    mat_count, fc_count, q_count = _get_journal_counts(db, journal.id, user.id)
+
+    return schemas.JournalResponse(
+        id=journal.id,
+        title=journal.title,
+        description=journal.description,
+        color=journal.color or "teal",
+        icon=journal.icon or "book",
+        is_generating=journal.is_generating,
+        materials_count=mat_count,
+        flashcards_count=fc_count,
+        questions_count=q_count,
+        created_at=journal.created_at,
+        updated_at=journal.updated_at
+    )
+
+
+@router.delete("/journals/{journal_id}")
+def delete_journal(
+    journal_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Deletes a Course Journal.
+    Detaches associations and removes generated journal study cards,
+    while safely preserving all constituent study materials in the user's vault.
+    """
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    # Remove associations
+    db.query(models.JournalMaterial).filter(models.JournalMaterial.journal_id == journal_id).delete(synchronize_session=False)
+
+    # Delete journal-specific cards/questions
+    db.query(models.Flashcard).filter(models.Flashcard.journal_id == journal_id).delete(synchronize_session=False)
+    db.query(models.Question).filter(models.Question.journal_id == journal_id).delete(synchronize_session=False)
+
+    # Delete journal
+    db.delete(journal)
+    db.commit()
+
+    return {"success": True, "message": "Course Journal deleted. Constituent materials remain safely in your vault."}
+
+
+@router.post("/journals/{journal_id}/materials", response_model=schemas.JournalDetailResponse)
+def add_materials_to_journal(
+    journal_id: uuid.UUID,
+    payload: schemas.AddMaterialsToJournalPayload,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Attaches existing vault study materials into the Course Journal.
+    Strictly enforces maximum of 5 sources.
+    """
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    current_count = db.query(models.JournalMaterial).filter(models.JournalMaterial.journal_id == journal.id).count()
+    new_mids = payload.material_ids or []
+    if current_count + len(new_mids) > 5:
+        raise HTTPException(status_code=400, detail=f"A Journal cannot exceed 5 sources. Currently has {current_count}.")
+
+    existing_links = {
+        row.material_id for row in db.query(models.JournalMaterial.material_id).filter(
+            models.JournalMaterial.journal_id == journal.id
+        ).all()
+    }
+
+    order_idx = current_count
+    for mid in new_mids:
+        if mid not in existing_links:
+            # Verify material belongs to user
+            mat = db.query(models.StudyMaterial).filter(
+                models.StudyMaterial.id == mid,
+                models.StudyMaterial.user_id == user.id
+            ).first()
+            if mat:
+                db.add(models.JournalMaterial(
+                    journal_id=journal.id,
+                    material_id=mat.id,
+                    order_index=order_idx
+                ))
+                order_idx += 1
+
+    db.commit()
+    return get_journal_detail(journal_id, db, user)
+
+
+@router.delete("/journals/{journal_id}/materials/{material_id}")
+def remove_material_from_journal(
+    journal_id: uuid.UUID,
+    material_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Removes a study material association from the Journal without deleting it from the vault.
+    """
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    link = db.query(models.JournalMaterial).filter(
+        models.JournalMaterial.journal_id == journal_id,
+        models.JournalMaterial.material_id == material_id
+    ).first()
+    if link:
+        db.delete(link)
+        db.commit()
+
+    return {"success": True, "message": "Material unlinked from Course Journal."}
+
+
+@router.post("/journals/{journal_id}/generate")
+async def generate_journal_content(
+    journal_id: uuid.UUID,
+    payload: schemas.JournalGeneratePayload,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Triggers unified AI generation across all attached materials in the Journal.
+    Consumes 3 AI Generation Credits (The 3x Rule).
+    """
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    links = db.query(models.JournalMaterial).filter(
+        models.JournalMaterial.journal_id == journal.id
+    ).order_by(models.JournalMaterial.order_index).all()
+    if not links:
+        raise HTTPException(status_code=400, detail="Please attach at least 1 material before generating.")
+
+    mats = db.query(models.StudyMaterial).filter(
+        models.StudyMaterial.id.in_([l.material_id for l in links])
+    ).all()
+
+    # Credit check: Consumes 3 generation credits
+    from services.subscription_service import get_effective_subscription
+    sub, effective_plan, _, is_expired = get_effective_subscription(user.id, db)
+
+    credit_source = "free_quota"
+    plan_gen_limit = effective_plan.generations_limit if effective_plan and effective_plan.generations_limit is not None else None
+    if plan_gen_limit is not None and (sub.generations_used + 3) > plan_gen_limit:
+        if (sub.bonus_generations or 0) >= 3:
+            sub.bonus_generations -= 3
+            credit_source = "bonus_generations"
+        else:
+            if is_expired:
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "subscription_expired",
+                        "message": "Your subscription has expired. Journal generation requires 3 credits. Please renew your plan or top up in the Store."
+                    }
+                )
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_generations",
+                    "message": "Journal generation requires 3 credits. You do not have enough monthly quota or bonus credits. Please top up in the Store."
+                }
+            )
+    else:
+        sub.generations_used += 3
+
+    journal.is_generating = True
+    for m in mats:
+        m.is_generating = True
+    db.commit()
+
+    combined_text = "\n\n".join([f"## Module: {m.title}\n{m.content or ''}" for m in mats])
+
+    background_tasks.add_task(
+        process_and_generate_journal_content,
+        user_id=str(user.id),
+        journal_id=str(journal.id),
+        material_ids=[str(m.id) for m in mats],
+        content_text=combined_text,
+        types_requested=payload.types
+    )
+
+    return {"message": "Journal AI Generation started", "status": "processing", "source": credit_source}
+
+
+@router.post("/journals/{journal_id}/ai-tutor")
+async def ask_journal_tutor(
+    journal_id: uuid.UUID,
+    payload: AIDoubtPayload,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Grounded Notebook AI Tutor answering queries across all materials in the Course Journal.
+    """
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    links = db.query(models.JournalMaterial).filter(
+        models.JournalMaterial.journal_id == journal.id
+    ).order_by(models.JournalMaterial.order_index).all()
+
+    mats = db.query(models.StudyMaterial).filter(
+        models.StudyMaterial.id.in_([l.material_id for l in links])
+    ).all() if links else []
+
+    attached_summary = [{"title": m.title, "source_type": m.source_type} for m in mats]
+    combined_content = "\n\n".join([f"## Module: {m.title}\n{m.content or ''}" for m in mats])
+
+    try:
+        reply = await ai_service.ask_journal_tutor_response(
+            query=payload.query,
+            journal_title=journal.title,
+            attached_materials=attached_summary,
+            combined_content=combined_content,
+            conversation_history=payload.conversation_history or []
+        )
+        return {"reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Journal Tutor error: {str(e)}")
+
+
+@router.get("/journals/{journal_id}/due-cards", response_model=List[schemas.FlashcardResponse])
+def get_journal_due_cards(
+    journal_id: uuid.UUID,
+    all_cards: bool = True,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """Fetches all flashcards generated for this Course Journal."""
+    cards = db.query(models.Flashcard).filter(
+        models.Flashcard.journal_id == journal_id,
+        models.Flashcard.user_id == user.id
+    ).all()
+
+    # Fallback to constituent material cards if journal-tagged cards haven't been generated yet
+    if not cards:
+        links = db.query(models.JournalMaterial.material_id).filter(
+            models.JournalMaterial.journal_id == journal_id
+        ).all()
+        mids = [l[0] for l in links]
+        if mids:
+            cards = db.query(models.Flashcard).filter(
+                models.Flashcard.material_id.in_(mids),
+                models.Flashcard.user_id == user.id
+            ).all()
+
+    results = []
+    for c in cards:
+        results.append(schemas.FlashcardResponse(
+            id=c.id,
+            front=c.front,
+            back=c.back,
+            material_id=c.material_id,
+            srs_state=schemas.SRSState(
+                interval=c.interval_days,
+                ease_factor=c.ease_factor,
+                repetitions=c.repetitions
+            )
+        ))
+    return results
+
+
+@router.get("/journals/{journal_id}/questions", response_model=List[schemas.QuestionResponse])
+def get_journal_questions(
+    journal_id: uuid.UUID,
+    limit: int = 15,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """Fetches questions for quiz/exam across this Course Journal."""
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    j_title = journal.title if journal else "Course Journal"
+
+    questions = db.query(models.Question).filter(
+        models.Question.journal_id == journal_id,
+        models.Question.user_id == user.id
+    ).order_by(func.random()).limit(limit).all()
+
+    # Fallback to constituent materials if needed
+    if not questions:
+        links = db.query(models.JournalMaterial.material_id).filter(
+            models.JournalMaterial.journal_id == journal_id
+        ).all()
+        mids = [l[0] for l in links]
+        if mids:
+            questions = db.query(models.Question).filter(
+                models.Question.material_id.in_(mids),
+                models.Question.user_id == user.id
+            ).order_by(func.random()).limit(limit).all()
+
+    results = []
+    for q in questions:
+        results.append(schemas.QuestionResponse(
+            id=q.id,
+            material_id=q.material_id,
+            subject=j_title,
+            question=_clean_question_text_prompt(q.question_text),
+            options=q.options,
+            answer=q.answer_index,
+            explanation=q.explanation,
+            image_url=q.image_url,
+            topic=q.topic,
+            exam_type=q.exam_type,
+            exam_year=q.exam_year
+        ))
+    return results
+
 
