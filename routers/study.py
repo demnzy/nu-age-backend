@@ -1800,7 +1800,20 @@ async def ask_journal_tutor(
         models.StudyMaterial.id.in_([l.material_id for l in links])
     ).all() if links else []
 
+    # Ensure modules maintain their defined user order
+    link_order = {l.material_id: l.order_index for l in links}
+    mats.sort(key=lambda m: link_order.get(m.id, 0))
+
     attached_summary = [{"title": m.title, "source_type": m.source_type} for m in mats]
+    materials_list = [
+        {
+            "id": str(m.id),
+            "title": m.title,
+            "source_type": m.source_type or "note",
+            "content": m.content or "",
+        }
+        for m in mats
+    ]
     combined_content = "\n\n".join([f"## Module: {m.title}\n{m.content or ''}" for m in mats])
 
     try:
@@ -1809,6 +1822,7 @@ async def ask_journal_tutor(
             journal_title=journal.title,
             attached_materials=attached_summary,
             combined_content=combined_content,
+            materials_list=materials_list,
             conversation_history=payload.conversation_history or []
         )
         return {"reply": reply}

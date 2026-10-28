@@ -5,6 +5,8 @@ import time
 import traceback
 import base64
 import urllib.parse
+import math
+from collections import Counter
 import httpx
 from pydantic import BaseModel, Field
 from typing import List, Literal, Annotated, Union, Dict, Any, Optional
@@ -1577,6 +1579,264 @@ async def run_course_draft_job(job_id: str, topic: str, context: str):
         db.close()
 
 
+
+# --- Lightweight BM25 / Grounded Context Orchestration Engine ---------------
+
+RAG_STOP_WORDS = {
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't",
+    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "can",
+    "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't",
+    "down", "during", "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't", "have",
+    "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here", "here's", "hers", "herself", "him",
+    "himself", "his", "how", "how's", "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into", "is", "isn't",
+    "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my", "myself", "no", "nor",
+    "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our", "ours", "ourselves", "out",
+    "over", "own", "same", "shan't", "she", "she'd", "she'll", "she's", "should", "shouldn't", "so", "some",
+    "such", "than", "that", "that's", "the", "their", "theirs", "them", "themselves", "then", "there",
+    "there's", "these", "they", "they'd", "they'll", "they're", "they've", "this", "those", "through", "to",
+    "too", "under", "until", "up", "very", "was", "wasn't", "we", "we'd", "we'll", "we're", "we've", "were",
+    "weren't", "what", "what's", "when", "when's", "where", "where's", "which", "while", "who", "who's",
+    "whom", "why", "why's", "with", "won't", "would", "wouldn't", "you", "you'd", "you'll", "you're",
+    "you've", "your", "yours", "yourself", "yourselves"
+}
+
+
+def _tokenize_rag(text: str) -> List[str]:
+    """Tokenizes text into normalized lowercase alphanumeric tokens, filtering stop words."""
+    words = re.findall(r'\b[a-zA-Z0-9_\u00C0-\u017F]+\b', text.lower())
+    return [w for w in words if len(w) > 1 and w not in RAG_STOP_WORDS]
+
+
+def chunk_text_sections(text: str, chunk_size: int = 2400, overlap: int = 200) -> List[Dict[str, Any]]:
+    """
+    Splits a document into cleanly bounded paragraph sections for semantic retrieval.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    
+    if len(text) <= chunk_size:
+        return [{"index": 1, "text": text, "start_char": 0, "end_char": len(text)}]
+
+    chunks = []
+    start = 0
+    idx = 1
+    total_len = len(text)
+    
+    while start < total_len:
+        end = min(start + chunk_size, total_len)
+        if end < total_len:
+            split_at = text.rfind("\n\n", start, end)
+            if split_at == -1 or split_at <= start + 800:
+                split_at = text.rfind("\n", start, end)
+            if split_at == -1 or split_at <= start + 800:
+                split_at = text.rfind(". ", start, end)
+                if split_at != -1:
+                    split_at += 1
+            if split_at != -1 and split_at > start + 500:
+                end = split_at
+
+        chunk_content = text[start:end].strip()
+        if chunk_content:
+            chunks.append({
+                "index": idx,
+                "text": chunk_content,
+                "start_char": start,
+                "end_char": end,
+            })
+            idx += 1
+
+        if end >= total_len:
+            break
+        start = max(start + 1, end - overlap)
+
+    return chunks
+
+
+def bm25_rank_chunk_indices(chunks: List[str], query: str, top_k: int = 6) -> List[int]:
+    """
+    Ranks text chunks using the Okapi BM25 ranking function against the query.
+    Returns the indices of top_k chunks sorted by score (descending).
+    """
+    if not chunks:
+        return []
+    
+    query_tokens = _tokenize_rag(query)
+    if not query_tokens:
+        return list(range(min(len(chunks), top_k)))
+    
+    chunk_tokens_list = [_tokenize_rag(c) for c in chunks]
+    total_docs = len(chunks)
+    doc_lens = [len(toks) for toks in chunk_tokens_list]
+    avg_dl = sum(doc_lens) / max(1, total_docs) if total_docs > 0 else 1.0
+    
+    df: Dict[str, int] = {}
+    for qt in query_tokens:
+        df[qt] = sum(1 for toks in chunk_tokens_list if qt in toks)
+        
+    k1 = 1.5
+    b = 0.75
+    scores = []
+    
+    for idx, doc_tokens in enumerate(chunk_tokens_list):
+        if not doc_tokens:
+            scores.append((0.0, idx))
+            continue
+        dl = doc_lens[idx]
+        freq = Counter(doc_tokens)
+        score = 0.0
+        for qt in query_tokens:
+            if qt not in freq:
+                continue
+            n_q = df.get(qt, 0)
+            idf = math.log(((total_docs - n_q + 0.5) / (n_q + 0.5)) + 1.0)
+            f = freq[qt]
+            numerator = f * (k1 + 1.0)
+            denominator = f + k1 * (1.0 - b + b * (dl / avg_dl))
+            score += idf * (numerator / max(1e-6, denominator))
+        scores.append((score, idx))
+        
+    scores.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+    return [idx for score, idx in scores[:top_k] if score > 0.0] or list(range(min(len(chunks), top_k)))
+
+
+def build_single_material_grounded_context(
+    content: str,
+    query: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    total_budget: int = 36000
+) -> str:
+    """
+    Context Orchestrator for Single Material / Lesson AI Tutor.
+    If the document is <= total_budget chars, returns the complete text.
+    If > total_budget chars, preserves the overview and retrieves top BM25 sections.
+    """
+    clean_text = (content or "").strip()
+    if not clean_text:
+        return ""
+    if len(clean_text) <= total_budget:
+        return f"[Complete Active Study Material]\n{clean_text}"
+
+    expanded_query = query
+    if history:
+        recent_queries = [
+            m.get("text") or m.get("content") or ""
+            for m in history[-3:]
+            if m.get("is_user") or m.get("role") == "user"
+        ]
+        expanded_query = f"{query} {' '.join(recent_queries)}".strip()
+
+    intro = clean_text[:2500].strip()
+    remainder = clean_text[2500:].strip()
+    
+    remainder_chunks = chunk_text_sections(remainder, chunk_size=2400, overlap=250)
+    chunk_texts = [c["text"] for c in remainder_chunks]
+    
+    max_chunks = max(1, (total_budget - len(intro) - 1000) // 2400)
+    top_indices = bm25_rank_chunk_indices(chunk_texts, expanded_query, top_k=max_chunks)
+    top_indices.sort()
+    
+    assembled_parts = [
+        f"[Section 1: Introduction & Foundation]\n{intro}"
+    ]
+    for rel_idx, orig_idx in enumerate(top_indices, 2):
+        chunk_obj = remainder_chunks[orig_idx]
+        assembled_parts.append(
+            f"[Section {rel_idx}: Relevant Excerpt (chars {chunk_obj['start_char']}-{chunk_obj['end_char']})]\n{chunk_obj['text']}"
+        )
+        
+    return "\n\n".join(assembled_parts)
+
+
+def build_multi_module_grounded_context(
+    materials: List[Dict[str, Any]],
+    query: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    total_budget: int = 42000
+) -> str:
+    """
+    Context Orchestrator for Course Journals with Multiple Modules.
+    Guarantees fair representation so short modules (notes) are NEVER starved
+    by massive documents (e.g. 130KB PDFs).
+    """
+    if not materials:
+        return ""
+
+    expanded_query = query
+    if history:
+        recent_queries = [
+            m.get("text") or m.get("content") or ""
+            for m in history[-3:]
+            if m.get("is_user") or m.get("role") == "user"
+        ]
+        expanded_query = f"{query} {' '.join(recent_queries)}".strip()
+
+    valid_mats = [m for m in materials if (m.get("content") or "").strip()]
+    if not valid_mats:
+        return ""
+
+    num_modules = len(valid_mats)
+    baseline_quota = max(6000, total_budget // num_modules)
+    
+    small_modules = []
+    large_modules = []
+    used_by_small = 0
+    
+    for m in valid_mats:
+        c_len = len(m["content"].strip())
+        if c_len <= baseline_quota:
+            small_modules.append(m)
+            used_by_small += c_len
+        else:
+            large_modules.append(m)
+            
+    remaining_budget = max(8000, total_budget - used_by_small)
+    budget_per_large = remaining_budget // max(1, len(large_modules))
+    
+    assembled_corpus = []
+    
+    # 1. Include ALL small modules in their entirety
+    for m in small_modules:
+        title = m.get("title", "Untitled Module")
+        source_type = m.get("source_type", "note")
+        content = m["content"].strip()
+        assembled_corpus.append(
+            f"### [SOURCE MODULE: {title} | Type: {source_type}] (Complete Notes)\n{content}"
+        )
+        
+    # 2. Ingest large modules using Foundation Overview + BM25 Ranked Excerpts
+    for m in large_modules:
+        title = m.get("title", "Untitled Document")
+        source_type = m.get("source_type", "document")
+        content = m["content"].strip()
+        
+        overview = content[:2200].strip()
+        remainder = content[2200:].strip()
+        
+        remainder_chunks = chunk_text_sections(remainder, chunk_size=2200, overlap=250)
+        chunk_texts = [c["text"] for c in remainder_chunks]
+        
+        allowed_chunks = max(1, (budget_per_large - len(overview) - 800) // 2200)
+        selected_indices = bm25_rank_chunk_indices(chunk_texts, expanded_query, top_k=allowed_chunks)
+        selected_indices.sort()
+        
+        module_sections = [
+            f"### [SOURCE MODULE: {title} | Type: {source_type}] (Overview + Key Query Excerpts)",
+            f"[Overview / Foundation]\n{overview}"
+        ]
+        
+        for s_idx, ch_idx in enumerate(selected_indices, 1):
+            ch_data = remainder_chunks[ch_idx]
+            module_sections.append(
+                f"[Key Excerpt {s_idx} (chars {ch_data['start_char']}-{ch_data['end_char']})]\n{ch_data['text']}"
+            )
+            
+        assembled_corpus.append("\n\n".join(module_sections))
+        
+    return "\n\n" + ("=" * 45) + "\n\n" + "\n\n" + ("=" * 45) + "\n\n".join(assembled_corpus)
+
+
+
 async def ask_ai_tutor_response(
     query: str,
     course_title: str = "Course",
@@ -1628,8 +1888,13 @@ async def ask_ai_tutor_response(
         f"- Assessment Mode: {'ACTIVE (Strict Socratic Hints Only)' if is_assessment else 'Inactive (Standard Doubt Resolution)'}\n"
     )
     if lesson_content:
-        snippet = lesson_content[:6000].strip()
-        system_prompt += f"- Active Study Material / Lesson Content:\n\"\"\"\n{snippet}\n\"\"\"\n"
+        grounded_context = build_single_material_grounded_context(
+            content=lesson_content,
+            query=query,
+            history=conversation_history,
+            total_budget=36000
+        )
+        system_prompt += f"- Active Study Material / Lesson Content:\n\"\"\"\n{grounded_context}\n\"\"\"\n"
 
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -1956,6 +2221,7 @@ async def ask_journal_tutor_response(
     journal_title: str = "Course Journal",
     attached_materials: list = None,
     combined_content: str = "",
+    materials_list: list = None,
     conversation_history: list = None,
 ) -> str:
     """
@@ -1987,8 +2253,16 @@ async def ask_journal_tutor_response(
         f"{modules_summary}\n"
     )
 
-    if combined_content:
-        snippet = combined_content[:8000].strip()
+    if materials_list:
+        grounded_corpus = build_multi_module_grounded_context(
+            materials=materials_list,
+            query=query,
+            history=conversation_history,
+            total_budget=42000
+        )
+        system_prompt += f"- Grounded Journal Knowledge Corpus:\n\"\"\"\n{grounded_corpus}\n\"\"\"\n"
+    elif combined_content:
+        snippet = combined_content[:20000].strip()
         system_prompt += f"- Journal Knowledge Corpus:\n\"\"\"\n{snippet}\n\"\"\"\n"
 
     messages = [{"role": "system", "content": system_prompt}]
