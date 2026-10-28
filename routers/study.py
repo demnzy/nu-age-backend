@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from services.ai_service import (
     process_and_generate_content,
     get_material_generation_progress,
+    get_journal_generation_progress,
     process_and_generate_journal_content,
     ask_journal_tutor_response,
 )
@@ -1142,19 +1143,14 @@ def log_study_session(
 # ==========================================
 
 def _get_journal_counts(db: Session, journal_id: uuid.UUID, user_id: uuid.UUID) -> tuple[int, int, int]:
-    """Computes (materials_count, flashcards_count, questions_count) for a Journal,
-    falling back to constituent material counts when journal-tagged items are not yet generated."""
+    """Computes (materials_count, flashcards_count, questions_count) for a Journal.
+    Journals focus strictly on Mock Exam questions and AI Tutor; flashcards count is 0."""
     links = db.query(models.JournalMaterial.material_id).filter(
         models.JournalMaterial.journal_id == journal_id
     ).all()
     mids = [l[0] for l in links]
     mat_count = len(mids)
-    fc_count = db.query(models.Flashcard).filter(models.Flashcard.journal_id == journal_id).count()
-    if fc_count == 0 and mids:
-        fc_count = db.query(models.Flashcard).filter(
-            models.Flashcard.material_id.in_(mids),
-            models.Flashcard.user_id == user_id
-        ).count()
+    fc_count = 0
     q_count = db.query(models.Question).filter(models.Question.journal_id == journal_id).count()
     if q_count == 0 and mids:
         q_count = db.query(models.Question).filter(
@@ -1493,6 +1489,61 @@ def get_journal_detail(
     )
 
 
+@router.get("/journals/{journal_id}/status")
+def get_journal_status(
+    journal_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.get_current_user)
+):
+    """The endpoint the frontend polls for granular journal generation progress and counts."""
+    journal = db.query(models.Journal).filter(
+        models.Journal.id == journal_id,
+        models.Journal.user_id == user.id
+    ).first()
+    if not journal:
+        raise HTTPException(status_code=404, detail="Course Journal not found.")
+
+    prog = get_journal_generation_progress(str(journal_id))
+    _, fc_count, q_count = _get_journal_counts(db, journal.id, user.id)
+
+    # Self-healing timeout detection:
+    # If journal DB says is_generating=True, but progress says is_generating=False or status=error/completed,
+    # OR if journal was updated > 180 seconds ago and prog is empty/inactive, self-heal and release lock!
+    now_utc = datetime.now(timezone.utc)
+    is_stale_lock = False
+    if journal.is_generating and journal.updated_at:
+        try:
+            up_time = journal.updated_at
+            if up_time.tzinfo is None:
+                up_time = up_time.replace(tzinfo=timezone.utc)
+            age_seconds = (now_utc - up_time).total_seconds()
+            if age_seconds > 180 and not prog.get("is_generating"):
+                is_stale_lock = True
+        except Exception:
+            pass
+
+    if is_stale_lock or (journal.is_generating and prog.get("status") in ("completed", "error")):
+        journal.is_generating = False
+        db.commit()
+
+    is_generating = bool(journal.is_generating or prog.get("is_generating", False))
+    raw_status = prog.get("status")
+    if not is_generating:
+        status = "error" if raw_status == "error" else "completed"
+    else:
+        status = "processing"
+
+    return {
+        "status": status,
+        "is_generating": is_generating,
+        "progress_percent": prog.get("progress_percent", 100 if not is_generating else 25),
+        "stage": prog.get("stage", "Ready to study" if not is_generating else "Synthesizing course notebook..."),
+        "flashcards_count": 0,
+        "questions_count": max(q_count, prog.get("questions_count", 0)),
+        "has_study_guide": bool(journal.study_guide),
+    }
+
+
 @router.patch("/journals/{journal_id}", response_model=schemas.JournalResponse)
 def update_journal(
     journal_id: uuid.UUID,
@@ -1717,7 +1768,8 @@ async def generate_journal_content(
         journal_id=str(journal.id),
         material_ids=[str(m.id) for m in mats],
         content_text=combined_text,
-        types_requested=payload.types
+        types_requested=payload.types or ["exam", "study_guide"],
+        replace_existing=bool(getattr(payload, "replace_existing", False))
     )
 
     return {"message": "Journal AI Generation started", "status": "processing", "source": credit_source}

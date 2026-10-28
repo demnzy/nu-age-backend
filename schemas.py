@@ -330,7 +330,8 @@ class JournalDetailResponse(JournalResponse):
     materials: List[JournalMaterialItem] = []
 
 class JournalGeneratePayload(BaseModel):
-    types: List[str] = ["flashcards", "quiz", "exam"]
+    types: List[str] = ["exam", "study_guide"]
+    replace_existing: bool = False
 
 class AddMaterialsToJournalPayload(BaseModel):
     material_ids: List[UUID]
@@ -871,4 +872,4 @@ class CohortExamSubmissionCreate(BaseModel):
 class CohortExamProgressSave(BaseModel):
     answers: List[dict]  # [{"question_id": str, "chosen_index": int}]
     violations_count: Optional[int] = 0
-    violation_log: Optional[List[dict]] = []
+    violation_log: Optional[List[dict]] = []

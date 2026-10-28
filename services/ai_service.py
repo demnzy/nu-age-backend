@@ -483,6 +483,10 @@ class AIResponse(BaseModel):
     questions: List[GeneratedQuestion]
 
 
+class JournalExamResponse(BaseModel):
+    questions: List[GeneratedQuestion]
+
+
 def chunk_text(text: str, chunk_size: int = 15000, overlap: int = 1000) -> List[str]:
     if not text:
         return []
@@ -496,6 +500,20 @@ def chunk_text(text: str, chunk_size: int = 15000, overlap: int = 1000) -> List[
 
 # In-memory thread-safe generation progress registry
 _MATERIAL_PROGRESS: Dict[str, Dict[str, Any]] = {}
+_JOURNAL_PROGRESS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_journal_generation_progress(journal_id: str) -> Dict[str, Any]:
+    """Retrieve detailed generation progress and stage for a course journal."""
+    jid_str = str(journal_id).strip().lower()
+    return _JOURNAL_PROGRESS.get(jid_str) or {
+        "status": "completed",
+        "is_generating": False,
+        "progress_percent": 100,
+        "stage": "Ready to study",
+        "flashcards_count": 0,
+        "questions_count": 0,
+    }
 
 
 def get_material_generation_progress(material_id: str) -> Dict[str, Any]:
@@ -1715,14 +1733,15 @@ async def process_and_generate_journal_content(
     journal_id: str,
     material_ids: List[str],
     content_text: str,
-    types_requested: List[str]
+    types_requested: List[str] = None,
+    replace_existing: bool = False
 ):
     """
-    Background worker for Journal (Course Notebook) AI generation.
-    Synthesizes across up to 5 constituent study materials to generate:
-    1. Cross-modular high-yield flashcards
-    2. Scenario-based questions (quiz/exam)
-    3. An executive Course Study Guide (syllabus brief & key concept map)
+    Background worker for Course Journal (multi-module notebook) AI generation.
+    Focuses solely on:
+    1. Cross-modular scenario-based CBT Mock Exam questions
+    2. Executive Course Study Guide (syllabus brief, formulas, exam pitfalls)
+    (Flashcards and quick quizzes are retired from journals to preserve focus and eliminate clutter).
     """
     db: Session = SessionLocal()
     parsed_journal_id = uuid.UUID(str(journal_id)) if not isinstance(journal_id, uuid.UUID) else journal_id
@@ -1746,40 +1765,60 @@ async def process_and_generate_journal_content(
                 m.is_generating = True
         db.commit()
 
-        # Step 1: Generate Flashcards and Questions across chunks
-        chunks = chunk_text(content_text, max_chunk_tokens=3000)
-        total_fc_saved = 0
+        if replace_existing:
+            db.query(models.Question).filter(models.Question.journal_id == parsed_journal_id).delete(synchronize_session=False)
+            db.commit()
+
+        jid_key = str(parsed_journal_id).strip().lower()
+        _JOURNAL_PROGRESS[jid_key] = {
+            "status": "processing",
+            "is_generating": True,
+            "progress_percent": 15,
+            "stage": "Analyzing constituent course modules...",
+            "flashcards_count": 0,
+            "questions_count": 0,
+        }
+
+        # Step 1: Generate Cross-Modular Mock Exam Questions across chunks
+        chunks = chunk_text(content_text, chunk_size=12000, overlap=1000)
         total_q_saved = 0
 
+        if not chunks:
+            print("[Journal AI] No text chunks extracted from journal modules.")
+            _JOURNAL_PROGRESS[jid_key] = {
+                "status": "completed",
+                "is_generating": False,
+                "progress_percent": 100,
+                "stage": "Ready (No readable text found in attached modules)",
+                "flashcards_count": 0,
+                "questions_count": 0,
+            }
+            if journal:
+                journal.is_generating = False
+                db.commit()
+            return
+
         system_prompt = """
-You are an expert academic professor and curriculum designer on Nu-Age.
-You are synthesizing a comprehensive Course Journal (course notebook) comprising multiple lecture modules.
-Your task is to take the provided multi-module text and produce unified, high-yield study materials that connect concepts across lectures.
+You are an expert academic professor and exam board chair designing a comprehensive Course Mock Exam for Nu-Age.
+You are synthesizing a multi-module Course Journal combining lectures and textbook notes.
+Your task is to produce realistic, scenario-based examination questions that test deep application, synthesis, and problem-solving across lectures.
 
-You MUST respond with raw JSON that strictly matches the required schema. Do not include markdown or code fences in the outer response. JSON only.
-
-FLASHCARD RULES:
-- Direct question on front, concise 2-4 line concept explanation on back.
-- Rich Markdown syntax (bold terms, bullet points, clean code formatting).
-
-QUIZ/EXAM RULES:
-- Scenario-based questions that test application and understanding across modules.
-- 4 plausible options, integer answer_index, and clear explanation.
+EXAM RULES:
+- Realistic scenario questions testing critical concepts and cross-module connections.
+- 4 plausible, academically rigorous answer options (no obvious 'all of the above' giveaways).
+- Zero-based integer answer_index pointing to the strictly correct option.
+- Detailed step-by-step academic explanation explaining why the correct choice is right and common pitfalls in distractors.
+- Format strictly adhering to the JSON schema.
 """
 
         settings = Settings()
         for index, chunk in enumerate(chunks[:4]):
             try:
-                generation_goals = []
-                if "flashcards" in types_requested:
-                    generation_goals.append("- Generate 6 Flashcards covering core principles and cross-modular connections.")
-                if "exam" in types_requested:
-                    generation_goals.append("- Generate 4 EXAM multiple-choice questions (complex scenarios, tricky distractors).")
-                elif "quiz" in types_requested:
-                    generation_goals.append("- Generate 3 QUIZ multiple-choice questions (factual and conceptual application).")
-
-                goals_text = "\n".join(generation_goals)
-                user_prompt = f"TARGET OUTPUTS FOR THIS COURSE SECTION:\n{goals_text}\n\nTEXT TO PROCESS:\n{chunk}"
+                user_prompt = (
+                    f"TARGET: Generate 6 high-yield CBT EXAM multiple-choice questions for this course section.\n"
+                    f"Emphasize scenario analysis and cross-module principles.\n\n"
+                    f"SOURCE LECTURE TEXT:\n{chunk}"
+                )
 
                 response = await client.beta.chat.completions.parse(
                     model=settings.get_openai_model(),
@@ -1787,25 +1826,13 @@ QUIZ/EXAM RULES:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    response_format=AIResponse,
+                    response_format=JournalExamResponse,
                     reasoning_effort=settings.get_openai_reasoning_effort("chunk_distractor"),
                 )
                 result = response.choices[0].message.parsed
-
                 primary_mat_id = parsed_mat_ids[0] if parsed_mat_ids else None
 
-                if "flashcards" in types_requested and result.flashcards:
-                    total_fc_saved += len(result.flashcards)
-                    for card in result.flashcards:
-                        db.add(models.Flashcard(
-                            user_id=parsed_user_id,
-                            material_id=primary_mat_id,
-                            journal_id=parsed_journal_id,
-                            front=card.front,
-                            back=card.back
-                        ))
-
-                if ("quiz" in types_requested or "exam" in types_requested) and result.questions:
+                if result.questions:
                     total_q_saved += len(result.questions)
                     for q in result.questions:
                         cleaned_q_text = re.sub(
@@ -1825,6 +1852,15 @@ QUIZ/EXAM RULES:
                         ))
 
                 db.commit()
+                chunk_pct = int(15 + (60 * (index + 1) / max(1, len(chunks[:4]))))
+                _JOURNAL_PROGRESS[jid_key] = {
+                    "status": "processing",
+                    "is_generating": True,
+                    "progress_percent": chunk_pct,
+                    "stage": f"Synthesizing cross-module mock exam ({total_q_saved} questions ready)...",
+                    "flashcards_count": 0,
+                    "questions_count": total_q_saved,
+                }
                 await asyncio.sleep(0.5)
             except Exception as chunk_err:
                 print(f"[Journal AI] Error on chunk {index}: {chunk_err}")
@@ -1832,6 +1868,14 @@ QUIZ/EXAM RULES:
 
         # Step 2: Generate Executive Course Study Guide (Syllabus Brief)
         try:
+            _JOURNAL_PROGRESS[jid_key] = {
+                "status": "processing",
+                "is_generating": True,
+                "progress_percent": 82,
+                "stage": "Synthesizing Executive Course Study Guide...",
+                "flashcards_count": 0,
+                "questions_count": total_q_saved,
+            }
             j_title = journal.title if journal else "Course Journal"
             guide_prompt = (
                 f"You are a master curriculum advisor. Synthesize an Executive Course Study Guide for this Course Notebook "
@@ -1855,30 +1899,56 @@ QUIZ/EXAM RULES:
                     {"role": "user", "content": guide_prompt}
                 ],
                 max_completion_tokens=2200,
+                reasoning_effort=settings.get_openai_reasoning_effort("curriculum"),
             )
             study_guide_md = guide_resp.choices[0].message.content or ""
             if journal and study_guide_md:
                 journal.study_guide = study_guide_md.strip()
                 db.commit()
+
+            _JOURNAL_PROGRESS[jid_key] = {
+                "status": "completed",
+                "is_generating": False,
+                "progress_percent": 100,
+                "stage": f"Ready · {total_q_saved} Mock Exam Questions",
+                "flashcards_count": 0,
+                "questions_count": total_q_saved,
+            }
         except Exception as guide_err:
             print(f"[Journal AI] Study guide generation error: {guide_err}")
+            _JOURNAL_PROGRESS[jid_key] = {
+                "status": "completed",
+                "is_generating": False,
+                "progress_percent": 100,
+                "stage": f"Ready · {total_q_saved} Mock Exam Questions",
+                "flashcards_count": 0,
+                "questions_count": total_q_saved,
+            }
 
     except Exception as e:
         print(f"[Journal AI] Critical background generation error: {e}")
+        if jid_key:
+            _JOURNAL_PROGRESS[jid_key] = {
+                "status": "error",
+                "is_generating": False,
+                "progress_percent": 0,
+                "stage": f"Error: {str(e)[:100]}",
+                "flashcards_count": 0,
+                "questions_count": total_q_saved,
+            }
     finally:
         try:
-            j = db.query(models.Journal).filter(models.Journal.id == parsed_journal_id).first()
-            if j:
-                j.is_generating = False
+            if journal:
+                journal.is_generating = False
             if parsed_mat_ids:
                 mats = db.query(models.StudyMaterial).filter(models.StudyMaterial.id.in_(parsed_mat_ids)).all()
                 for m in mats:
                     m.is_generating = False
             db.commit()
-        except Exception as fin_err:
-            print(f"[Journal AI] Cleanup error: {fin_err}")
-        finally:
-            db.close()
+        except Exception:
+            pass
+        db.close()
+
 
 
 async def ask_journal_tutor_response(
