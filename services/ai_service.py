@@ -1935,9 +1935,15 @@ async def ask_journal_tutor_response(
             model=settings.get_openai_model(),
             messages=messages,
             max_completion_tokens=1800,
-            temperature=0.4,
+            reasoning_effort=settings.get_openai_reasoning_effort("chat"),
         )
-        return resp.choices[0].message.content or "I couldn't synthesize an answer from your journal notes."
+        reply = resp.choices[0].message.content or "I couldn't synthesize an answer from your journal notes."
+        try:
+            resolved_reply = await resolve_youtube_links_in_text(reply)
+            return resolved_reply
+        except Exception as yt_err:
+            print(f"[Journal Tutor] Warning during YouTube link resolution: {yt_err}")
+            return reply
     except Exception as e:
         print(f"[Journal Tutor Error]: {e}")
         raise
