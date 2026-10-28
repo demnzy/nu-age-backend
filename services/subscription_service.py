@@ -227,3 +227,109 @@ def check_subscription_renewals(db: Session) -> dict:
                 summary["suspensions_sent"] += 1
 
     return summary
+
+
+
+DAILY_FREE_AI_CHAT_LIMIT = 15
+
+
+def get_chat_quota_status(user_id: UUID, db: Session) -> dict:
+    """
+    Evaluates current daily AI chat quota for this user.
+    - Paid Pro/Unlimited users enjoy unlimited AI chat without daily locks.
+    - Free tier users get DAILY_FREE_AI_CHAT_LIMIT (15 queries) per day, resetting at 00:00 UTC.
+    """
+    sub, effective_plan, status, is_expired = get_effective_subscription(user_id, db)
+    if effective_plan and effective_plan.id != "free" and not is_expired:
+        return {
+            "plan": effective_plan.id,
+            "plan_name": effective_plan.name if hasattr(effective_plan, "name") and effective_plan.name else "Pro Scholar",
+            "is_unlimited": True,
+            "limit": -1,
+            "used": 0,
+            "remaining": -1,
+            "locked": False,
+            "reset_at": "00:00 UTC",
+        }
+
+    today = datetime.now(timezone.utc).date()
+    usage = db.query(models.AIChatDailyUsage).filter(
+        models.AIChatDailyUsage.user_id == user_id,
+        models.AIChatDailyUsage.usage_date == today,
+    ).first()
+
+    used = int(usage.query_count) if usage else 0
+    limit = DAILY_FREE_AI_CHAT_LIMIT
+    remaining = max(0, limit - used)
+    locked = bool(used >= limit)
+
+    return {
+        "plan": "free",
+        "plan_name": "Free Tier",
+        "is_unlimited": False,
+        "limit": limit,
+        "used": used,
+        "remaining": remaining,
+        "locked": locked,
+        "reset_at": "00:00 UTC",
+    }
+
+
+def assert_chat_quota_available(user_id: UUID, db: Session) -> dict:
+    """
+    Verifies the user has remaining chat quota before initiating an AI completion.
+    Raises HTTPException 403 if daily free limit has been reached.
+    """
+    quota = get_chat_quota_status(user_id, db)
+    if quota.get("locked"):
+        limit = quota.get("limit", DAILY_FREE_AI_CHAT_LIMIT)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Free daily AI tutor limit reached ({limit}/{limit}). Daily quota resets at 00:00 UTC. Upgrade to Pro Scholar for unlimited access.",
+        )
+    return quota
+
+
+def record_chat_query_usage(user_id: UUID, db: Session) -> dict:
+    """
+    Records one successful AI chat query. Only increments on free tier.
+    Returns the newly updated quota metadata.
+    """
+    quota = get_chat_quota_status(user_id, db)
+    if quota.get("is_unlimited"):
+        return quota
+
+    today = datetime.now(timezone.utc).date()
+    usage = db.query(models.AIChatDailyUsage).filter(
+        models.AIChatDailyUsage.user_id == user_id,
+        models.AIChatDailyUsage.usage_date == today,
+    ).first()
+
+    if not usage:
+        usage = models.AIChatDailyUsage(
+            user_id=user_id,
+            usage_date=today,
+            query_count=1,
+        )
+        db.add(usage)
+    else:
+        usage.query_count = int(usage.query_count or 0) + 1
+
+    db.commit()
+    db.refresh(usage)
+
+    used = int(usage.query_count)
+    limit = DAILY_FREE_AI_CHAT_LIMIT
+    remaining = max(0, limit - used)
+    locked = bool(used >= limit)
+
+    return {
+        "plan": "free",
+        "plan_name": "Free Tier",
+        "is_unlimited": False,
+        "limit": limit,
+        "used": used,
+        "remaining": remaining,
+        "locked": locked,
+        "reset_at": "00:00 UTC",
+    }

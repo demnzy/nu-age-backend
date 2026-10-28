@@ -521,6 +521,23 @@ class UserSubscription(Base):
     user = relationship("User", backref="subscription")
     plan = relationship("StoreProduct", foreign_keys=[plan_id]) # Access sub.plan.materials_limit and sub.plan.generations_limit
 
+class AIChatDailyUsage(Base):
+    __tablename__ = "ai_chat_daily_usage"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    usage_date = Column(Date, default=func.current_date(), nullable=False, index=True)
+    query_count = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "usage_date", name="_user_ai_chat_daily_date_uc"),
+        Index("ix_ai_chat_user_date", "user_id", "usage_date"),
+    )
+
+    user = relationship("User", backref="chat_daily_usages")
+
 class Connection(Base):
     __tablename__ = "connections"
 
@@ -1319,4 +1336,4 @@ class CampusAmbassadorApplication(Base):
 
 
 
-
+

@@ -1009,6 +1009,19 @@ class AIDoubtPayload(BaseModel):
     material_id: Optional[str] = None
 
 
+@router.get("/ai-tutor/quota")
+def get_ai_tutor_quota(
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns current daily AI chat quota status for the authenticated user.
+    Free users get 15 queries/day resetting at 00:00 UTC. Pro scholars get unlimited access.
+    """
+    from services.subscription_service import get_chat_quota_status
+    return get_chat_quota_status(user.id, db)
+
+
 @router.post("/ai-tutor")
 async def ask_ai_tutor(
     payload: AIDoubtPayload,
@@ -1019,6 +1032,9 @@ async def ask_ai_tutor(
     Contextual, guarded AI Doubt Assistant answering student queries
     grounded in the active course module and lesson via OpenAI pipeline.
     """
+    from services.subscription_service import assert_chat_quota_available, record_chat_query_usage
+    assert_chat_quota_available(user.id, db)
+
     try:
         content_to_use = payload.lesson_content or ""
         if payload.material_id:
@@ -1041,7 +1057,10 @@ async def ask_ai_tutor(
             conversation_history=payload.conversation_history or [],
             is_assessment=payload.is_assessment or False,
         )
-        return {"reply": reply}
+        quota_data = record_chat_query_usage(user.id, db)
+        return {"reply": reply, "quota": quota_data}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Tutor service error: {str(e)}")
 
@@ -1511,13 +1530,15 @@ def get_journal_status(
     # OR if journal was updated > 180 seconds ago and prog is empty/inactive, self-heal and release lock!
     now_utc = datetime.now(timezone.utc)
     is_stale_lock = False
+    jid_str = str(journal.id).strip().lower()
     if journal.is_generating and journal.updated_at:
         try:
             up_time = journal.updated_at
             if up_time.tzinfo is None:
                 up_time = up_time.replace(tzinfo=timezone.utc)
             age_seconds = (now_utc - up_time).total_seconds()
-            if age_seconds > 180 and not prog.get("is_generating"):
+            # If generation has been ongoing for > 120 seconds or progress is stuck at 82%, self-heal
+            if age_seconds > 120 or (age_seconds > 60 and prog.get("progress_percent") == 82):
                 is_stale_lock = True
         except Exception:
             pass
@@ -1525,19 +1546,27 @@ def get_journal_status(
     if is_stale_lock or (journal.is_generating and prog.get("status") in ("completed", "error")):
         journal.is_generating = False
         db.commit()
+        if jid_str in ai_service._JOURNAL_PROGRESS:
+            ai_service._JOURNAL_PROGRESS[jid_str]["is_generating"] = False
+            ai_service._JOURNAL_PROGRESS[jid_str]["status"] = "completed"
+            ai_service._JOURNAL_PROGRESS[jid_str]["progress_percent"] = 100
 
     is_generating = bool(journal.is_generating or prog.get("is_generating", False))
     raw_status = prog.get("status")
     if not is_generating:
         status = "error" if raw_status == "error" else "completed"
+        final_pct = 100
+        final_stage = "Ready to study"
     else:
         status = "processing"
+        final_pct = prog.get("progress_percent", 25)
+        final_stage = prog.get("stage", "Synthesizing course notebook...")
 
     return {
         "status": status,
         "is_generating": is_generating,
-        "progress_percent": prog.get("progress_percent", 100 if not is_generating else 25),
-        "stage": prog.get("stage", "Ready to study" if not is_generating else "Synthesizing course notebook..."),
+        "progress_percent": final_pct,
+        "stage": final_stage,
         "flashcards_count": 0,
         "questions_count": max(q_count, prog.get("questions_count", 0)),
         "has_study_guide": bool(journal.study_guide),
@@ -1785,6 +1814,9 @@ async def ask_journal_tutor(
     """
     Grounded Notebook AI Tutor answering queries across all materials in the Course Journal.
     """
+    from services.subscription_service import assert_chat_quota_available, record_chat_query_usage
+    assert_chat_quota_available(user.id, db)
+
     journal = db.query(models.Journal).filter(
         models.Journal.id == journal_id,
         models.Journal.user_id == user.id
@@ -1825,7 +1857,10 @@ async def ask_journal_tutor(
             materials_list=materials_list,
             conversation_history=payload.conversation_history or []
         )
-        return {"reply": reply}
+        quota_data = record_chat_query_usage(user.id, db)
+        return {"reply": reply, "quota": quota_data}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Journal Tutor error: {str(e)}")
 

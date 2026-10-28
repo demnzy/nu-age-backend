@@ -2157,14 +2157,18 @@ EXAM RULES:
                 f"- 3-5 frequent traps students fall into during assessments."
             )
 
-            guide_resp = await client.chat.completions.create(
-                model=settings.get_openai_model(),
-                messages=[
-                    {"role": "system", "content": "You create clean, authoritative academic study guides in GitHub Markdown."},
-                    {"role": "user", "content": guide_prompt}
-                ],
-                max_completion_tokens=2200,
-                reasoning_effort=settings.get_openai_reasoning_effort("curriculum"),
+            # Bounded execution with medium reasoning effort to prevent 180s hangs at 82%
+            guide_resp = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=settings.get_openai_model(),
+                    messages=[
+                        {"role": "system", "content": "You create clean, authoritative academic study guides in GitHub Markdown."},
+                        {"role": "user", "content": guide_prompt}
+                    ],
+                    max_completion_tokens=3500,
+                    reasoning_effort=settings.get_openai_reasoning_effort("chat"),  # medium reasoning effort
+                ),
+                timeout=55.0
             )
             study_guide_md = guide_resp.choices[0].message.content or ""
             if journal and study_guide_md:
