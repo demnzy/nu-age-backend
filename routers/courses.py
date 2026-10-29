@@ -30,7 +30,7 @@ async def create_course(
             detail="You do not have the permission to perform this operation"
         )
  
-    course_data = payload.model_dump(exclude={"image_bytes", "image_filename", "curriculum"})
+    course_data = payload.model_dump(exclude={"image_bytes", "image_filename", "image_url", "curriculum"})
     course_data['admin_id'] = user.id
  
     # SAFEGUARD: never trust client-supplied teacher_id/org_id for freelance
@@ -128,6 +128,10 @@ async def create_course(
         except Exception as e:
             # Failure here doesn't crash the whole request; course is still created
             print(f"Warning: Course created, but image upload failed: {str(e)}")
+    elif getattr(payload, "image_url", None):
+        course.image_url = payload.image_url
+        db.commit()
+        db.refresh(course)
 
     # 6. ATOMIC BULK CURRICULUM CREATION (Parallel Course Studio)
     if payload.curriculum and isinstance(payload.curriculum, list):
@@ -347,6 +351,7 @@ class AIDraftRequest(BaseModel):
     topic: str
     context: str
     org_id: Optional[str] = None
+    images: Optional[List[Dict[str, Any]]] = None
 
 @router.post('/generate-draft', status_code=status.HTTP_202_ACCEPTED)
 async def generate_course_draft(
@@ -422,7 +427,7 @@ async def generate_course_draft(
     job_id = job.id
     # no db.close() needed — get_db's own generator/finally handles teardown
 
-    background_tasks.add_task(run_course_draft_job, job_id, payload.topic, payload.context)
+    background_tasks.add_task(run_course_draft_job, job_id, payload.topic, payload.context, payload.images)
 
     return {"status": "queued", "job_id": job_id}
 

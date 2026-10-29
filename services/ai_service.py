@@ -1536,10 +1536,19 @@ async def draft_course_curriculum(topic: str, context: str) -> dict:
     # 4. Resolve educational video placeholders via YouTube API
     draft_data = await resolve_video_placeholders(draft_data)
 
+    # 5. Contextually recommend educational cover image
+    try:
+        from services.image_search_service import resolve_contextual_image
+        rec_cover = await resolve_contextual_image(f"{blueprint.course_name} textbook illustration", blueprint.course_name)
+        if rec_cover and not rec_cover.startswith("https://mermaid.ink"):
+            draft_data["recommended_cover_image"] = rec_cover
+    except Exception as rec_ex:
+        print(f"[WARNING] Cover image recommendation skipped: {rec_ex}")
+
     return draft_data
 
 
-async def run_course_draft_job(job_id: str, topic: str, context: str):
+async def run_course_draft_job(job_id: str, topic: str, context: str, images: Optional[List[Dict[str, Any]]] = None):
     """
     Background wrapper: owns the job row lifecycle (PENDING -> RUNNING ->
     SUCCESS/FAILED) so the HTTP request never has to wait for generation.
@@ -1556,6 +1565,14 @@ async def run_course_draft_job(job_id: str, topic: str, context: str):
 
         job.status = models.JobStatus.RUNNING
         db.commit()
+
+        if images and isinstance(images, list):
+            try:
+                extracted_notes = await extract_text_from_study_images(images)
+                if extracted_notes:
+                    context = (context + "\n\n=== TRANSCRIBED STUDY NOTES & PHOTOS ===\n" + extracted_notes).strip()
+            except Exception as img_err:
+                print(f"[WARNING] Image transcription failed: {img_err}")
 
         draft_data = await draft_course_curriculum(topic=topic, context=context)
 
@@ -1959,7 +1976,10 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
         if not raw_b:
             continue
         mime = img.get("mime_type") or "image/jpeg"
-        b64_str = base64.b64encode(raw_b).decode("utf-8")
+        if isinstance(raw_b, str):
+            b64_str = raw_b
+        else:
+            b64_str = base64.b64encode(raw_b).decode("utf-8")
         data_url = f"data:{mime};base64,{b64_str}"
         user_content.append({
             "type": "image_url",

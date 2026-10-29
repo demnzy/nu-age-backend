@@ -122,6 +122,7 @@ class CourseBase(BaseModel):
     # --- ADD THESE FOR BUSNNY.NET ---
     image_bytes: Optional[str] = None
     image_filename: Optional[str] = None
+    image_url: Optional[str] = None
     curriculum: Optional[List[Dict[str, Any]]] = None
     
 class CategoryBase(BaseModel):
