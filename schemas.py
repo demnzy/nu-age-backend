@@ -1,6 +1,6 @@
 from __future__ import annotations
 from pydantic import BaseModel, field_serializer, EmailStr, Field, field_validator
-from typing import Optional, List, Union, Literal, Annotated
+from typing import Optional, List, Union, Literal, Annotated, Dict, Any
 from enum import Enum
 from uuid import UUID
 from datetime import datetime
