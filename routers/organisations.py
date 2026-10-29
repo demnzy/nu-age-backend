@@ -959,3 +959,137 @@ def get_org_students_with_enrollment_status(
 
 
     
+
+@router.get('/plans', response_model=List[OrgPlanResponse])
+async def get_org_plans(user=Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns available organisation plans from the PostgreSQL 'plans' table.
+    """
+    plans = db.query(models.Plan).order_by(models.Plan.price.asc()).all()
+    return [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "description": p.description,
+            "price": p.price,
+            "max_members": p.max_members,
+            "max_courses": p.max_courses,
+            "features": list(p.features) if p.features else [],
+        }
+        for p in plans
+    ]
+
+
+@router.patch('/{org_id}')
+async def update_organisation(
+    org_id: str,
+    payload: OrgUpdatePayload,
+    user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Updates organization details: name, number, website, address, theme_color, and logo.
+    Restricted to organization owner or platform admin.
+    """
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organisation ID format.")
+
+    org = db.query(models.Organisation).filter(models.Organisation.id == org_uuid).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found.")
+
+    is_owner = (org.owner_id == user.id) or (getattr(user, "is_superuser", False))
+    if not is_owner:
+        raise HTTPException(status_code=403, detail="Only the organization owner can edit workspace details.")
+
+    if payload.name and payload.name.strip() and payload.name.strip() != org.name:
+        existing = db.query(models.Organisation).filter(
+            models.Organisation.name == payload.name.strip(),
+            models.Organisation.id != org_uuid,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="An organization with this name already exists.")
+        org.name = payload.name.strip()
+
+    if payload.number is not None:
+        org.number = payload.number.strip()
+    if payload.website is not None:
+        org.website = payload.website.strip() or None
+    if payload.address is not None:
+        org.address = payload.address.strip()
+    if payload.theme_color is not None:
+        org.theme_color = payload.theme_color.strip()
+
+    # Logo upload handling
+    if payload.logo_bytes and payload.logo_filename:
+        try:
+            if isinstance(payload.logo_bytes, str):
+                raw_bytes = base64.b64decode(payload.logo_bytes)
+            else:
+                raw_bytes = payload.logo_bytes
+            ext = payload.logo_filename.split(".")[-1]
+            safe_name = f"logo_{uuid.uuid4().hex}.{ext}"
+            folder_path = f"logos/{org.id}"
+            cdn_url = await upload_bytes_to_bunny(raw_bytes, safe_name, folder_path)
+            org.logo = cdn_url
+        except Exception as e:
+            print(f"[update_organisation] Logo upload error: {e}")
+
+    db.commit()
+    db.refresh(org)
+
+    org_data = {column.name: getattr(org, column.name) for column in org.__table__.columns}
+    if org.plan:
+        org_data["plan"] = {column.name: getattr(org.plan, column.name) for column in org.plan.__table__.columns}
+    else:
+        org_data["plan"] = None
+
+    return org_data
+
+
+@router.patch('/{org_id}/members/{user_id}/role')
+async def update_member_role(
+    org_id: str,
+    user_id: str,
+    payload: MemberRoleUpdate,
+    user=Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Updates the role of an enrolled organization member (e.g. STUDENT, TEACHER, STAFF).
+    """
+    try:
+        org_uuid = uuid.UUID(org_id)
+        target_uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format.")
+
+    org = db.query(models.Organisation).filter(models.Organisation.id == org_uuid).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found.")
+
+    is_admin = (org.owner_id == user.id) or (getattr(user, "is_superuser", False))
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Not authorized to manage organization members.")
+
+    if target_uid == org.owner_id:
+        raise HTTPException(status_code=400, detail="Cannot alter the organization owner's role.")
+
+    member_rel = db.query(models.OrganisationMember).filter(
+        models.OrganisationMember.organisation_id == org_uuid,
+        models.OrganisationMember.user_id == target_uid,
+    ).first()
+
+    if not member_rel:
+        raise HTTPException(status_code=404, detail="Member not found in this organization.")
+
+    new_role = payload.role.strip().lower()
+    if new_role not in ("student", "teacher", "staff", "admin", "instructor"):
+        raise HTTPException(status_code=400, detail="Invalid role specified.")
+
+    member_rel.role = new_role
+    db.commit()
+
+    return {"status": "success", "user_id": str(target_uid), "role": new_role.upper()}

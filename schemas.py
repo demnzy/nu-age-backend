@@ -205,6 +205,29 @@ class orgbase(BaseModel):
     theme_color: Optional[str] = None
     model_config = {'from_attributes': True}
 
+class OrgUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    number: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    theme_color: Optional[str] = None
+    logo_bytes: Optional[str] = None
+    logo_filename: Optional[str] = None
+    model_config = {'from_attributes': True}
+
+class MemberRoleUpdate(BaseModel):
+    role: str
+
+class OrgPlanResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    price: float
+    max_members: Optional[int] = None
+    max_courses: Optional[int] = None
+    features: List[str] = []
+    model_config = {'from_attributes': True}
+
 class CourseSettings(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
