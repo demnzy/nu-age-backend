@@ -1062,7 +1062,8 @@ async def ask_ai_tutor(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI Tutor service error: {str(e)}")
+        print(f"[ask_ai_tutor] Internal service error: {e}")
+        raise HTTPException(status_code=500, detail="The AI study tutor is currently experiencing a temporary hiccup. Please try again in a few moments.")
 
 
 @router.delete("/materials/{material_id}")
@@ -1862,7 +1863,8 @@ async def ask_journal_tutor(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Journal Tutor error: {str(e)}")
+        print(f"[ask_journal_tutor] Internal service error: {e}")
+        raise HTTPException(status_code=500, detail="The AI notebook tutor is currently experiencing a temporary hiccup. Please try again in a few moments.")
 
 
 @router.get("/journals/{journal_id}/due-cards", response_model=List[schemas.FlashcardResponse])
