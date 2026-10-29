@@ -878,11 +878,12 @@ CURRICULUM STRUCTURING RULES:
 1. COURSE SCOPE: A comprehensive course must contain 5 to 6 modules, each with 4 to 5 lessons.
 2. DOMAIN-SPECIFIC FORMAT SELECTION & RUNNER AWARENESS:
    - PLATFORM CODE RUNNER CAPABILITIES & ENVIRONMENTS:
-     The platform supports targeted code execution sandboxes. Craft simple, highly explanatory challenges that build deep student understanding:
+     The platform supports targeted, offline sandboxed code execution. Craft clear, highly explanatory challenges that build deep student understanding:
+     * ABSOLUTE BAN ON EXTERNAL MODULE IMPORTS: Code execution sandboxes have ONLY standard library / built-in runtime features available. NEVER import third-party packages (NO numpy, pandas, requests, scipy, matplotlib, etc. in Python; NO npm imports in JS). All code must be 100% self-contained using language standard built-ins only.
      * "html": Live browser preview sandbox with offline DOM & token validation. Ideal for web development, HTML structure, PWA Web App Manifests, Service Worker registration scripts, and DOM manipulation.
-     * "python": Pure CPython AST-checked local sandbox with standard I/O capture. Ideal for algorithmic thinking, data structures, parsing, and backend logic.
+     * "python": Pure CPython AST-checked local sandbox with standard I/O capture and standard library only. Ideal for algorithmic thinking, data structures, parsing, and backend logic.
      * "sql": In-memory SQLite database. Supply table schemas and seed data in `setup_sql`; students write target queries. Ideal for relational databases and data modeling.
-     * "javascript" / "typescript": Headless Node.js runtime for logic, data transformations, and backend utilities.
+     * "javascript" / "typescript": Headless Node.js runtime for logic, data transformations, and backend utilities using language built-ins only.
      * Compiled Systems ("cpp", "c", "java", "rust", "go"): Containerized CLI compilers for systems programming, data structures, and algorithms.
    - PURPOSE-DRIVEN PEDAGOGY & DIVERSITY:
      * Maintain healthy diversity across lesson formats ("text", "stepper", "sequencer", "scenario", "cards", "cloze", "code_lab", "video").
@@ -893,6 +894,8 @@ CURRICULUM STRUCTURING RULES:
 3. MANDATORY VIDEO INCLUSION: Every course MUST contain 2 to 4 "video" lessons distributed across the curriculum (e.g. an intro walkthrough in Module 1, and in key complex or algorithmic modules) to provide multi-modal visual reinforcement.
 4. FINAL CAPSTONE EXAM: The very last lesson of the very last module MUST be an "assessment" serving as a comprehensive final examination covering all modules.
 5. PEDAGOGICAL GOAL: Assign a clear, specific learning outcome or mental model to every lesson blueprint.
+6. MANDATORY SOURCE MATERIAL GROUNDING:
+   When SOURCE MATERIALS, reference documents, or transcribed study notes/photos are provided in the context, you MUST anchor the syllabus directly to the scope, concepts, chapters, formulas, and terminology contained within them. Do NOT ignore the provided materials or generate a generic syllabus when specific notes or textbooks have been supplied.
 """.strip()
 
 
@@ -967,13 +970,24 @@ LESSON TYPE CONTENT SPECIFICATIONS:
      - `takeaway`: Critical tip, common failure point, or rule of thumb
 
 6. "sequencer" (Process & Timeline Challenge):
-   - Populate `prompt`: Clear prompt instructing the student on what workflow, timeline, or algorithm they must reconstruct.
+   - PURPOSE: Interactive challenge where students must reconstruct a workflow, algorithm, lifecycle, or protocol in correct chronological order.
+   - CANONICAL 1-BASED CHRONOLOGICAL ORDERING LAW:
+     * `correct_order` MUST start at 1 for the very first beginning step and proceed sequentially: 1, 2, 3, ..., N (where 1 is the earliest beginning/initialization step, and N is the final termination/output step).
+     * NEVER start from 0 (0-based indexing is strictly forbidden).
+     * NEVER skip numbers or use arbitrary values.
+     * The array of items in the output MUST be listed in their true chronological execution sequence:
+       - Item with `correct_order: 1` is Step 1 (Beginning, input gathering, validation, or initialization).
+       - Item with `correct_order: 2` is Step 2 (First operation, setup, or transition).
+       - Item with `correct_order: 3` is Step 3 (Core transformation, execution, or handling).
+       - Item with `correct_order: N` is Step N (Completion, response delivery, commit, or final output).
+     * DO NOT pre-scramble the items in the data. The frontend client shuffles the steps automatically for the student at runtime.
+   - Populate `prompt`: Clear prompt explaining the workflow or timeline to reconstruct from beginning to end.
    - Populate `items`: 3 to 6 sequence item objects.
      Each item has:
-     - `id`: Short unique identifier (e.g. "step_1", "step_2")
-     - `label`: Description of the action, event, or statement
-     - `correct_order`: 1-based integer position in the correct sequence (1, 2, 3...)
-     - `explanation`: Clear explanation of why this step belongs at this position in the sequence
+     - `id`: "step_1", "step_2", ..., "step_N" (strictly matching its 1-based order)
+     - `label`: Concrete, active-voice description of what occurs at this step
+     - `correct_order`: 1-based integer position in sequence (1, 2, 3... N)
+     - `explanation`: Pedagogical justification of why this step happens at this position and what it depends on
 
 7. "cloze" (Active Recall Fill-in-the-Blanks):
    - Populate `text`: A 2 to 4 sentence educational passage where 2 to 4 critical technical keywords are replaced with brackets:
@@ -984,15 +998,13 @@ LESSON TYPE CONTENT SPECIFICATIONS:
    - Populate `explanation`: Thorough educational explanation of why the blanked terms are correct.
 
 8. "code_lab" (Interactive Coding Playground):
-   - SANDBOX EXECUTION ENVIRONMENTS & SCOPE:
-     * "html": For web, frontend, PWA, and DOM exercises. Renders with live browser preview and offline markup analysis. Starter code can include full HTML structure (`<!DOCTYPE html>`), `<style>`, `<script>`, Service Worker registrations, and offline caching logic. Test cases check for key tags, attributes, or code tokens.
-     * "python": Sandboxed local CPython environment with AST checks. Reads stdin, writes stdout.
-     * "sql": In-memory SQLite database. Provide DDL schema and seed rows in `setup_sql`; students write SQL queries.
-      * "javascript" / "typescript": Headless Node.js runtime for backend logic and data processing.
-        IMPORTANT: Standard sandboxes execute code as Node.js CLI scripts without npm modules installed. NEVER output bare ES module imports (e.g. `import ... from 'workbox-...'` or `import ... from 'package'`). For Service Worker / PWA caching exercises, either:
-        (a) Use `language: "html"` with browser preview and `<script>`, or
-        (b) For standalone Service Worker JS, use `importScripts('https://storage.googleapis.com/workbox-cdn/releases/6.4.1/workbox-sw.js')` with `const { registerRoute } = workbox.routing;`, or native Service Worker Cache APIs (`self.addEventListener('fetch', ...)`, `caches.open(...)`).
-      * "cpp", "c", "java", "rust", "go": Containerized CLI execution environments.
+   - ABSOLUTE BAN ON EXTERNAL MODULE IMPORTS & THIRD-PARTY PACKAGES:
+     * Code execution occurs in isolated, offline, sandboxed environments that have ONLY standard library / language built-ins available.
+     * Python: NEVER use third-party package imports. NO `import numpy`, NO `import pandas`, NO `import requests`, NO `import scipy`, NO `import matplotlib`, NO `import torch`, NO `import sklearn`, NO `import bs4`, etc. All code MUST use Python standard library modules ONLY (e.g. `math`, `collections`, `itertools`, `json`, `re`, `datetime`, `heapq`, `random`, `sys`, `typing`, `copy`, `functools`, `bisect`).
+     * JavaScript / TypeScript: Runs in headless Node.js without npm packages installed. NO external npm imports (NO `lodash`, `axios`, `express`, `moment`, etc.). Use language built-in APIs ONLY (e.g. `Array`, `Map`, `Set`, `JSON`, `Math`, `Promise`, `Object`, `RegExp`). For Service Worker / PWA exercises, use standard Cache API or `importScripts(...)` CDN syntax.
+     * HTML: Pure HTML5, CSS3, and standard browser JavaScript only.
+     * SQL: SQLite in-memory database with standard ANSI/SQLite SQL syntax. Seed schema and tables in `setup_sql`.
+     * Every starter and solution code must be 100% self-contained and run cleanly out-of-the-box with ZERO external dependencies.
    - Populate `language`: Select the matching language: "html", "python", "sql", "javascript", "typescript", "cpp", "c", or "java".
    - Populate `instructions`: Comprehensive problem statement, input/output requirements, and constraints designed to build real student understanding.
    - Populate `starter_code`: Clean, idiomatic boilerplate with proper structure, signatures, docstrings, and `# TODO` / `// TODO` / `<!-- TODO -->` markers. Must never be empty.
@@ -1010,16 +1022,31 @@ LESSON TYPE CONTENT SPECIFICATIONS:
 
 def _normalize_code_lab_code(text: str, language: str = "javascript") -> str:
     """
-    Normalizes code lab code to eliminate fatal runtime syntax errors:
-    1. Transforms bare ES module imports of Workbox into standard Service Worker
+    Normalizes code lab code to eliminate fatal runtime syntax and sandbox errors:
+    1. Removes third-party Python imports (e.g. numpy, pandas, requests) that fail in the offline sandbox.
+    2. Transforms bare ES module imports of Workbox into standard Service Worker
        `importScripts(...)` CDN imports and destructuring.
-    2. Transforms any generic ES module imports into Node.js CommonJS `require(...)`
+    3. Transforms any generic ES module imports into Node.js CommonJS `require(...)`
        and `module.exports`, preventing `SyntaxError: Cannot use import statement outside a module`.
     """
     if not isinstance(text, str) or not text.strip():
         return text
 
     lang = (language or "javascript").lower().strip()
+
+    # 1. Sanitize Python code to prevent runtime ModuleNotFoundError for uninstalled packages
+    if lang in ("python", "py"):
+        banned_pkgs = ["numpy", "pandas", "requests", "matplotlib", "scipy", "seaborn", "sklearn", "torch", "tensorflow", "bs4", "flask", "django"]
+        lines = text.splitlines()
+        clean_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if any(re.match(rf"^(?:import|from)\s+{pkg}(?:\s+|$|\.)", stripped) for pkg in banned_pkgs):
+                clean_lines.append(f"# Note: External import '{stripped}' removed (sandbox uses Python standard library only)")
+            else:
+                clean_lines.append(line)
+        return "\n".join(clean_lines)
+
     if lang not in ("javascript", "js", "typescript", "ts", ""):
         return text
 
@@ -1145,11 +1172,22 @@ def normalize_lesson(lesson: AILesson) -> dict:
                 {"id": "step_3", "label": "Verification and review", "correct_order": 3, "explanation": "Validate final results."}
             ]
         else:
-            for i, it in enumerate(items, start=1):
-                if not it.get("id"):
-                    it["id"] = f"step_{i}"
-                if not it.get("correct_order"):
-                    it["correct_order"] = i
+            # Canonical 1-based chronological ordering: sort items by declared correct_order, then renumber 1..N
+            def _get_sort_key(it, idx):
+                val = it.get("correct_order")
+                if isinstance(val, (int, float)):
+                    return int(val)
+                return idx
+
+            sorted_items = sorted(items, key=lambda x: _get_sort_key(x, items.index(x)))
+            for i, it in enumerate(sorted_items, start=1):
+                it["id"] = f"step_{i}"
+                it["correct_order"] = i
+                if not it.get("label"):
+                    it["label"] = f"Stage {i} action"
+                if not it.get("explanation"):
+                    it["explanation"] = f"Step {i} must be executed at this position in the sequence."
+            content["items"] = sorted_items
 
     elif t == "cloze":
         raw_text = content.get("text", "")
@@ -1204,7 +1242,7 @@ async def draft_curriculum_blueprint(topic: str, context: str) -> AICourseBluepr
     user_prompt = f"""
 TOPIC: {topic}
 
-TARGET AUDIENCE / CONTEXT:
+SOURCE MATERIALS & PEDAGOGICAL CONTEXT:
 {context}
 
 Design a comprehensive course curriculum blueprint. Select the optimal lesson types
@@ -1272,14 +1310,22 @@ async def synthesize_single_lesson(
             "- This lesson exists EXCLUSIVELY to enforce, challenge, apply, and deepen the student's existing understanding of the concepts previously introduced:\n"
             f"{prior_lessons_context or '  (Foundational concepts established in this module)'}\n"
             "- For 'scenario' (Decision Matrix): DO NOT be lazy. Build an authentic, multi-paragraph operational or engineering dilemma with concrete stakes, specific numbers/metrics, real-world constraints (e.g. strict latency budgets, offline reliability requirements, resource constraints, legacy systems, compliance), and subtle traps where standard textbook answers fail in real production.\n"
-            "- For 'code_lab': Provide production-grade starter code, complete solution code, and comprehensive test cases. For Service Workers, use importScripts() or native Cache API. Do not use bare npm imports.\n"
-            "- For 'stepper' / 'sequencer': Provide full procedural rigor explaining the 'why' behind each step."
+            "- For 'code_lab': Provide production-grade starter code, complete solution code, and comprehensive test cases. ABSOLUTE BAN ON EXTERNAL MODULE IMPORTS: Never use numpy, pandas, requests, or third-party packages in Python (standard library only). Never use npm package imports in JavaScript (built-in language APIs only). All code must be completely self-contained.\n"
+            "- For 'stepper' / 'sequencer': Provide full procedural rigor. For 'sequencer', correct_order MUST strictly start at 1 for the very beginning step and proceed sequentially (1, 2, 3... N) to the final step in chronological execution order. IDs must be step_1, step_2... step_N."
         )
+
+    grounded_context = build_single_material_grounded_context(
+        content=context,
+        query=f"{module_title} {module_focus} {lesson_bp.title} {lesson_bp.pedagogical_goal}",
+        total_budget=36000,
+    ) if context else ""
 
     user_prompt = f"""
 COURSE: {course_name}
 COURSE DESCRIPTION: {course_desc}
-TARGET AUDIENCE: {context}
+
+SOURCE MATERIALS & GROUNDED CONTEXT:
+{grounded_context or '(Standard university curriculum scope)'}
 
 MODULE ({module_index + 1} of {total_modules}): {module_title}
 MODULE PEDAGOGICAL FOCUS: {module_focus}
@@ -1293,6 +1339,7 @@ PEDAGOGICAL GOAL: {lesson_bp.pedagogical_goal}
 
 Synthesize complete, production-ready, university-grade educational content for this specific lesson.
 Follow the exact field rules for lesson type '{lesson_bp.type}'.
+Ground your explanations, diagrams, terminology, code challenges, and assessment items directly in the SOURCE MATERIALS provided above.
 """.strip()
 
     last_error = None
@@ -2003,7 +2050,7 @@ async def extract_text_from_study_images(images: List[Dict[str, Any]]) -> str:
                     "content": user_content
                 }
             ],
-            max_completion_tokens=2500,
+            max_completion_tokens=4000,
             reasoning_effort=settings.get_openai_reasoning_effort("ocr"),
         )
         extracted_text = response.choices[0].message.content or ""
