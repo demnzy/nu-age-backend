@@ -30,7 +30,7 @@ async def create_course(
             detail="You do not have the permission to perform this operation"
         )
  
-    course_data = payload.model_dump(exclude={"image_bytes", "image_filename"})
+    course_data = payload.model_dump(exclude={"image_bytes", "image_filename", "curriculum"})
     course_data['admin_id'] = user.id
  
     # SAFEGUARD: never trust client-supplied teacher_id/org_id for freelance
@@ -128,6 +128,44 @@ async def create_course(
         except Exception as e:
             # Failure here doesn't crash the whole request; course is still created
             print(f"Warning: Course created, but image upload failed: {str(e)}")
+
+    # 6. ATOMIC BULK CURRICULUM CREATION (Parallel Course Studio)
+    if payload.curriculum and isinstance(payload.curriculum, list):
+        try:
+            for m_idx, mod_data in enumerate(payload.curriculum):
+                if not isinstance(mod_data, dict):
+                    continue
+                mod_title = (mod_data.get("title") or f"Module {m_idx + 1}").strip()
+                new_module = models.Module(
+                    title=mod_title,
+                    order_index=mod_data.get("order_index", m_idx),
+                    course_id=course.id,
+                )
+                db.add(new_module)
+                db.flush()
+
+                lessons = mod_data.get("lessons", [])
+                if isinstance(lessons, list):
+                    for l_idx, lesson_data in enumerate(lessons):
+                        if not isinstance(lesson_data, dict):
+                            continue
+                        l_title = (lesson_data.get("title") or f"Lesson {l_idx + 1}").strip()
+                        l_type = lesson_data.get("type", "text")
+                        l_content = lesson_data.get("content", {})
+                        if not isinstance(l_content, dict):
+                            l_content = {}
+                        new_lesson = models.Lesson(
+                            title=l_title,
+                            type=l_type,
+                            order_index=lesson_data.get("order_index", l_idx),
+                            content=l_content,
+                            module_id=new_module.id,
+                        )
+                        db.add(new_lesson)
+            db.commit()
+            db.refresh(course)
+        except Exception as cur_err:
+            print(f"Warning: Course created, but curriculum insertion failed: {cur_err}")
 
     return course
 
