@@ -1,17 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import joinedload
-from fastapi import WebSocket
 from uuid import UUID
+import uuid
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict, Any
 import models
 from database import get_db
 from services import auth, promo_service
-from services.auth import verify_ws_token 
+from services.auth import verify_ws_token
 from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime, timezone
-from typing import List
 # 1. Pydantic schema for creating a group channel
 router = APIRouter(prefix="/chat", tags=["Chat"])
 # Create a new file or add this to your chat router file
@@ -71,6 +71,83 @@ async def notify_presence(user_id: UUID, is_online: bool, db: Session):
             peer_id_str = str(peer[0])
             if peer_id_str != str(user_id):
                 await manager.send_personal_message(payload, peer_id_str)
+
+
+async def _synthesize_chat_ai_reply(
+    channel_id: UUID,
+    user_id: UUID,
+    prompt_msg_id: UUID,
+    query_text: str,
+    sender_name: str,
+):
+    """Generates an academic, grounded AI response for an inline /ai chat query and broadcasts it."""
+    from database import SessionLocal
+    from services import ai_service
+    from services.subscription_service import record_chat_query_usage
+    
+    db_async = SessionLocal()
+    try:
+        channel = db_async.query(models.Channel).filter_by(id=channel_id).first()
+        chan_title = channel.name if channel and channel.name else "Study Group"
+        
+        reply = await ai_service.ask_ai_tutor_response(
+            query=query_text,
+            course_title=chan_title,
+            module_title="Interactive Chat Query",
+            lesson_title=f"Asked by {sender_name}",
+            lesson_content="",
+            conversation_history=[],
+            is_assessment=False,
+        )
+        # Record quota consumption for the prompter
+        try:
+            record_chat_query_usage(user_id, db_async)
+        except Exception as qe:
+            print(f"[chat_ai] Error recording quota: {qe}")
+        
+        # Create AI message
+        ai_msg = models.Message(
+            channel_id=channel_id,
+            sender_id=user_id,
+            content=reply,
+            type="ai_response",
+            metadata_payload={
+                "is_ai": True,
+                "prompt": query_text,
+                "reply_to": {
+                    "id": str(prompt_msg_id),
+                    "sender_name": sender_name,
+                    "snippet": (query_text or "")[:120],
+                }
+            }
+        )
+        db_async.add(ai_msg)
+        db_async.commit()
+        db_async.refresh(ai_msg)
+        
+        broadcast_payload = {
+            "id": str(ai_msg.id),
+            "channel_id": str(channel_id),
+            "type": "ai_response",
+            "content": ai_msg.content,
+            "metadata_payload": ai_msg.metadata_payload,
+            "created_at": ai_msg.created_at.isoformat(),
+            "status": "delivered",
+            "sender": {
+                "id": "ai_assistant",
+                "name": "Nu Study AI",
+                "profile_picture_url": None,
+                "primary_badge": {"name": "AI Study Companion", "color": "#8B5CF6"},
+            }
+        }
+        
+        channel_members = db_async.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+        for member in channel_members:
+            await manager.send_personal_message(broadcast_payload, str(member[0]))
+    except Exception as ex:
+        print(f"[chat_ai_reply] Error generating chat AI response: {ex}")
+    finally:
+        db_async.close()
 
 
 # 2. UPDATE YOUR WEBSOCKET ENDPOINT TO TRIGGER THE HELPER
@@ -229,6 +306,186 @@ async def chat_websocket(
                             await manager.send_personal_message(broadcast_payload, str(member[0]))
                 continue # Skip standard save
 
+            # ==========================================
+            # UPGRADE 1: REACTION TOGGLE
+            # ==========================================
+            if msg_type == "reaction":
+                target_msg_id = data.get("message_id")
+                emoji = (data.get("emoji") or "").strip()
+                if target_msg_id and emoji:
+                    target_msg = db.query(models.Message).filter_by(id=target_msg_id, channel_id=channel_id).first()
+                    if target_msg:
+                        current_meta = target_msg.metadata_payload or {}
+                        if isinstance(current_meta, str):
+                            try: current_meta = json.loads(current_meta)
+                            except: current_meta = {}
+                        reactions = current_meta.get("reactions", {})
+                        if not isinstance(reactions, dict):
+                            reactions = {}
+                        u_list = list(reactions.get(emoji, []))
+                        if user_id_str in u_list:
+                            u_list.remove(user_id_str)
+                            if not u_list:
+                                reactions.pop(emoji, None)
+                            else:
+                                reactions[emoji] = u_list
+                        else:
+                            u_list.append(user_id_str)
+                            reactions[emoji] = u_list
+                        current_meta["reactions"] = reactions
+                        target_msg.metadata_payload = current_meta
+                        flag_modified(target_msg, 'metadata_payload')
+                        db.commit()
+                        db.refresh(target_msg)
+                        
+                        reaction_broadcast = {
+                            "id": "reaction_update",
+                            "channel_id": str(channel_id),
+                            "type": "reaction_update",
+                            "message_id": str(target_msg.id),
+                            "reactions": reactions,
+                            "user_id": user_id_str,
+                            "emoji": emoji
+                        }
+                        channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                        for member in channel_members:
+                            await manager.send_personal_message(reaction_broadcast, str(member[0]))
+                continue
+
+            # ==========================================
+            # UPGRADE 2: PIN / UNPIN MESSAGES (Admins only)
+            # ==========================================
+            if msg_type in ("pin_message", "unpin_message"):
+                is_admin = (
+                    membership.role == "admin" or
+                    (channel and channel.created_by_id == user.id) or
+                    str(getattr(user, "role", "")).upper() in ("ADMIN", "OWNER", "SUPERADMIN")
+                )
+                if not is_admin:
+                    await manager.send_personal_message({"error": "Only channel admins can pin or unpin messages."}, user_id_str)
+                    continue
+                
+                target_msg_id = data.get("message_id")
+                if target_msg_id:
+                    target_msg = db.query(models.Message).filter_by(id=target_msg_id, channel_id=channel_id).first()
+                    if target_msg:
+                        # Clear existing pinned in this channel
+                        all_pinned = db.query(models.Message).filter(
+                            models.Message.channel_id == channel_id
+                        ).all()
+                        for p in all_pinned:
+                            pm = p.metadata_payload
+                            if isinstance(pm, dict) and pm.get("is_pinned"):
+                                pm.pop("is_pinned", None)
+                                pm.pop("pinned_at", None)
+                                pm.pop("pinned_by", None)
+                                p.metadata_payload = pm
+                                flag_modified(p, 'metadata_payload')
+                        
+                        current_meta = target_msg.metadata_payload or {}
+                        if isinstance(current_meta, str):
+                            try: current_meta = json.loads(current_meta)
+                            except: current_meta = {}
+                        
+                        first = user.first_name or ""
+                        last = user.last_name or ""
+                        p_name = f"{first} {last}".strip() or getattr(user, "username", "Admin")
+                        
+                        if msg_type == "pin_message":
+                            current_meta["is_pinned"] = True
+                            current_meta["pinned_at"] = datetime.now(timezone.utc).isoformat()
+                            current_meta["pinned_by"] = {"id": user_id_str, "name": p_name}
+                        else:
+                            current_meta.pop("is_pinned", None)
+                            current_meta.pop("pinned_at", None)
+                            current_meta.pop("pinned_by", None)
+                        
+                        target_msg.metadata_payload = current_meta
+                        flag_modified(target_msg, 'metadata_payload')
+                        db.commit()
+                        
+                        pin_broadcast = {
+                            "id": "pin_update",
+                            "channel_id": str(channel_id),
+                            "type": "pin_update",
+                            "message_id": str(target_msg.id) if msg_type == "pin_message" else None,
+                            "pinned_message": {
+                                "id": str(target_msg.id),
+                                "content": target_msg.content,
+                                "type": target_msg.type,
+                                "pinned_at": current_meta.get("pinned_at"),
+                                "pinned_by": current_meta.get("pinned_by"),
+                            } if msg_type == "pin_message" else None
+                        }
+                        channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                        for member in channel_members:
+                            await manager.send_personal_message(pin_broadcast, str(member[0]))
+                continue
+
+            # ==========================================
+            # UPGRADE 3: DELETE MESSAGE FOR EVERYONE
+            # ==========================================
+            if msg_type == "delete_message":
+                target_msg_id = data.get("message_id")
+                if target_msg_id:
+                    target_msg = db.query(models.Message).filter_by(id=target_msg_id, channel_id=channel_id).first()
+                    if target_msg:
+                        is_sender = (target_msg.sender_id == user.id)
+                        is_admin = (
+                            membership.role == "admin" or
+                            (channel and channel.created_by_id == user.id) or
+                            str(getattr(user, "role", "")).upper() in ("ADMIN", "OWNER", "SUPERADMIN")
+                        )
+                        # Check 24-hour limit for sender
+                        created_dt = target_msg.created_at
+                        if created_dt and created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        within_24h = (datetime.now(timezone.utc) - created_dt).total_seconds() <= 86400 if created_dt else False
+                        
+                        if not (is_admin or (is_sender and within_24h)):
+                            await manager.send_personal_message({"error": "Cannot delete messages older than 24 hours."}, user_id_str)
+                            continue
+                        
+                        target_msg.content = "This message was deleted"
+                        current_meta = target_msg.metadata_payload or {}
+                        if isinstance(current_meta, str):
+                            try: current_meta = json.loads(current_meta)
+                            except: current_meta = {}
+                        current_meta["is_deleted"] = True
+                        current_meta["deleted_by"] = user_id_str
+                        target_msg.metadata_payload = current_meta
+                        flag_modified(target_msg, 'metadata_payload')
+                        db.commit()
+                        
+                        del_broadcast = {
+                            "id": str(target_msg.id),
+                            "channel_id": str(channel_id),
+                            "type": "message_deleted",
+                            "message_id": str(target_msg.id),
+                            "content": "This message was deleted"
+                        }
+                        channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                        for member in channel_members:
+                            await manager.send_personal_message(del_broadcast, str(member[0]))
+                continue
+
+            # ==========================================
+            # UPGRADE 4: AI STUDY ASSISTANT QUOTA CHECK
+            # ==========================================
+            is_ai_prompt = bool(content and content.strip().lower().startswith("/ai "))
+            if is_ai_prompt:
+                from services.subscription_service import assert_chat_quota_available
+                try:
+                    assert_chat_quota_available(user.id, db)
+                except HTTPException as q_ex:
+                    await manager.send_personal_message({
+                        "id": "ai_quota_exceeded",
+                        "channel_id": str(channel_id),
+                        "type": "system_error",
+                        "content": "Daily AI query limit reached. Please upgrade in Store for unlimited queries!"
+                    }, user_id_str)
+                    continue
+
             # 5. Commit to the Database (Only real messages get here now)
             new_msg = models.Message(
                 channel_id=channel_id,
@@ -271,6 +528,18 @@ async def chat_websocket(
             channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
             for member in channel_members:
                 await manager.send_personal_message(broadcast_payload, str(member[0]))
+
+            # Dispatch background AI synthesis if this was an /ai query
+            if is_ai_prompt:
+                prompt_q = (content or "").strip()[4:].strip()
+                if prompt_q:
+                    asyncio.create_task(_synthesize_chat_ai_reply(
+                        channel_id=channel_id,
+                        user_id=user.id,
+                        prompt_msg_id=new_msg.id,
+                        query_text=prompt_q,
+                        sender_name=sender_name,
+                    ))
 
             # 7. Unified In-App & Push Notifications for Group Messages, DMs, and Mentions
             from services.notifications import dispatch_notification
@@ -1123,3 +1392,144 @@ def start_direct_message(
 
 
 
+
+
+# ==========================================
+# UPGRADE 5: LIGHTWEIGHT MEDIA UPLOAD (Images & Audio <= 6MB)
+# ==========================================
+@router.post("/upload_media")
+async def upload_chat_media(
+    channel_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Uploads lightweight images or audio notes directly to BunnyCDN."""
+    is_member = db.query(models.ChannelMember).filter_by(
+        channel_id=channel_id, user_id=user.id
+    ).first()
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not authorized in this channel.")
+
+    allowed_images = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+    allowed_audio = {"audio/webm", "audio/mp4", "audio/mpeg", "audio/ogg", "audio/wav", "audio/m4a", "audio/x-m4a"}
+
+    content_type = (file.content_type or "").lower()
+    if content_type not in allowed_images and content_type not in allowed_audio:
+        raise HTTPException(status_code=400, detail="Only lightweight images and voice notes/audio are supported.")
+
+    raw_bytes = await file.read()
+    if len(raw_bytes) > 6 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File exceeds lightweight 6MB limit.")
+
+    ext = file.filename.split(".")[-1].lower() if "." in (file.filename or "") else ("jpg" if content_type in allowed_images else "webm")
+    safe_filename = f"{uuid.uuid4().hex[:12]}.{ext}"
+    folder_path = f"chat/{channel_id}"
+
+    from services.bunny_service import upload_bytes_to_bunny
+    cdn_url = await upload_bytes_to_bunny(raw_bytes, safe_filename, folder_path)
+
+    media_kind = "image" if content_type in allowed_images else "audio"
+    return {
+        "url": cdn_url,
+        "filename": file.filename,
+        "content_type": content_type,
+        "type": media_kind,
+        "size_bytes": len(raw_bytes)
+    }
+
+
+# ==========================================
+# UPGRADE 6: GET PINNED MESSAGE
+# ==========================================
+@router.get("/channels/{channel_id}/pinned")
+def get_pinned_message(
+    channel_id: UUID,
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetches the active pinned message in a channel, if any."""
+    is_member = db.query(models.ChannelMember).filter_by(
+        channel_id=channel_id, user_id=user.id
+    ).first()
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not authorized in this channel.")
+
+    pinned_candidates = (
+        db.query(models.Message)
+        .filter(models.Message.channel_id == channel_id)
+        .order_by(models.Message.created_at.desc())
+        .all()
+    )
+    pinned = None
+    for m in pinned_candidates:
+        pm = m.metadata_payload
+        if isinstance(pm, dict) and pm.get("is_pinned"):
+            pinned = m
+            break
+
+    if not pinned:
+        return None
+
+    first = pinned.sender.first_name or "" if pinned.sender else ""
+    last = pinned.sender.last_name or "" if pinned.sender else ""
+    sender_name = f"{first} {last}".strip() or getattr(pinned.sender, "username", "Unknown") if pinned.sender else "System"
+
+    return {
+        "id": str(pinned.id),
+        "content": pinned.content,
+        "type": pinned.type,
+        "created_at": pinned.created_at,
+        "pinned_at": (pinned.metadata_payload or {}).get("pinned_at"),
+        "pinned_by": (pinned.metadata_payload or {}).get("pinned_by"),
+        "sender": {
+            "id": str(pinned.sender.id) if pinned.sender else "system",
+            "name": sender_name
+        }
+    }
+
+
+# ==========================================
+# UPGRADE 7: IN-ROOM CHANNEL MESSAGE SEARCH
+# ==========================================
+@router.get("/channels/{channel_id}/search")
+def search_channel_messages(
+    channel_id: UUID,
+    q: str = Query(..., min_length=2),
+    limit: int = Query(30, le=50),
+    user = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Searches messages inside a specific channel by text content."""
+    is_member = db.query(models.ChannelMember).filter_by(
+        channel_id=channel_id, user_id=user.id
+    ).first()
+    if not is_member:
+        raise HTTPException(status_code=403, detail="Not authorized in this channel.")
+
+    query_filter = f"%{q.strip()}%"
+    results = (
+        db.query(models.Message)
+        .filter(
+            models.Message.channel_id == channel_id,
+            models.Message.content.ilike(query_filter)
+        )
+        .options(joinedload(models.Message.sender))
+        .order_by(models.Message.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    matched = []
+    for msg in results:
+        first = msg.sender.first_name or "" if msg.sender else ""
+        last = msg.sender.last_name or "" if msg.sender else ""
+        sender_name = f"{first} {last}".strip() or getattr(msg.sender, "username", "Unknown") if msg.sender else "System"
+        matched.append({
+            "id": str(msg.id),
+            "content": msg.content,
+            "type": msg.type,
+            "created_at": msg.created_at,
+            "sender_name": sender_name
+        })
+    return matched
