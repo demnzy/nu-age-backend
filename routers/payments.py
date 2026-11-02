@@ -1100,8 +1100,33 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                     org.plan_id = target_uuid
                     interval_str = (prod.interval if prod else meta.get("interval")) or "month"
                     days_valid = 365 if "year" in str(interval_str).lower() else 30
-                    org.plan_expires_at = datetime.now(timezone.utc) + timedelta(days=days_valid)
-                    print(f"[FULFILLMENT] Upgraded Organisation '{org.name}' to Plan '{target_uuid}' (Expires in {days_valid} days)")
+                    now = datetime.now(timezone.utc)
+                    current_exp = org.plan_expires_at
+                    if current_exp:
+                        if current_exp.tzinfo is None:
+                            current_exp = current_exp.replace(tzinfo=timezone.utc)
+                        if current_exp > now and org.plan_id == target_uuid:
+                            org.plan_expires_at = current_exp + timedelta(days=days_valid)
+                        else:
+                            org.plan_expires_at = now + timedelta(days=days_valid)
+                    else:
+                        org.plan_expires_at = now + timedelta(days=days_valid)
+
+                    p_name = org.plan.name if org.plan else "Academy Tier"
+                    print(f"[FULFILLMENT] Upgraded Organisation '{org.name}' to Plan '{p_name}' (Expires on {org.plan_expires_at})")
+
+                    if org.owner_id:
+                        try:
+                            dispatch_notification(
+                                user_id=org.owner_id,
+                                title="Workspace Plan Upgraded 🚀",
+                                body=f"Your academy workspace '{org.name}' has been upgraded to '{p_name}' through {org.plan_expires_at.strftime('%b %d, %Y')}.",
+                                notif_type="plan_upgrade",
+                                data={"organisation_id": str(org.id), "plan_id": str(target_uuid)},
+                                db=db,
+                            )
+                        except Exception as n_err:
+                            print(f"[FULFILLMENT] Notification dispatch error: {n_err}")
 
     elif purpose == "org_seats":
         extra_seats = int(meta.get("extra_seats") or (prod.org_seats if prod else 1) or 1)

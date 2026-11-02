@@ -107,11 +107,16 @@ async def get_user_organisation(user= Depends(auth.get_current_user), db:Session
         org_data["staff"] = staff_count
         org_data["students"] = student_count
 
-        # 4. Extract Plan data using the relationship (Implementation unchanged)
-        if org.plan:
-            org_data["plan"] = {column.name: getattr(org.plan, column.name) for column in org.plan.__table__.columns}
+        # 4. Extract Plan data & evaluated subscription lifecycle status
+        from services.org_subscription_service import get_effective_org_plan
+        effective_plan, sub_status, is_expired, days_rem = get_effective_org_plan(org, db)
+        if effective_plan:
+            org_data["plan"] = {column.name: getattr(effective_plan, column.name) for column in effective_plan.__table__.columns}
         else:
             org_data["plan"] = None
+        org_data["subscription_status"] = sub_status
+        org_data["is_expired"] = is_expired
+        org_data["days_remaining"] = days_rem
 
         return org_data
 
@@ -318,6 +323,10 @@ async def send_organisation_invite(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not have permission to invite members to this organisation.")
 
     target_email_clean = request.target_email.lower().strip()
+
+    # Verify organization member quota before creating invite
+    from services.org_subscription_service import check_org_member_limit_allowed
+    check_org_member_limit_allowed(org.id, db, incoming_count=1)
 
     # Edge case 1: Admin inviting themselves
     if target_email_clean == current_user.email.lower().strip():
@@ -632,6 +641,10 @@ async def process_invitation_join(
     # Only check uses_left if the user is NOT already a member
     if invite.uses_left <= 0:
         raise HTTPException(status_code=400, detail="This invitation has already been used.")
+
+    # Verify organization member quota before adding member
+    from services.org_subscription_service import check_org_member_limit_allowed
+    check_org_member_limit_allowed(invite.organisation_id, db, incoming_count=1)
 
     # --- SCENARIO B: User is NOT on the platform ---
     if not user:
@@ -1041,10 +1054,15 @@ async def update_organisation(
     db.refresh(org)
 
     org_data = {column.name: getattr(org, column.name) for column in org.__table__.columns}
-    if org.plan:
-        org_data["plan"] = {column.name: getattr(org.plan, column.name) for column in org.plan.__table__.columns}
+    from services.org_subscription_service import get_effective_org_plan
+    effective_plan, sub_status, is_expired, days_rem = get_effective_org_plan(org, db)
+    if effective_plan:
+        org_data["plan"] = {column.name: getattr(effective_plan, column.name) for column in effective_plan.__table__.columns}
     else:
         org_data["plan"] = None
+    org_data["subscription_status"] = sub_status
+    org_data["is_expired"] = is_expired
+    org_data["days_remaining"] = days_rem
 
     return org_data
 

@@ -40,6 +40,17 @@ async def create_course(
     if course_data.get("is_freelance"):
         course_data["teacher_id"] = str(user.id)
         course_data["org_id"] = DEFAULT_ORG_ID
+    else:
+        # Check organization course publishing quota
+        if course_data.get("org_id") and str(course_data.get("org_id")) != DEFAULT_ORG_ID:
+            try:
+                target_org_uuid = uuid.UUID(str(course_data["org_id"]))
+                from services.org_subscription_service import check_org_course_limit_allowed
+                check_org_course_limit_allowed(target_org_uuid, db)
+            except HTTPException:
+                raise
+            except Exception as e:
+                pass
     name_clean = (course_data.get("name") or "").strip()
     if not name_clean:
         raise HTTPException(
@@ -392,25 +403,8 @@ async def generate_course_draft(
             org = db.query(models.Organisation).filter(models.Organisation.id == org_member.organisation_id).first()
 
     if org:
-        org_created = org.created_at
-        if org_created and org_created.tzinfo is None:
-            org_created = org_created.replace(tzinfo=timezone.utc)
-
-        is_preexisting = bool(org_created and org_created <= CUTOFF_DATE)
-        has_plan_perk = False
-        if org.plan and org.plan.features:
-            for feat in org.plan.features:
-                f_lower = str(feat).lower()
-                if "ai" in f_lower and "draft" in f_lower:
-                    has_plan_perk = True
-                    break
-
-        if not (is_preexisting or has_plan_perk):
-            # Handled cleanly in frontend by course_builder.py
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="plan_required"
-            )
+        from services.org_subscription_service import check_org_ai_draft_allowed
+        check_org_ai_draft_allowed(org, db)
 
     from services.ai_service import run_course_draft_job
 
