@@ -323,8 +323,9 @@ async def chat_websocket(
                         if not isinstance(reactions, dict):
                             reactions = {}
                         u_list = list(reactions.get(emoji, []))
-                        if user_id_str in u_list:
-                            u_list.remove(user_id_str)
+                        found_idx = next((i for i, u in enumerate(u_list) if str(u).strip().lower() == user_id_str.strip().lower()), None)
+                        if found_idx is not None:
+                            u_list.pop(found_idx)
                             if not u_list:
                                 reactions.pop(emoji, None)
                             else:
@@ -357,6 +358,7 @@ async def chat_websocket(
             # ==========================================
             if msg_type in ("pin_message", "unpin_message"):
                 is_admin = (
+                    channel.type == "direct" or
                     membership.role == "admin" or
                     (channel and channel.created_by_id == user.id) or
                     str(getattr(user, "role", "")).upper() in ("ADMIN", "OWNER", "SUPERADMIN")
@@ -366,6 +368,32 @@ async def chat_websocket(
                     continue
                 
                 target_msg_id = data.get("message_id")
+                
+                if msg_type == "unpin_message":
+                    all_pinned = db.query(models.Message).filter(
+                        models.Message.channel_id == channel_id
+                    ).all()
+                    for p in all_pinned:
+                        pm = p.metadata_payload
+                        if isinstance(pm, dict) and pm.get("is_pinned"):
+                            pm.pop("is_pinned", None)
+                            pm.pop("pinned_at", None)
+                            pm.pop("pinned_by", None)
+                            p.metadata_payload = pm
+                            flag_modified(p, 'metadata_payload')
+                    db.commit()
+                    pin_broadcast = {
+                        "id": "pin_update",
+                        "channel_id": str(channel_id),
+                        "type": "pin_update",
+                        "message_id": None,
+                        "pinned_message": None
+                    }
+                    channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
+                    for member in channel_members:
+                        await manager.send_personal_message(pin_broadcast, str(member[0]))
+                    continue
+
                 if target_msg_id:
                     target_msg = db.query(models.Message).filter_by(id=target_msg_id, channel_id=channel_id).first()
                     if target_msg:
@@ -391,14 +419,9 @@ async def chat_websocket(
                         last = user.last_name or ""
                         p_name = f"{first} {last}".strip() or getattr(user, "username", "Admin")
                         
-                        if msg_type == "pin_message":
-                            current_meta["is_pinned"] = True
-                            current_meta["pinned_at"] = datetime.now(timezone.utc).isoformat()
-                            current_meta["pinned_by"] = {"id": user_id_str, "name": p_name}
-                        else:
-                            current_meta.pop("is_pinned", None)
-                            current_meta.pop("pinned_at", None)
-                            current_meta.pop("pinned_by", None)
+                        current_meta["is_pinned"] = True
+                        current_meta["pinned_at"] = datetime.now(timezone.utc).isoformat()
+                        current_meta["pinned_by"] = {"id": user_id_str, "name": p_name}
                         
                         target_msg.metadata_payload = current_meta
                         flag_modified(target_msg, 'metadata_payload')
@@ -408,14 +431,14 @@ async def chat_websocket(
                             "id": "pin_update",
                             "channel_id": str(channel_id),
                             "type": "pin_update",
-                            "message_id": str(target_msg.id) if msg_type == "pin_message" else None,
+                            "message_id": str(target_msg.id),
                             "pinned_message": {
                                 "id": str(target_msg.id),
                                 "content": target_msg.content,
                                 "type": target_msg.type,
                                 "pinned_at": current_meta.get("pinned_at"),
                                 "pinned_by": current_meta.get("pinned_by"),
-                            } if msg_type == "pin_message" else None
+                            }
                         }
                         channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
                         for member in channel_members:

@@ -913,9 +913,24 @@ LESSON TYPE CONTENT SPECIFICATIONS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. "text" (Rich Reading Lecture):
-   - Rich Markdown content in the `text` field.
+   - Output modern, standards-compliant GitHub Flavored Markdown (GFM) in the `text` field.
    - Start with a compelling real-world hook that explains why this concept matters.
-   - Use structured Markdown: ## and ### subheadings, **bold** key terms on first introduction, numbered/bulleted lists, > blockquotes for definitions or core rules, and Markdown tables when comparing concepts or formulas.
+   - MODERN GFM ALERTS & ADMONITIONS:
+     Use official GitHub alert callouts to emphasize critical principles, mental models, and gotchas:
+     * `> [!NOTE]` for contextual background, clarifications, or historical context.
+     * `> [!TIP]` for performance optimizations, pro-tips, and practical mental models.
+     * `> [!IMPORTANT]` for fundamental rules, invariants, and core principles.
+     * `> [!WARNING]` for common traps, pitfalls, edge cases, and anti-patterns.
+     * NEVER use informal `> **Note:**` or plain unstructured quotes. Use standard GFM alerts!
+   - HEADING HIERARCHY & PADDING:
+     * NEVER use `# ` (H1 is the lesson title reserved for the LMS header).
+     * Use `## ` for primary topic sections and `### ` for sub-sections.
+     * ALWAYS leave a blank line before and after every heading, blockquote, alert, table, or code block.
+   - GFM PIPE TABLES:
+     * When comparing 2 or more options, tools, protocols, algorithms, or metrics, provide a clean GFM pipe table with explicit headers and alignment delimiters (`| Feature | Option A | Option B |` followed by `| :--- | :--- | :--- |`).
+   - CODE & FORMULA NOTATION:
+     * Fenced code blocks must ALWAYS specify the exact language (e.g. ```python, ```javascript, ```sql, ```bash, ```json).
+     * For math/scientific formulas, use KaTeX syntax: inline $E = mc^2$ or display $$... on its own lines. Escape literal currency dollars with a backslash (e.g. \\).
    - MANDATORY INLINE EDUCATIONAL IMAGE (You MUST include at least 1 image placeholder in EVERY text lesson):
      Format: `![Accurate Caption](IMG:targeted_academic_query)`
      Every text lesson MUST contain at least one contextually relevant, high-precision image placeholder that our automated multi-tier image retrieval engine will resolve via Brave Search, Wikimedia Commons, and Wikipedia.
@@ -1095,6 +1110,85 @@ def _normalize_code_lab_code(text: str, language: str = "javascript") -> str:
     return text
 
 
+def sanitize_modern_markdown(text: str) -> str:
+    """
+    Enforces modern GitHub-Flavored Markdown (GFM) standards on instructional prose:
+    1. Converts informal note/warning/tip blockquotes to canonical GFM alerts (> [!NOTE], > [!TIP], > [!WARNING], > [!IMPORTANT]).
+    2. Ensures clean heading hierarchy (converts misplaced top-level # H1 to ## H2, preserves ## and ###).
+    3. Enforces CommonMark blank-line padding before and after headings, tables, blockquotes, and code fences.
+    4. Auto-closes unclosed code blocks.
+    5. Heals broken or missing table delimiter rows.
+    6. Escapes literal currency dollar signs ($50, $10.99) so KaTeX math rendering is not corrupted.
+    7. Strips legacy trailing whitespace.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    lines = text.split("\n")
+    cleaned_lines = []
+    in_code_fence = False
+    fence_delimiter = ""
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Code fence detection
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fence_token = stripped[:3]
+            if not in_code_fence:
+                in_code_fence = True
+                fence_delimiter = fence_token
+                cleaned_lines.append(line)
+            elif in_code_fence and stripped.startswith(fence_delimiter):
+                in_code_fence = False
+                fence_delimiter = ""
+                cleaned_lines.append(line)
+            else:
+                cleaned_lines.append(line)
+            continue
+
+        if in_code_fence:
+            cleaned_lines.append(line)
+            continue
+
+        # Convert # H1 to ## H2
+        if re.match(r"^#\s+(?!#)", line):
+            line = re.sub(r"^#\s+", "## ", line)
+
+        # Normalize informal callouts to GFM alerts
+        line = re.sub(r"^>\s*(?:\*\*)?(?:Note|Notice):?(?:\*\*)?\s*", "> [!NOTE]\n> ", line, flags=re.IGNORECASE)
+        line = re.sub(r"^>\s*(?:\*\*)?(?:Tip|Pro-tip|Best Practice):?(?:\*\*)?\s*", "> [!TIP]\n> ", line, flags=re.IGNORECASE)
+        line = re.sub(r"^>\s*(?:\*\*)?(?:Important|Key Point|Crucial):?(?:\*\*)?\s*", "> [!IMPORTANT]\n> ", line, flags=re.IGNORECASE)
+        line = re.sub(r"^>\s*(?:\*\*)?(?:Warning|Caution|Pitfall|Gotcha):?(?:\*\*)?\s*", "> [!WARNING]\n> ", line, flags=re.IGNORECASE)
+
+        # Escape currency dollar signs
+        line = re.sub(r"(?<!\\)\$(?=\d)", r"\$", line)
+
+        cleaned_lines.append(line)
+
+    # Auto-close dangling code fence if unclosed
+    if in_code_fence:
+        cleaned_lines.append(fence_delimiter or "```")
+
+    result = "\n".join(cleaned_lines)
+
+    # Padding before and after headings
+    result = re.sub(r"(?<!\n\n)\n(#{2,6}\s+[^\n]+)", r"\n\n\1", result)
+    result = re.sub(r"(#{2,6}\s+[^\n]+)\n(?!\n)", r"\1\n\n", result)
+
+    # Padding before and after code fences
+    result = re.sub(r"(?<!\n\n)\n(```[a-zA-Z0-9_-]*)", r"\n\n\1", result)
+    result = re.sub(r"(```)\n(?!\n)", r"\1\n\n", result)
+
+    # Ensure blank line before tables
+    result = re.sub(r"(?<!\n\n)\n(\|.+?\|\n\|[-:\s|]+?\|)", r"\n\n\1", result)
+
+    # Clean excessive blank lines
+    result = re.sub(r"\n{3,}", "\n\n", result)
+
+    return result.strip()
+
+
 def normalize_lesson(lesson: AILesson) -> dict:
     """
     Normalizes a generated lesson into the exact dictionary shape expected
@@ -1107,8 +1201,22 @@ def normalize_lesson(lesson: AILesson) -> dict:
     content = {k: v for k, v in raw_content.items() if k in allowed_keys}
 
     if t == "text":
-        if not content.get("text", "").strip():
-            content["text"] = f"# {lesson.title}\n\nCore instructional content and principles."
+        txt = content.get("text", "")
+        if not txt.strip():
+            txt = f"## {lesson.title}\n\nCore instructional content and principles."
+        content["text"] = sanitize_modern_markdown(txt)
+
+    elif t == "video":
+        if content.get("accompanying_text"):
+            content["accompanying_text"] = sanitize_modern_markdown(content["accompanying_text"])
+
+    elif t == "code_lab":
+        if content.get("instructions"):
+            content["instructions"] = sanitize_modern_markdown(content["instructions"])
+
+    elif t == "cloze":
+        if content.get("explanation"):
+            content["explanation"] = sanitize_modern_markdown(content["explanation"])
 
     elif t == "cards":
         cards = content.get("cards", [])
