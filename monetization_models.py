@@ -28,7 +28,7 @@ from sqlalchemy import (
     UniqueConstraint, Enum as SQLEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, backref
 from sqlalchemy.sql import func
 
 from database import Base
@@ -69,7 +69,7 @@ class CreditBalance(Base):
     balance = Column(Integer, default=100, nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    user = relationship("User", backref="credit_balance", uselist=False)
+    user = relationship("User", backref=backref("credit_balance", cascade="all, delete-orphan", passive_deletes=True, uselist=False), passive_deletes=True)
 
 
 class CreditPurchase(Base):
@@ -91,7 +91,7 @@ class CreditPurchase(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    user = relationship("User", backref="credit_purchases")
+    user = relationship("User", backref=backref("credit_purchases", cascade="all, delete-orphan", passive_deletes=True), passive_deletes=True)
     pack = relationship("CreditPack")
 
 
@@ -113,7 +113,7 @@ class CreditLedgerEntry(Base):
     balance_after = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    user = relationship("User", backref="credit_ledger_entries")
+    user = relationship("User", backref=backref("credit_ledger_entries", cascade="all, delete-orphan", passive_deletes=True), passive_deletes=True)
 
 
 # ---------------------------------------------------------------------------

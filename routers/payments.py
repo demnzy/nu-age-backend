@@ -229,6 +229,58 @@ def get_user_payment_history(
     ]
 
 
+@router.get("/organisations/{org_id}/history")
+def get_organisation_payment_history(
+    org_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Returns the organization's past payment transactions, upgrade receipts, and fulfillment status.
+    Protected to authorized organization administrators (Owner, Admin, Staff) and super administrators.
+    """
+    try:
+        org_uuid = uuid.UUID(org_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid organisation_id format.")
+
+    org = db.query(models.Organisation).filter(models.Organisation.id == org_uuid).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found.")
+
+    # Permissions check
+    is_owner = (org.owner_id == current_user.id)
+    is_super = getattr(current_user, "role", None) and str(current_user.role).upper() in ("ADMIN", "SUPERADMIN")
+    membership = db.query(models.OrganisationMember).filter(
+        models.OrganisationMember.organisation_id == org_uuid,
+        models.OrganisationMember.user_id == current_user.id,
+    ).first()
+    is_staff = membership and str(membership.role).upper() in ("OWNER", "ADMIN", "STAFF", "TEACHER", "INSTRUCTOR")
+
+    if not (is_owner or is_super or is_staff):
+        raise HTTPException(status_code=403, detail="Not authorized to view organisation billing history.")
+
+    txs = db.query(models.PaymentTransaction).filter(
+        models.PaymentTransaction.organisation_id == org_uuid
+    ).order_by(models.PaymentTransaction.created_at.desc()).limit(100).all()
+
+    return [
+        {
+            "reference": tx.reference,
+            "gateway": tx.gateway,
+            "amount": tx.amount,
+            "currency": tx.currency or "NGN",
+            "status": tx.status,
+            "purpose": tx.purpose,
+            "metadata": tx.metadata_payload or {},
+            "created_at": tx.created_at.isoformat() if tx.created_at else None,
+            "paid_at": tx.paid_at.isoformat() if tx.paid_at else None,
+            "fulfilled_at": tx.fulfilled_at.isoformat() if tx.fulfilled_at else None,
+        }
+        for tx in txs
+    ]
+
+
 @router.get("/verify/{reference}", response_model=VerifyPaymentResponse)
 async def verify_payment(
     reference: str,
@@ -1097,6 +1149,7 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                     models.Organisation.id == tx.organisation_id
                 ).first()
                 if org:
+                    previous_plan_id = org.plan_id
                     org.plan_id = target_uuid
                     interval_str = (prod.interval if prod else meta.get("interval")) or "month"
                     days_valid = 365 if "year" in str(interval_str).lower() else 30
@@ -1105,7 +1158,8 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                     if current_exp:
                         if current_exp.tzinfo is None:
                             current_exp = current_exp.replace(tzinfo=timezone.utc)
-                        if current_exp > now and org.plan_id == target_uuid:
+                        # Additively extend only if renewing the exact same plan while still active
+                        if current_exp > now and previous_plan_id == target_uuid:
                             org.plan_expires_at = current_exp + timedelta(days=days_valid)
                         else:
                             org.plan_expires_at = now + timedelta(days=days_valid)
@@ -1118,12 +1172,12 @@ def _fulfill_transaction(tx: models.PaymentTransaction, db: Session):
                     if org.owner_id:
                         try:
                             dispatch_notification(
-                                user_id=org.owner_id,
-                                title="Workspace Plan Upgraded 🚀",
-                                body=f"Your academy workspace '{org.name}' has been upgraded to '{p_name}' through {org.plan_expires_at.strftime('%b %d, %Y')}.",
-                                notif_type="plan_upgrade",
-                                data={"organisation_id": str(org.id), "plan_id": str(target_uuid)},
                                 db=db,
+                                user_id=org.owner_id,
+                                title="Workspace Plan Upgraded",
+                                body=f"Your academy workspace '{org.name}' has been upgraded to '{p_name}' through {org.plan_expires_at.strftime('%b %d, %Y')}.",
+                                category="subscription",
+                                data_payload={"organisation_id": str(org.id), "plan_id": str(target_uuid)},
                             )
                         except Exception as n_err:
                             print(f"[FULFILLMENT] Notification dispatch error: {n_err}")

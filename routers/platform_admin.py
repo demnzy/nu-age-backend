@@ -682,7 +682,19 @@ def delete_user_account(
             db.query(models.SignupOTP).filter(models.SignupOTP.email == u.email).delete()
             db.query(models.PasswordResetOTP).filter(models.PasswordResetOTP.email == u.email).delete()
 
-        # 4. Delete the user (SQLAlchemy / Postgres cascades handle remaining child relations)
+        # 4. Clean up monetization / credit tables explicitly
+        try:
+            from monetization_models import CreditBalance, CreditLedgerEntry, CreditPurchase
+            db.query(CreditLedgerEntry).filter(CreditLedgerEntry.user_id == user_id).delete()
+            db.query(CreditPurchase).filter(CreditPurchase.user_id == user_id).delete()
+            db.query(CreditBalance).filter(CreditBalance.user_id == user_id).delete()
+        except Exception as _mon_ex:
+            print(f"[platform_admin] Monetization tables cleanup note: {_mon_ex}")
+
+        # 5. Clean up user subscriptions
+        db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id).delete()
+
+        # 6. Delete the user (SQLAlchemy / Postgres cascades handle remaining child relations)
         db.delete(u)
         db.commit()
         return {"message": f"User account '{u.username}' ({u.email}) permanently deleted.", "user_id": str(user_id)}
