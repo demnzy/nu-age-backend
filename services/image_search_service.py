@@ -59,7 +59,7 @@ async def is_valid_image_url(url: str, timeout: float = 3.0) -> bool:
                 res = await client.head(url, headers=headers)
                 if res.status_code == 200:
                     c_type = res.headers.get("content-type", "").lower()
-                    if "image/" in c_type or any(url.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
+                    if ("image/" in c_type and "svg" not in c_type) and any(url.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")):
                         return True
             except Exception:
                 pass
@@ -68,7 +68,10 @@ async def is_valid_image_url(url: str, timeout: float = 3.0) -> bool:
             res = await client.get(url, headers={**headers, "Range": "bytes=0-1024"})
             if res.status_code in (200, 206):
                 c_type = res.headers.get("content-type", "").lower()
-                if "image/" in c_type or any(url.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
+                if ("image/" in c_type and "svg" not in c_type) or any(url.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                    # Reject raw SVG files since Flutter core Image.network cannot decode them
+                    if "svg" in c_type or url.lower().endswith(".svg"):
+                        return False
                     return True
     except Exception:
         return False
@@ -171,10 +174,12 @@ async def search_wikimedia_commons(query: str) -> Optional[str]:
                     if imageinfo_list:
                         info = imageinfo_list[0]
                         mime = str(info.get("mime", "")).lower()
-                        # Only accept images and vector graphics
-                        if mime.startswith("image/") or "svg" in mime:
+                        # Only accept raster web-compatible images (avoid raw SVG which crashes Flutter Image.network)
+                        if mime.startswith("image/"):
                             candidate_url = info.get("thumburl") or info.get("url")
-                            if candidate_url:
+                            if candidate_url and candidate_url.lower().endswith(".svg") and info.get("thumburl"):
+                                candidate_url = info.get("thumburl")
+                            if candidate_url and not candidate_url.lower().endswith(".svg"):
                                 return candidate_url
     except Exception as e:
         print(f"[WARNING] Wikimedia Commons search failed for '{query}': {e}")

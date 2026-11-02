@@ -4,7 +4,7 @@ from database import Base
 import uuid
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, DateTime, ForeignKey, Enum, Boolean, Float, ForeignKeyConstraint, UniqueConstraint, Date, Index, Text, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, backref
 from schemas import Roles, Gender
@@ -1333,6 +1333,171 @@ class CampusAmbassadorApplication(Base):
     reviewed_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
 
     reviewer = relationship("User", foreign_keys=[reviewed_by])
+
+
+# =========================================================================
+# COURSE SPACES (ASYNC COURSE HUBS, RESOURCE VAULTS, DRILLS & SESSIONS)
+# =========================================================================
+
+class CourseSpace(Base):
+    __tablename__ = "course_spaces"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    code = Column(String(32), unique=True, nullable=False, index=True)  # e.g., "SPACE-9K2L4P"
+    is_open = Column(Boolean, default=False, nullable=False)            # True: public 1-click enroll, False: code required
+    banner_url = Column(String, nullable=True)
+    organisation_id = Column(UUID(as_uuid=True), ForeignKey("Organisations.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    creator = relationship("User", foreign_keys=[created_by], backref="created_course_spaces")
+    organisation = relationship("Organisation", backref="course_spaces")
+    members = relationship("CourseSpaceMember", back_populates="space", cascade="all, delete-orphan")
+    courses = relationship("CourseSpaceCourse", back_populates="space", cascade="all, delete-orphan", order_by="CourseSpaceCourse.order_index")
+    materials = relationship("CourseSpaceMaterial", back_populates="space", cascade="all, delete-orphan", order_by="desc(CourseSpaceMaterial.created_at)")
+    quizzes = relationship("CourseSpaceQuiz", back_populates="space", cascade="all, delete-orphan", order_by="CourseSpaceQuiz.created_at")
+    sessions = relationship("CourseSpaceSession", back_populates="space", cascade="all, delete-orphan", order_by="CourseSpaceSession.start_time")
+
+
+class CourseSpaceMember(Base):
+    __tablename__ = "course_space_members"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    space_id = Column(UUID(as_uuid=True), ForeignKey("course_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(32), default="student", nullable=False)  # "tutor", "student", "manager"
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    space = relationship("CourseSpace", back_populates="members")
+    user = relationship("User", backref="course_space_memberships")
+
+    __table_args__ = (
+        UniqueConstraint("space_id", "user_id", name="uq_space_member"),
+        Index("ix_space_members_user", "user_id", "space_id"),
+    )
+
+
+class CourseSpaceCourse(Base):
+    __tablename__ = "course_space_courses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    space_id = Column(UUID(as_uuid=True), ForeignKey("course_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    order_index = Column(Integer, default=0, nullable=False)
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    space = relationship("CourseSpace", back_populates="courses")
+    course = relationship("Course", backref="space_associations")
+
+    __table_args__ = (
+        UniqueConstraint("space_id", "course_id", name="uq_space_course"),
+        Index("ix_space_courses_space_course", "space_id", "course_id"),
+    )
+
+
+class CourseSpaceMaterial(Base):
+    __tablename__ = "course_space_materials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    space_id = Column(UUID(as_uuid=True), ForeignKey("course_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    module_id = Column(UUID(as_uuid=True), ForeignKey("modules.id", ondelete="SET NULL"), nullable=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    file_url = Column(String, nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_size_bytes = Column(BigInteger, default=0)
+    mime_type = Column(String(100), nullable=True)
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    download_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    space = relationship("CourseSpace", back_populates="materials")
+    course = relationship("Course")
+    module = relationship("Module")
+    uploader = relationship("User", foreign_keys=[uploaded_by])
+
+    __table_args__ = (
+        Index("ix_space_materials_course", "space_id", "course_id"),
+    )
+
+
+class CourseSpaceQuiz(Base):
+    __tablename__ = "course_space_quizzes"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    space_id = Column(UUID(as_uuid=True), ForeignKey("course_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    module_id = Column(UUID(as_uuid=True), ForeignKey("modules.id", ondelete="SET NULL"), nullable=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    time_limit_minutes = Column(Integer, default=0)  # 0 = untimed practice drill
+    passing_score_percentage = Column(Float, default=70.0)
+    questions = Column(JSONB, nullable=False)  # [{id, question_text, scenario_text, options: [...], correct_index: int, explanation: str, points: float}]
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    space = relationship("CourseSpace", back_populates="quizzes")
+    course = relationship("Course")
+    module = relationship("Module")
+    creator = relationship("User", foreign_keys=[created_by])
+    attempts = relationship("CourseSpaceQuizAttempt", back_populates="quiz", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_space_quizzes_course_module", "space_id", "course_id", "module_id"),
+    )
+
+
+class CourseSpaceQuizAttempt(Base):
+    __tablename__ = "course_space_quiz_attempts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    quiz_id = Column(UUID(as_uuid=True), ForeignKey("course_space_quizzes.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="CASCADE"), nullable=False, index=True)
+    score = Column(Float, default=0.0)
+    max_score = Column(Float, default=0.0)
+    percentage = Column(Float, default=0.0)
+    passed = Column(Boolean, default=False)
+    answers = Column(JSONB, nullable=True)  # [{question_id, chosen_index, is_correct, explanation}]
+    duration_seconds = Column(Integer, default=0)
+    completed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    quiz = relationship("CourseSpaceQuiz", back_populates="attempts")
+    user = relationship("User", backref="space_quiz_attempts")
+
+    __table_args__ = (
+        Index("ix_space_quiz_attempts_user", "user_id", "quiz_id"),
+    )
+
+
+class CourseSpaceSession(Base):
+    __tablename__ = "course_space_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    space_id = Column(UUID(as_uuid=True), ForeignKey("course_spaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), nullable=True, index=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    meeting_link = Column(String(1024), nullable=False)
+    start_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    duration_minutes = Column(Integer, default=60, nullable=False)
+    created_by = Column(UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    is_cancelled = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    space = relationship("CourseSpace", back_populates="sessions")
+    course = relationship("Course")
+    creator = relationship("User", foreign_keys=[created_by])
+
+    __table_args__ = (
+        Index("ix_space_sessions_time", "space_id", "start_time"),
+    )
+
 
 
 

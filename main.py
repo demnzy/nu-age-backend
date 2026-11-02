@@ -18,7 +18,7 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 from fastapi import *
 from models import Base
-from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts, promo
+from routers import enrollments, media, users,courses,categories, organisations, curriculum,chat,certificate,study,subscriptions,network, playlists, cohorts, platform_admin, notifications, discussions, payments, study_marketplace, study_partners, objectives, tts, promo, course_spaces
 from sqlalchemy.orm import configure_mappers
 configure_mappers()
 from database import engine
@@ -653,7 +653,8 @@ app.include_router(study_marketplace.router, tags=["Study Marketplace & Hub"])
 app.include_router(study_partners.router, tags=["Study Partnerships"])
 app.include_router(objectives.router, tags=["Objectives & Nu-Coins"])
 app.include_router(tts.router, tags=["Lesson TTS Audio"])
-app.include_router(promo.router, tags=["Promo Codes & Badges"])
+app.include_router(promo.router, tags=["Promo Codes & Badges"])
+app.include_router(course_spaces.router, tags=["Course Spaces & Async Hubs"])
 
 # Add this right after you declare: app = FastAPI()
 app.add_middleware(
