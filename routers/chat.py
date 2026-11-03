@@ -990,7 +990,8 @@ def get_channel_messages(
         if msg_created and msg_created.tzinfo is None:
             msg_created = msg_created.replace(tzinfo=timezone.utc)
 
-        is_me = (msg.sender_id == user.id)
+        is_ai_check = (msg.type == "ai_response") or (isinstance(msg.metadata_payload, dict) and msg.metadata_payload.get("is_ai"))
+        is_me = (msg.sender_id == user.id) and not is_ai_check
         if is_me:
             if max_other_read_at and msg_created and max_other_read_at >= msg_created:
                 msg_status = "read"
@@ -999,6 +1000,22 @@ def get_channel_messages(
         else:
             msg_status = "delivered"
 
+        is_ai = (msg.type == "ai_response") or (isinstance(msg.metadata_payload, dict) and msg.metadata_payload.get("is_ai"))
+        if is_ai:
+            sender_dict = {
+                "id": "ai_assistant",
+                "name": "Nu Study AI",
+                "profile_picture_url": None,
+                "primary_badge": {"name": "AI Study Companion", "color": "#8B5CF6"},
+            }
+        else:
+            sender_dict = {
+                "id": str(msg.sender.id) if msg.sender else str(msg.sender_id),
+                "name": f"{msg.sender.first_name} {msg.sender.last_name}" if msg.sender else "User",
+                "profile_picture_url": getattr(msg.sender, "profile_picture_url", None) if msg.sender else None,
+                "primary_badge": promo_service.resolve_user_primary_badge(db, msg.sender.id) if msg.sender else None,
+            }
+
         formatted_messages.append({
             "id": str(msg.id),
             "type": msg.type,
@@ -1006,12 +1023,7 @@ def get_channel_messages(
             "metadata_payload": msg.metadata_payload, # For the Polls!
             "created_at": msg.created_at,
             "status": msg_status,
-            "sender": {
-                "id": str(msg.sender.id),
-                "name": f"{msg.sender.first_name} {msg.sender.last_name}",
-                "profile_picture_url": getattr(msg.sender, "profile_picture_url", None),
-                "primary_badge": promo_service.resolve_user_primary_badge(db, msg.sender.id) if msg.sender else None,
-            }
+            "sender": sender_dict
         })
         
     return formatted_messages
@@ -1080,6 +1092,18 @@ async def send_channel_message_rest(
     channel_members = db.query(models.ChannelMember.user_id).filter_by(channel_id=channel_id).all()
     for member in channel_members:
         await manager.send_personal_message(broadcast_payload, str(member[0]))
+
+    is_ai_prompt = bool(payload.content and payload.content.strip().lower().startswith("/ai "))
+    if is_ai_prompt:
+        prompt_q = payload.content.strip()[4:].strip()
+        if prompt_q:
+            asyncio.create_task(_synthesize_chat_ai_reply(
+                channel_id=channel_id,
+                user_id=user.id,
+                prompt_msg_id=new_msg.id,
+                query_text=prompt_q,
+                sender_name=sender_name
+            ))
 
     return broadcast_payload
 

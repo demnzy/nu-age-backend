@@ -42,7 +42,7 @@ class User(Base):
      
     organisations = relationship("Organisation", secondary="OrganisationMembers", back_populates="members")
     courses= relationship("Course", secondary= "enrollments", back_populates="Students")
-    created_courses = relationship("Course", back_populates="admin", foreign_keys="[Course.admin_id]")
+    created_courses = relationship("Course", back_populates="admin", foreign_keys="[Course.admin_id]", cascade="all, delete-orphan", passive_deletes=True)
     teaches = relationship("Course", back_populates="teacher", foreign_keys="[Course.teacher_id]")
     device_tokens = relationship("DeviceToken", backref="user", cascade="all, delete")
 class DeviceToken(Base):
@@ -162,7 +162,7 @@ class Course(Base):
     category = relationship("Category", back_populates= "courses", lazy="joined")
     modules = relationship("Module", back_populates="course", order_by="Module.order_index")
     Students = relationship("User", secondary= "enrollments", back_populates="courses")
-    admin = relationship("User", foreign_keys=[admin_id], back_populates="created_courses", lazy="joined")
+    admin = relationship("User", foreign_keys=[admin_id], back_populates="created_courses", lazy="joined", passive_deletes=True)
     organisation = relationship("Organisation", back_populates="courses")
     teacher = relationship("User", foreign_keys=[teacher_id], back_populates="teaches")
 

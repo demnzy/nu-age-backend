@@ -423,3 +423,113 @@ async def parse_past_questions_from_image_with_ai(
         questions=[]
     )
 
+
+async def generate_cbt_questions_from_material_with_ai(
+    raw_text: str,
+    subject: str = "General",
+    exam_type: str = "Topic Drill CBT",
+    question_count: int = 10,
+    difficulty: str = "standard"
+) -> ParsedCBTPack:
+    """
+    Generates high-rigor CBT multiple-choice questions directly from lecture notes,
+    textbook chapters, syllabus outlines, or study material text using OpenAI or Gemini.
+    """
+    api_key = _get_api_key()
+    gemini_key = _get_gemini_key()
+    question_count = max(1, min(50, int(question_count or 10)))
+
+    system_prompt = (
+        "You are an expert university professor and West African Examinations (JAMB UTME, WAEC, University CBT) assessment designer. "
+        f"Your task is to generate {question_count} rigorous, high-quality multiple-choice CBT questions based on the provided course material or topic notes.\n"
+        "MANDATORY REQUIREMENTS:\n"
+        f"1. Generate {question_count} distinct multiple-choice questions testing conceptual understanding, application, and problem-solving.\n"
+        "2. Do NOT include leading question numbers (e.g. '1.', 'Q1:') in question_text.\n"
+        "3. Provide 4 plausible options [Option A, Option B, Option C, Option D] without letter prefixes.\n"
+        "4. Set answer_index (0 for A, 1 for B, 2 for C, 3 for D).\n"
+        "5. Write a clear, educational step-by-step explanation for why the correct option is right and why distractors fail.\n"
+        "6. Tag each question with a concise sub-topic from the material.\n"
+        f"7. Target difficulty level: {difficulty}."
+    )
+
+    user_prompt = (
+        f"Course / Subject: {subject}\n"
+        f"Assessment Type: {exam_type}\n"
+        f"Number of Questions to Generate: {question_count}\n\n"
+        f"Source Material / Notes:\n{raw_text[:60000]}"
+    )
+
+    if api_key:
+        try:
+            from openai import AsyncOpenAI
+            client = AsyncOpenAI(api_key=api_key, timeout=120.0, max_retries=1)
+            response = await client.beta.chat.completions.parse(
+                model=_get_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format=ParsedCBTPack,
+                reasoning_effort=_get_reasoning_effort("cbt"),
+                max_completion_tokens=16384,
+            )
+            parsed = response.choices[0].message.parsed
+            if parsed and parsed.questions:
+                if not parsed.suggested_title:
+                    parsed.suggested_title = f"{subject} - {exam_type}".strip()
+                return parsed
+        except Exception as e:
+            print(f"[CBT AI GENERATOR (OpenAI) ERROR]: {e}")
+
+    if gemini_key:
+        try:
+            from google import genai
+            client = genai.Client(api_key=gemini_key)
+            resp = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[f"{system_prompt}\n\n{user_prompt}"],
+                config={"response_mime_type": "application/json", "response_schema": ParsedCBTPack}
+            )
+            parsed = ParsedCBTPack.model_validate_json(resp.text)
+            if parsed and parsed.questions:
+                if not parsed.suggested_title:
+                    parsed.suggested_title = f"{subject} - {exam_type}".strip()
+                return parsed
+        except Exception as e:
+            print(f"[CBT AI GENERATOR (Gemini) ERROR]: {e}")
+
+    # Fallback: try extracting if the text actually had formatted questions
+    fallback_pack = parse_cbt_text_regex(raw_text, default_subject=subject, default_exam=exam_type)
+    if fallback_pack.questions:
+        return fallback_pack
+
+    # Synthetic deterministic fallback if no API key is configured and raw text is prose
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n|\.\s+", raw_text) if len(p.strip()) > 30]
+    questions: List[ParsedCBTQuestion] = []
+    for idx in range(min(question_count, max(1, len(paragraphs)))):
+        fact = paragraphs[idx % len(paragraphs)][:220].strip()
+        questions.append(ParsedCBTQuestion(
+            question_text=f"According to the study material on {subject}, which statement best reflects the key concept discussed?",
+            options=[
+                fact,
+                f"The opposite principle applies regardless of conditions in {subject}.",
+                f"This concept is unrelated to {subject} and only applies to external systems.",
+                "None of the stated principles hold under standard conditions."
+            ],
+            answer_index=0,
+            explanation=f"Directly supported by the course material: {fact}",
+            topic=subject,
+            has_diagram=False,
+            difficulty=difficulty
+        ))
+
+    return ParsedCBTPack(
+        suggested_title=f"{subject} Practice Drill",
+        subject=subject,
+        exam_type=exam_type,
+        exam_year=None,
+        syllabus_topics=[subject],
+        questions=questions
+    )
+
+

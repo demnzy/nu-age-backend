@@ -694,6 +694,9 @@ def delete_user_account(
         # 5. Clean up user subscriptions
         db.query(models.UserSubscription).filter(models.UserSubscription.user_id == user_id).delete()
 
+        # 5.5. Clean up courses where this user is the admin (Postgres ondelete="CASCADE" handles child tables)
+        db.query(models.Course).filter(models.Course.admin_id == user_id).delete(synchronize_session=False)
+
         # 6. Delete the user (SQLAlchemy / Postgres cascades handle remaining child relations)
         db.delete(u)
         db.commit()
