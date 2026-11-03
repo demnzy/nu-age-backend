@@ -573,14 +573,14 @@ def get_space_details(
         modules = (
             db.query(models.Module)
             .filter(models.Module.course_id == c.id)
-            .order_by(models.Module.order.asc())
+            .order_by(models.Module.order_index.asc())
             .all()
         )
         modules_list = [
             {
                 "id": str(mod.id),
                 "title": mod.title,
-                "order": getattr(mod, "order", idx)
+                "order": getattr(mod, "order_index", idx)
             }
             for idx, mod in enumerate(modules)
         ]
