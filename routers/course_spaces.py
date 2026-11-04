@@ -103,6 +103,11 @@ class UpdateSpaceMemberRoleRequest(BaseModel):
     role: str = Field(..., pattern="^(tutor|student|manager)$")
 
 
+class InviteSpaceMembersRequest(BaseModel):
+    user_identifiers: List[str] = Field(..., min_items=1, description="List of emails, usernames, or user IDs")
+    role: str = Field(default="student", pattern="^(tutor|student|manager)$")
+
+
 class AISpaceQuizParseTextRequest(BaseModel):
     raw_text: str = Field(..., min_length=10)
     subject: str = Field(default="General", max_length=120)
@@ -267,6 +272,8 @@ def _format_space_summary(db: Session, sp: models.CourseSpace, user: models.User
                 "title": _course_title(c_obj)
             })
 
+    has_membership = user_mem is not None
+    is_student_mem = bool(user_mem and str(user_mem.role or "").lower() == "student")
     return {
         "id": str(sp.id),
         "name": sp.name,
@@ -276,7 +283,8 @@ def _format_space_summary(db: Session, sp: models.CourseSpace, user: models.User
         "banner_url": sp.banner_url,
         "organisation_id": str(sp.organisation_id) if sp.organisation_id else None,
         "role": user_mem.role if user_mem else ("tutor" if can_manage else None),
-        "is_enrolled": bool(user_mem) or sp.created_by == user.id,
+        "is_enrolled": bool(has_membership or can_manage),
+        "is_student": is_student_mem,
         "is_creator": sp.created_by == user.id,
         "can_manage": can_manage,
         "creator_name": creator_name,
@@ -379,13 +387,19 @@ def create_course_space(
 
 @router.get("/my-spaces")
 def get_my_spaces(
+    scope: Optional[str] = Query(
+        "all",
+        description="'all' = all spaces the user has joined or created. 'student_only' = filter to student memberships.",
+    ),
     user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
     """List all spaces that the current user has joined or created."""
+    member_q = db.query(models.CourseSpaceMember).filter(models.CourseSpaceMember.user_id == user.id)
+    if (scope or "").lower() == "student_only":
+        member_q = member_q.filter(models.CourseSpaceMember.role == "student")
     memberships = (
-        db.query(models.CourseSpaceMember)
-        .filter(models.CourseSpaceMember.user_id == user.id)
+        member_q
         .options(
             joinedload(models.CourseSpaceMember.space)
             .joinedload(models.CourseSpace.creator),
@@ -441,8 +455,12 @@ def explore_open_spaces(
     user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Explore public/open spaces that any learner can enroll into."""
-    q = db.query(models.CourseSpace).filter(models.CourseSpace.is_open == True)
+    """
+    Explore all Course Spaces.
+    Returns both open spaces (1-click enroll) and private spaces (unlocked via code)
+    so learners have a direct point of entry to discover spaces and enter the invite code.
+    """
+    q = db.query(models.CourseSpace)
     if query:
         q = q.filter(or_(
             models.CourseSpace.name.ilike(f"%{query}%"),
@@ -486,8 +504,7 @@ def join_course_space(
         space = db.query(models.CourseSpace).filter(models.CourseSpace.id == payload.space_id).first()
         if not space:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course Space not found.")
-        can_manage = _can_manage_space(db, space, user)
-        if not space.is_open and not can_manage:
+        if not space.is_open:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This Course Space is private. An invite code is required to join.")
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either 'code' or 'space_id' must be provided.")
@@ -499,13 +516,15 @@ def join_course_space(
     ).first()
 
     if not existing_member:
-        default_role = "tutor" if _can_manage_space(db, space, user) else "student"
         membership = models.CourseSpaceMember(
             space_id=space.id,
             user_id=user.id,
-            role=default_role
+            role="student"
         )
         db.add(membership)
+    else:
+        # Joining via code or open enrollment activates student status
+        existing_member.role = "student"
 
     # Cascading auto-enrollment into all linked courses
     space_courses = db.query(models.CourseSpaceCourse).filter(models.CourseSpaceCourse.space_id == space.id).all()
@@ -558,10 +577,13 @@ def get_space_details(
     role = _get_user_space_role(db, space.id, user.id)
     is_creator = space.created_by == user.id
     can_manage = _can_manage_space(db, space, user)
-    is_member = role is not None or is_creator or can_manage
+    # Real membership only — management rights are NOT membership. Invite-only gating for
+    # the learner view relies on this distinction (see `is_student` below).
+    is_member = role is not None or is_creator
+    is_student = role == "student"
 
     # Check access permission: public spaces, members, or space managers can view
-    if not space.is_open and not is_member:
+    if not space.is_open and not (is_member or can_manage):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You must join this Space to view its contents.")
 
     # Format linked courses with module list, module count & student progress
@@ -629,6 +651,7 @@ def get_space_details(
             "creator_avatar": creator_avatar,
             "role": "creator" if is_creator else (role or ("tutor" if can_manage else "guest")),
             "is_member": is_member,
+            "is_student": is_student,
             "is_creator": is_creator,
             "can_manage": can_manage,
             "member_count": mem_count,
@@ -838,6 +861,100 @@ def remove_space_member(
     db.delete(mem)
     db.commit()
     return {"status": "success", "message": "Member removed from space."}
+
+
+@router.post("/{space_id}/invite")
+def invite_space_members(
+    space_id: uuid.UUID,
+    payload: InviteSpaceMembersRequest,
+    user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """(Tutor/Creator/Admin only) Invite or directly enroll learners/co-tutors into the space."""
+    space = db.query(models.CourseSpace).filter(models.CourseSpace.id == space_id).first()
+    if not space:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Course Space not found.")
+    _check_space_tutor_permission(db, space, user)
+
+    added_users = []
+    not_found = []
+    already_members = []
+
+    space_courses = db.query(models.CourseSpaceCourse).filter(models.CourseSpaceCourse.space_id == space.id).all()
+
+    for ident in payload.user_identifiers:
+        ident_clean = ident.strip()
+        if not ident_clean:
+            continue
+        target_u = db.query(models.User).filter(
+            or_(
+                models.User.email.ilike(ident_clean),
+                models.User.username.ilike(ident_clean)
+            )
+        ).first()
+        if not target_u:
+            try:
+                u_uuid = uuid.UUID(ident_clean)
+                target_u = db.query(models.User).filter(models.User.id == u_uuid).first()
+            except ValueError:
+                pass
+
+        if not target_u:
+            not_found.append(ident_clean)
+            continue
+
+        existing = db.query(models.CourseSpaceMember).filter(
+            models.CourseSpaceMember.space_id == space.id,
+            models.CourseSpaceMember.user_id == target_u.id
+        ).first()
+
+        if existing:
+            already_members.append(target_u.email or target_u.username or str(target_u.id))
+            continue
+
+        new_mem = models.CourseSpaceMember(
+            space_id=space.id,
+            user_id=target_u.id,
+            role=payload.role
+        )
+        db.add(new_mem)
+
+        for sc in space_courses:
+            existing_enr = db.query(models.Enrollment).filter(
+                models.Enrollment.student_id == target_u.id,
+                models.Enrollment.course_id == sc.course_id
+            ).first()
+            if not existing_enr:
+                db.add(models.Enrollment(
+                    student_id=target_u.id,
+                    course_id=sc.course_id,
+                    progress=0.0
+                ))
+
+        sender_label = f"{user.first_name} {user.last_name}".strip() if user.first_name else "Your instructor"
+        notif = models.UserNotification(
+            user_id=target_u.id,
+            sender_id=user.id,
+            title=f"Invited to {space.name}",
+            body=f"{sender_label} added you to '{space.name}'. Invite code: {space.code}",
+            category="course_spaces",
+            action_route=f"/spaces/{space.id}",
+            data_payload={"space_id": str(space.id), "code": space.code}
+        )
+        db.add(notif)
+        added_users.append(target_u.email or target_u.username or str(target_u.id))
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Successfully enrolled {len(added_users)} learner(s).",
+        "added_count": len(added_users),
+        "added": added_users,
+        "already_members": already_members,
+        "not_found": not_found,
+        "space_code": space.code
+    }
 
 
 @router.post("/{space_id}/courses")
