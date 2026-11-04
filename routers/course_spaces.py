@@ -18,7 +18,7 @@ import re
 import uuid
 import secrets
 import string
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, status
@@ -219,7 +219,8 @@ def _dispatch_space_notifications(
     title: str,
     body: str,
     action_route: str,
-    payload: Dict[str, Any]
+    payload: Dict[str, Any],
+    category: str = "course_spaces"
 ):
     """Deliver in-app notifications to all space members except the sender."""
     members = db.query(models.CourseSpaceMember).filter(
@@ -233,7 +234,7 @@ def _dispatch_space_notifications(
             sender_id=sender.id,
             title=title,
             body=body,
-            category="course_spaces",
+            category=category,
             action_route=action_route,
             data_payload=payload
         )
@@ -456,11 +457,11 @@ def explore_open_spaces(
     db: Session = Depends(get_db)
 ):
     """
-    Explore all Course Spaces.
-    Returns both open spaces (1-click enroll) and private spaces (unlocked via code)
-    so learners have a direct point of entry to discover spaces and enter the invite code.
+    Explore open public Course Spaces.
+    Only publicly open spaces are listed for general discovery.
+    Private spaces are accessible strictly by invite code or direct tutor invitation.
     """
-    q = db.query(models.CourseSpace)
+    q = db.query(models.CourseSpace).filter(models.CourseSpace.is_open == True)
     if query:
         q = q.filter(or_(
             models.CourseSpace.name.ilike(f"%{query}%"),
@@ -482,6 +483,64 @@ def explore_open_spaces(
     now = datetime.now(timezone.utc)
     results = [_format_space_summary(db, sp, user, now=now) for sp in spaces]
     return {"status": "success", "spaces": results}
+
+
+@router.get("/upcoming-sessions")
+def get_upcoming_sessions_for_user(
+    user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get active and upcoming live sessions across all Course Spaces the user belongs to.
+    Powers timely, non-intrusive learner reminders and join prompts.
+    """
+    now = datetime.now(timezone.utc)
+    user_space_ids = [
+        m.space_id for m in db.query(models.CourseSpaceMember.space_id).filter(
+            models.CourseSpaceMember.user_id == user.id
+        ).all()
+    ]
+    if not user_space_ids:
+        return {"status": "success", "sessions": []}
+
+    cutoff = now + timedelta(hours=48)
+    sessions = (
+        db.query(models.CourseSpaceSession)
+        .filter(
+            models.CourseSpaceSession.space_id.in_(user_space_ids),
+            models.CourseSpaceSession.is_cancelled == False,
+            models.CourseSpaceSession.start_time <= cutoff,
+        )
+        .options(
+            joinedload(models.CourseSpaceSession.space),
+            joinedload(models.CourseSpaceSession.course)
+        )
+        .order_by(models.CourseSpaceSession.start_time.asc())
+        .all()
+    )
+
+    results = []
+    for s in sessions:
+        end_time = s.start_time + timedelta(minutes=s.duration_minutes)
+        if end_time < now:
+            continue
+        is_live = s.start_time <= now <= end_time
+        mins_until = int((s.start_time - now).total_seconds() // 60) if not is_live else 0
+        results.append({
+            "id": str(s.id),
+            "space_id": str(s.space_id),
+            "space_name": s.space.name if s.space else "Course Space",
+            "course_title": s.course.title if (s.course and hasattr(s.course, "title")) else None,
+            "title": s.title,
+            "description": s.description,
+            "meeting_link": s.meeting_link,
+            "start_time": s.start_time.isoformat() if s.start_time else None,
+            "duration_minutes": s.duration_minutes,
+            "is_live": is_live,
+            "minutes_until_start": mins_until,
+        })
+
+    return {"status": "success", "sessions": results}
 
 
 @router.post("/join")
@@ -1664,7 +1723,7 @@ def create_topic_quiz(
         sender=user,
         title=f"New Practice Drill: {payload.title}",
         body=f"A topic-aligned drill ({len(formatted_questions)} questions) for {course_title} is now available in {space.name}.",
-        action_route=f"/spaces/{space_id}?tab=quizzes&quiz_id={quiz.id}",
+        action_route=f"/spaces/{space_id}?tab=drills&quiz_id={quiz.id}",
         payload={
             "space_id": str(space_id),
             "course_id": str(payload.course_id),
@@ -2110,22 +2169,23 @@ def schedule_live_session(
     db.flush()
 
     # Formatted session start for notification
-    dt_formatted = payload.start_time.strftime("%b %d, %I:%M %p UTC")
-    uploader_name = f"{user.first_name} {user.last_name}".strip()
+    dt_formatted = payload.start_time.strftime("%b %d at %I:%M %p")
+    uploader_name = f"{user.first_name} {user.last_name}".strip() or "Your instructor"
 
     _dispatch_space_notifications(
         db=db,
         space=space,
         sender=user,
-        title=f"Class Scheduled: {payload.title}",
-        body=f"{uploader_name} scheduled a live meeting for {dt_formatted}. Click to view details and join.",
-        action_route=f"/spaces/{space_id}?tab=sessions&session_id={session.id}",
+        title=f"Live Class Scheduled: {payload.title}",
+        body=f"{uploader_name} scheduled a live session for {dt_formatted}. Tap to view details and join.",
+        action_route=f"/spaces/{space_id}?tab=sessions",
         payload={
             "space_id": str(space_id),
             "session_id": str(session.id),
             "meeting_link": meeting_link,
             "type": "live_session_scheduled"
-        }
+        },
+        category="live_session"
     )
 
     db.commit()
@@ -2224,7 +2284,25 @@ def cancel_scheduled_session(
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scheduled session not found.")
 
+    uploader_name = f"{user.first_name} {user.last_name}".strip() or "Your instructor"
+    session_title = session.title
+
+    _dispatch_space_notifications(
+        db=db,
+        space=space,
+        sender=user,
+        title=f"Class Cancelled: {session_title}",
+        body=f"The scheduled class '{session_title}' in {space.name} was cancelled by {uploader_name}.",
+        action_route=f"/spaces/{space_id}?tab=sessions",
+        payload={
+            "space_id": str(space_id),
+            "session_id": str(session.id),
+            "type": "live_session_cancelled"
+        },
+        category="live_session"
+    )
+
     db.delete(session)
     db.commit()
-    return {"status": "success", "message": "Scheduled class cancelled and removed."}
+    return {"status": "success", "message": "Scheduled class cancelled and members notified."}
 
